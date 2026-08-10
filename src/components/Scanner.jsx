@@ -1,21 +1,43 @@
 import { useEffect, useRef, useState } from "react";
-import { Html5Qrcode } from "html5-qrcode";
+import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 import Modal from "./Modal";
 
 export default function Scanner({ open, onClose, onResult }) {
   const [status, setStatus] = useState("Iniciando cámara…");
   const [manual, setManual] = useState("");
   const scannerRef = useRef(null);
-  const startedRef = useRef(false);
+  const stoppingRef = useRef(false);
+
+  const stopScanner = async () => {
+    const scanner = scannerRef.current;
+    if (!scanner || stoppingRef.current) return;
+    stoppingRef.current = true;
+
+    try {
+      const state = scanner.getState();
+      if (state === Html5QrcodeScannerState.SCANNING || state === Html5QrcodeScannerState.PAUSED) {
+        await scanner.stop();
+      }
+    } catch {
+      // ignore stop errors
+    }
+
+    try {
+      await scanner.clear();
+    } catch {
+      // ignore clear errors
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
-    startedRef.current = true;
     const el = document.getElementById("reader");
     if (!el) return;
+
     let cancelled = false;
     const instance = new Html5Qrcode("reader");
     scannerRef.current = instance;
+    stoppingRef.current = false;
 
     instance
       .start(
@@ -28,7 +50,9 @@ export default function Scanner({ open, onClose, onResult }) {
         () => {}
       )
       .then(() => {
-        if (!cancelled) setStatus("Apuntá la cámara al código de barras");
+        if (!cancelled) {
+          setStatus("Apuntá la cámara al código de barras");
+        }
       })
       .catch(() => {
         if (!cancelled) setStatus("No se pudo acceder a la cámara. Usá el campo manual.");
@@ -36,24 +60,13 @@ export default function Scanner({ open, onClose, onResult }) {
 
     return () => {
       cancelled = true;
-      if (scannerRef.current && startedRef.current) {
-        scannerRef.current
-          .stop()
-          .then(() => scannerRef.current.clear())
-          .catch(() => {});
-      }
-      startedRef.current = false;
+      stopScanner();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   function handleResult(code) {
-    if (scannerRef.current) {
-      scannerRef.current
-        .stop()
-        .then(() => scannerRef.current.clear())
-        .catch(() => {});
-    }
+    stopScanner();
     onResult(code);
   }
 
