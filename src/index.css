@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Roboto Slab", Georgia, serif;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+
+  --color-bg: #182420;
+  --color-surface: #22322B;
+  --color-surface-2: #2B3D34;
+  --color-line: rgba(251, 246, 233, 0.10);
+  --color-paper: #FBF6E9;
+  --color-paper-line: #E4DAC0;
+  --color-ink: #1B2420;
+  --color-ink-dim: #6B6255;
+  --color-cream: #F3EEDE;
+  --color-cream-dim: #A9B6AC;
+  --color-amber: #E8A33D;
+  --color-amber-ink: #241A05;
+  --color-brick: #C1493B;
+  --color-leaf: #6FA287;
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--color-bg);
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--color-cream);
+  -webkit-tap-highlight-color: transparent;
+}
+
+input, select {
+  font-family: inherit;
+}
+
+::-webkit-scrollbar { width: 0; height: 0; }
+
+.ticket-edge::before,
+.ticket-edge::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 10px;
+  background: radial-gradient(circle at 6px 5px, var(--color-bg) 5px, transparent 5.5px) repeat-x;
+  background-size: 16px 10px;
+}
+.ticket-edge::before { top: -5px; }
+.ticket-edge::after { bottom: -5px; transform: rotate(180deg); }
