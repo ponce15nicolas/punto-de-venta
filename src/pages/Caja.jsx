@@ -1,10 +1,13 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { money, fmtDateTime } from "../lib/format";
+import { money, fmtDateTime, fmtTime } from "../lib/format";
 import Modal from "../components/Modal";
 
+const METHOD_LABEL = { efectivo: "Efectivo", transferencia: "Transferencia", qr: "QR", tarjeta: "Tarjeta" };
+const METHOD_ICON = { efectivo: "💵", transferencia: "🏦", qr: "🔳", tarjeta: "💳" };
+
 export default function Caja({ pos }) {
-  const { openSession, sales, openCashSession, closeCashSession } = pos;
+  const { openSession, openCashSession, closeCashSession, paymentBreakdown } = pos;
   const [openAmount, setOpenAmount] = useState("");
   const [closeModal, setCloseModal] = useState(false);
   const [counted, setCounted] = useState("");
@@ -43,9 +46,8 @@ export default function Caja({ pos }) {
     );
   }
 
-  const sessSales = sales.filter((s) => s.sessionId === openSession.id);
-  const totalSales = sessSales.reduce((a, s) => a + s.total, 0);
-  const expected = openSession.openAmount + totalSales;
+  const { sessSales, totals, totalSales } = paymentBreakdown(openSession.id);
+  const expectedCash = openSession.openAmount + totals.efectivo;
 
   return (
     <div>
@@ -58,10 +60,23 @@ export default function Caja({ pos }) {
         </div>
         <div className="grid grid-cols-2 gap-2">
           <Stat label="Apertura" value={money(openSession.openAmount)} />
-          <Stat label="Ventas del turno" value={money(totalSales)} />
+          <Stat label="Ventas totales" value={money(totalSales)} />
           <Stat label="Tickets" value={sessSales.length} />
-          <Stat label="Efectivo esperado" value={money(expected)} />
+          <Stat label="Efectivo esperado" value={money(expectedCash)} />
         </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {Object.keys(METHOD_LABEL).map((m) => (
+            <div key={m} className="flex items-center justify-between bg-surface-2 rounded-lg px-3 py-2">
+              <span className="text-xs text-cream-dim flex items-center gap-1.5">
+                <span>{METHOD_ICON[m]}</span>
+                {METHOD_LABEL[m]}
+              </span>
+              <span className="font-mono text-xs font-semibold">{money(totals[m])}</span>
+            </div>
+          ))}
+        </div>
+
         <button
           className="w-full bg-amber text-amber-ink rounded-lg py-3 font-semibold mt-3.5"
           onClick={() => setCloseModal(true)}
@@ -85,9 +100,17 @@ export default function Caja({ pos }) {
               >
                 <div className="flex justify-between text-[13px]">
                   <span className="font-bold">{sa.items.reduce((a, i) => a + i.qty, 0)} ítems</span>
-                  <span className="font-mono text-cream-dim text-[11px]">{fmtDateTime(sa.timestamp)}</span>
+                  <span className="font-mono text-cream-dim text-[11px]">{fmtTime(sa.timestamp)}</span>
                 </div>
-                <div className="font-mono text-[11.5px] text-cream-dim mt-1.5">{money(sa.total)}</div>
+                <div className="flex justify-between items-center mt-1.5">
+                  <span className="font-mono text-[11.5px] text-cream-dim">
+                    {METHOD_ICON[sa.payment?.method || "efectivo"]} {METHOD_LABEL[sa.payment?.method || "efectivo"]}
+                    {sa.payment?.method === "efectivo" && sa.payment?.change > 0
+                      ? ` · vuelto ${money(sa.payment.change)}`
+                      : ""}
+                  </span>
+                  <span className="font-mono text-[13px] font-bold">{money(sa.total)}</span>
+                </div>
               </motion.div>
             ))}
         </>
@@ -96,15 +119,18 @@ export default function Caja({ pos }) {
       <Modal open={closeModal} onClose={() => setCloseModal(false)} title="Cerrar caja">
         <div className="grid grid-cols-2 gap-2 mb-3">
           <Stat label="Apertura" value={money(openSession.openAmount)} />
-          <Stat label="Ventas" value={money(totalSales)} />
+          <Stat label="Ventas en efectivo" value={money(totals.efectivo)} />
         </div>
         <div className="mb-3">
-          <label className="block text-xs text-cream-dim mb-1.5">Efectivo esperado</label>
+          <label className="block text-xs text-cream-dim mb-1.5">Efectivo esperado en caja</label>
           <input
             disabled
-            value={money(expected)}
+            value={money(expectedCash)}
             className="w-full bg-surface-2 border border-line rounded-lg px-3 py-2.5 text-cream font-mono text-sm opacity-70"
           />
+          <p className="text-[11px] text-cream-dim mt-1">
+            No incluye ventas por transferencia, QR o tarjeta — esas no entran a la caja física.
+          </p>
         </div>
         <div className="mb-3">
           <label className="block text-xs text-cream-dim mb-1.5">Efectivo contado</label>

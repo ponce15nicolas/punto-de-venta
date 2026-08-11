@@ -10,6 +10,7 @@ export function usePosData() {
   const [cart, setCart] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [toastMsg, setToastMsg] = useState(null); // {text, error}
+  const clearToast = useCallback(() => setToastMsg(null), []);
 
   useEffect(() => {
     setCatalog(storeGet("catalog", {}));
@@ -128,36 +129,50 @@ export function usePosData() {
 
   const clearCart = useCallback(() => setCart([]), []);
 
-  const checkout = useCallback(() => {
-    if (!openSession) {
-      showToast("Abrí la caja primero", true);
-      return;
-    }
-    if (cart.length === 0) return;
-    for (const item of cart) {
-      const p = catalog[item.barcode];
-      if (!p || p.stock < item.qty) {
-        showToast("Stock insuficiente para " + item.name, true);
-        return;
+  // payment = { method: 'efectivo'|'transferencia'|'qr'|'tarjeta', received: number }
+  const checkout = useCallback(
+    (payment) => {
+      if (!openSession) {
+        showToast("Abrí la caja primero", true);
+        return false;
       }
-    }
-    const total = cart.reduce((a, i) => a + i.qty * i.price, 0);
-    const sale = {
-      id: uid(),
-      timestamp: new Date().toISOString(),
-      items: cart.map((i) => ({ barcode: i.barcode, name: i.name, price: i.price, qty: i.qty })),
-      total,
-      sessionId: openSession.id,
-    };
-    const nextCatalog = { ...catalog };
-    cart.forEach((i) => {
-      nextCatalog[i.barcode] = { ...nextCatalog[i.barcode], stock: nextCatalog[i.barcode].stock - i.qty };
-    });
-    persistSales([...sales, sale]);
-    persistCatalog(nextCatalog);
-    setCart([]);
-    showToast("Venta registrada · " + total.toFixed(2));
-  }, [openSession, cart, catalog, sales, persistSales, persistCatalog, showToast]);
+      if (cart.length === 0) return false;
+      for (const item of cart) {
+        const p = catalog[item.barcode];
+        if (!p || p.stock < item.qty) {
+          showToast("Stock insuficiente para " + item.name, true);
+          return false;
+        }
+      }
+      const total = cart.reduce((a, i) => a + i.qty * i.price, 0);
+      const method = payment?.method || "efectivo";
+      const received = method === "efectivo" ? Number(payment?.received ?? total) : total;
+      if (method === "efectivo" && received < total) {
+        showToast("El monto recibido es menor al total", true);
+        return false;
+      }
+      const change = method === "efectivo" ? +(received - total).toFixed(2) : 0;
+
+      const sale = {
+        id: uid(),
+        timestamp: new Date().toISOString(),
+        items: cart.map((i) => ({ barcode: i.barcode, name: i.name, price: i.price, qty: i.qty })),
+        total,
+        sessionId: openSession.id,
+        payment: { method, received, change },
+      };
+      const nextCatalog = { ...catalog };
+      cart.forEach((i) => {
+        nextCatalog[i.barcode] = { ...nextCatalog[i.barcode], stock: nextCatalog[i.barcode].stock - i.qty };
+      });
+      persistSales([...sales, sale]);
+      persistCatalog(nextCatalog);
+      setCart([]);
+      showToast("Venta registrada · " + total.toFixed(2));
+      return true;
+    },
+    [openSession, cart, catalog, sales, persistSales, persistCatalog, showToast]
+  );
 
   // ---- Cash sessions ----
   const openCashSession = useCallback(
@@ -181,12 +196,26 @@ export function usePosData() {
     [cashSessions, persistCashSessions, showToast]
   );
 
+  // Desglose de ventas de una sesión por método de pago
+  const paymentBreakdown = useCallback(
+    (sessionId) => {
+      const sessSales = sales.filter((s) => s.sessionId === sessionId);
+      const totals = { efectivo: 0, transferencia: 0, qr: 0, tarjeta: 0 };
+      sessSales.forEach((s) => {
+        const m = s.payment?.method || "efectivo";
+        totals[m] = (totals[m] || 0) + s.total;
+      });
+      return { sessSales, totals, totalSales: sessSales.reduce((a, s) => a + s.total, 0) };
+    },
+    [sales]
+  );
+
   const closeCashSession = useCallback(
     (counted) => {
       if (!openSession) return;
-      const sessSales = sales.filter((s) => s.sessionId === openSession.id);
-      const totalSales = sessSales.reduce((a, s) => a + s.total, 0);
-      const expected = openSession.openAmount + totalSales;
+      const { sessSales, totals, totalSales } = paymentBreakdown(openSession.id);
+      // Solo el efectivo entra o sale físicamente de la caja
+      const expected = openSession.openAmount + totals.efectivo;
       const diff = counted - expected;
       const next = cashSessions.map((s) =>
         s.id === openSession.id
@@ -198,6 +227,7 @@ export function usePosData() {
               diff,
               totalSales,
               salesCount: sessSales.length,
+              paymentTotals: totals,
               status: "closed",
             }
           : s
@@ -205,7 +235,7 @@ export function usePosData() {
       persistCashSessions(next);
       showToast("Caja cerrada · diferencia " + diff.toFixed(2));
     },
-    [openSession, sales, cashSessions, persistCashSessions, showToast]
+    [openSession, cashSessions, persistCashSessions, showToast, paymentBreakdown]
   );
 
   return {
@@ -219,6 +249,7 @@ export function usePosData() {
     openSession,
     toastMsg,
     showToast,
+    clearToast,
     upsertProduct,
     deleteProduct,
     restock,
@@ -229,5 +260,6 @@ export function usePosData() {
     checkout,
     openCashSession,
     closeCashSession,
+    paymentBreakdown,
   };
 }

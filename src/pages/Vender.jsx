@@ -2,11 +2,13 @@ import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { money, daysUntil } from "../lib/format";
 import Scanner from "../components/Scanner";
+import PaymentModal from "../components/PaymentModal";
 
 export default function Vender({ pos, goInventario }) {
   const { catalog, cart, openSession, addToCartByBarcode, changeCartQty, removeFromCart, clearCart, checkout } = pos;
   const [code, setCode] = useState("");
   const [scanOpen, setScanOpen] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
 
   const lowStock = Object.values(catalog).filter((p) => p.stock <= 5);
   const expiring = Object.values(catalog).filter((p) => {
@@ -127,7 +129,7 @@ export default function Vender({ pos, goInventario }) {
       <button
         className="w-full bg-amber text-amber-ink rounded-lg py-3 font-semibold mt-3.5 disabled:opacity-40"
         disabled={!openSession || cart.length === 0}
-        onClick={checkout}
+        onClick={() => setPayOpen(true)}
       >
         Cobrar venta · {money(total)}
       </button>
@@ -146,6 +148,16 @@ export default function Vender({ pos, goInventario }) {
         onResult={(v) => {
           setScanOpen(false);
           addToCartByBarcode(v);
+        }}
+      />
+
+      <PaymentModal
+        open={payOpen}
+        total={total}
+        onClose={() => setPayOpen(false)}
+        onConfirm={(payment) => {
+          const ok = checkout(payment);
+          if (ok) setPayOpen(false);
         }}
       />
     </div>
