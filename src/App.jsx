@@ -50,7 +50,7 @@ export default function App() {
         </AnimatePresence>
       </main>
       <BottomNav tab={tab} setTab={setTab} />
-      <Toast toast={pos.toastMsg} onDone={() => {}} />
+      <Toast toast={pos.toastMsg} onDone={pos.clearToast} />
     </div>
   );
 }
