@@ -4,10 +4,10 @@ import { money } from "../lib/format";
 import Modal from "./Modal";
 
 const METHODS = [
-  { id: "efectivo", label: "Efectivo", icon: "💵" },
-  { id: "transferencia", label: "Transferencia", icon: "🏦" },
-  { id: "qr", label: "QR", icon: "🔳" },
-  { id: "tarjeta", label: "Tarjeta", icon: "💳" },
+  { id: "efectivo", label: "Efectivo" },
+  { id: "transferencia", label: "Transferencia" },
+  { id: "qr", label: "QR" },
+  { id: "tarjeta", label: "Tarjeta" },
 ];
 
 export default function PaymentModal({ open, onClose, total, onConfirm }) {
