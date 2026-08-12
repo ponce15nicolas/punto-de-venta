@@ -159,12 +159,7 @@ export function usePosData() {
         items: cart.map((i) => ({ barcode: i.barcode, name: i.name, price: i.price, qty: i.qty })),
         total,
         sessionId: openSession.id,
-        payment: {
-          method,
-          received,
-          change,
-          ...(payment?.transferData ? { transferData: payment.transferData } : {}),
-        },
+        payment: { method, received, change },
       };
       const nextCatalog = { ...catalog };
       cart.forEach((i) => {
