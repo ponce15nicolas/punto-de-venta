@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { usePosData } from "./hooks/usePosData";
+import { useLicenseCheck } from "./hooks/useLicenseCheck";
 import Header from "./components/Header";
 import BottomNav from "./components/BottomNav";
 import Toast from "./components/Toast";
@@ -8,15 +9,37 @@ import Vender from "./pages/Vender";
 import Inventario from "./pages/Inventario";
 import Caja from "./pages/Caja";
 import Historial from "./pages/Historial";
+import AdminRoute from "./components/AdminRoute";
+import LicenseGate from "./components/LicenseGate";
 
 export default function App() {
+  const esRutaAdmin = window.location.pathname.startsWith("/admin");
+
+  if (esRutaAdmin) {
+    return <AdminRoute />;
+  }
+
+  return (
+    <LicenseGate>
+      <PosApp />
+    </LicenseGate>
+  );
+}
+
+function PosApp() {
   const pos = usePosData();
+  const { cerrarSesion } = useLicenseCheck();
   const [tab, setTab] = useState("vender");
   const [invFilter, setInvFilter] = useState("all");
 
   function goInventario(filter) {
     setInvFilter(filter);
     setTab("inventario");
+  }
+
+  function handleCerrarSesion() {
+    const confirmar = window.confirm("¿Cerrar sesión?");
+    if (confirmar) cerrarSesion();
   }
 
   if (!pos.loaded) {
@@ -33,6 +56,16 @@ export default function App() {
           if (name && name.trim()) pos.setShopName(name.trim());
         }}
       />
+
+      {/* Botón de cerrar sesión */}
+      <button
+        onClick={handleCerrarSesion}
+        className="fixed top-3 right-3 z-40 px-3 py-1.5 rounded-full text-xs font-medium bg-black/30 text-white/80 hover:bg-black/50 hover:text-white transition-colors backdrop-blur-sm"
+        title="Cerrar sesión"
+      >
+        Cerrar sesión
+      </button>
+
       <main className="max-w-[520px] mx-auto px-3.5 pt-3.5">
         <AnimatePresence mode="wait">
           <motion.div
