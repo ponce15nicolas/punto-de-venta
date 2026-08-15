@@ -1,31 +1,36 @@
 rules_version = '2';
 
 service cloud.firestore {
-    match / databases / { database } / documents {
+  match /databases/{database}/documents {
 
-        // Colección "clientes": cada negocio que usa el POS
-        match / clientes / { clienteId } {
+    // Colección "clientes": cada negocio que usa el POS
+    match /clientes/{clienteId} {
 
-      // El cliente puede LEER su propio documento (para saber si está activo)
-      // pero NO puede escribir estado, vencimiento ni pagos desde el navegador.
-      allow read: if request.auth != null && request.auth.uid == clienteId;
+      // El cliente puede LEER su propio documento (para saber si está activo).
+      // Dos formas válidas de ser "dueño" del documento:
+      //  a) el ID del documento coincide con su UID (login email/contraseña)
+      //  b) el email del documento coincide con el email de su cuenta autenticada
+      //     (login con Google, que genera un UID distinto)
+      allow read: if request.auth != null && (
+        request.auth.uid == clienteId ||
+        resource.data.email == request.auth.token.email
+      );
 
       // Solo el admin (via Cloud Functions con permisos elevados) puede escribir.
-      // El cliente nunca escribe directo a Firestore.
       allow write: if false;
-        }
+    }
 
-        // Colección "admins": lista de UIDs autorizados a usar el panel
-        match / admins / { adminId } {
+    // Colección "admins": lista de UIDs autorizados a usar el panel
+    match /admins/{adminId} {
       allow read: if request.auth != null && request.auth.uid == adminId;
       allow write: if false; // se gestiona manualmente desde la consola de Firebase
-        }
-
-        // Colección "pagos": historial de pagos por cliente
-        match / pagos / { pagoId } {
-      allow read: if request.auth != null &&
-                resource.data.clienteId == request.auth.uid;
-      allow write: if false; // solo vía Cloud Function
-        }
     }
+
+    // Colección "pagos": historial de pagos por cliente
+    match /pagos/{pagoId} {
+      allow read: if request.auth != null &&
+                     resource.data.clienteId == request.auth.uid;
+      allow write: if false; // solo vía Cloud Function
+    }
+  }
 }

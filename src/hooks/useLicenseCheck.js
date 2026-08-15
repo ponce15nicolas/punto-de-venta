@@ -1,34 +1,46 @@
 // src/hooks/useLicenseCheck.js
-// Verifica el estado de la licencia del cliente al iniciar sesión en el POS,
-// y aplica sesión única: si la cuenta se abre en otro navegador/dispositivo,
-// esta sesión se cierra automáticamente y avisa por qué.
+// Verifica el estado de la licencia del cliente al iniciar sesión en el POS.
+//
+// Soporta dos formas de login:
+// 1. Email/contraseña creado por el admin → el UID de Auth coincide con el ID
+//    del documento en "clientes", se busca directo.
+// 2. Google Sign-In → el UID es distinto, así que se busca el documento por
+//    el campo "email" (debe coincidir exactamente con el que cargaste al
+//    crear el cliente desde el panel admin).
 
-import { useEffect, useRef, useState } from "react";
-import { doc, onSnapshot } from "firebase/firestore";
+import { useEffect, useState } from "react";
+import {
+    doc,
+    getDoc,
+    collection,
+    query,
+    where,
+    getDocs,
+    onSnapshot,
+} from "firebase/firestore";
 import { onAuthStateChanged, signOut } from "firebase/auth";
-import { httpsCallable } from "firebase/functions";
-import { auth, db, functions } from "../firebase/config";
+import { auth, db } from "../firebase/config";
 
 const REVALIDAR_CADA_MS = 5 * 60 * 1000; // cada 5 minutos
 
-function nombreDispositivo() {
-    const ua = navigator.userAgent;
-    if (/Mobi|Android/i.test(ua)) return "Dispositivo móvil";
-    if (/Mac/i.test(ua)) return "Mac";
-    if (/Win/i.test(ua)) return "Windows";
-    return "Navegador de escritorio";
+async function resolverIdDeCliente(user) {
+    // 1. Intento directo por UID (cuentas creadas con email/contraseña)
+    const directo = await getDoc(doc(db, "clientes", user.uid));
+    if (directo.exists()) return user.uid;
+
+    // 2. Si no existe por UID, buscar por email (típico de login con Google)
+    if (user.email) {
+        const q = query(collection(db, "clientes"), where("email", "==", user.email));
+        const resultados = await getDocs(q);
+        if (!resultados.empty) return resultados.docs[0].id;
+    }
+
+    return null; // no se encontró ningún cliente asociado
 }
 
 export function useLicenseCheck() {
-    const [estado, setEstado] = useState("cargando"); // cargando | activo | inactivo | vencido | sesion-remota | sin-sesion
+    const [estado, setEstado] = useState("cargando"); // cargando | activo | inactivo | vencido | sin-sesion | no-encontrado
     const [datosCliente, setDatosCliente] = useState(null);
-
-    // ID único para esta pestaña/dispositivo, se regenera en cada carga de página
-    const sessionIdLocal = useRef(
-        (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2))
-    ).current;
-    const sesionReclamada = useRef(false);
-    const sesionExpulsada = useRef(false); // evita que el signOut automático pise el mensaje
 
     useEffect(() => {
         let unsubscribeCliente = null;
@@ -37,30 +49,24 @@ export function useLicenseCheck() {
             if (unsubscribeCliente) unsubscribeCliente();
 
             if (!user) {
-                // Si llegamos acá por un signOut automático (sesión tomada por otro dispositivo),
-                // dejamos el mensaje de "sesion-remota" en pantalla en vez de pisarlo con el login.
-                if (sesionExpulsada.current) {
-                    sesionExpulsada.current = false;
-                    return;
-                }
                 setEstado("sin-sesion");
                 setDatosCliente(null);
                 return;
             }
 
-            sesionReclamada.current = false;
+            const clienteId = await resolverIdDeCliente(user);
 
-            // 1. Reclamar esta sesión como la activa (invalida cualquier otra abierta)
-            try {
-                const registrarSesion = httpsCallable(functions, "registrarSesion");
-                await registrarSesion({ sessionId: sessionIdLocal, dispositivo: nombreDispositivo() });
-                sesionReclamada.current = true;
-            } catch (err) {
-                console.error("No se pudo registrar la sesión:", err);
+            if (!clienteId) {
+                // Se autenticó (por ejemplo con Google) pero no hay ningún cliente
+                // registrado con ese email — no es un cliente dado de alta.
+                setEstado("no-encontrado");
+                setDatosCliente(null);
+                return;
             }
 
-            // 2. Escuchar el documento del cliente en tiempo real
-            const clienteRef = doc(db, "clientes", user.uid);
+            // Escucha en tiempo real: si el admin desactiva al cliente,
+            // este hook lo detecta sin necesidad de refrescar la página.
+            const clienteRef = doc(db, "clientes", clienteId);
             unsubscribeCliente = onSnapshot(clienteRef, (snap) => {
                 if (!snap.exists()) {
                     setEstado("inactivo");
@@ -69,16 +75,6 @@ export function useLicenseCheck() {
 
                 const data = snap.data();
                 setDatosCliente(data);
-
-                // Si ya reclamamos la sesión y el ID remoto cambió a otro distinto,
-                // significa que alguien más inició sesión con esta cuenta.
-                const sesionRemota = data.sesionActiva?.sessionId;
-                if (sesionReclamada.current && sesionRemota && sesionRemota !== sessionIdLocal) {
-                    sesionExpulsada.current = true;
-                    setEstado("sesion-remota");
-                    signOut(auth);
-                    return;
-                }
 
                 const vencimiento = data.fechaVencimiento?.toDate?.();
                 const vencido = vencimiento && vencimiento < new Date();
@@ -99,7 +95,7 @@ export function useLicenseCheck() {
             unsubscribeAuth();
             if (unsubscribeCliente) unsubscribeCliente();
         };
-    }, [sessionIdLocal]);
+    }, []);
 
     // Revalidación periódica adicional (por si el listener en tiempo real fallara)
     useEffect(() => {
@@ -111,7 +107,7 @@ export function useLicenseCheck() {
 
     const cerrarSesion = () => signOut(auth);
 
-    const bloqueado = estado === "inactivo" || estado === "vencido" || estado === "sesion-remota";
+    const bloqueado = estado === "inactivo" || estado === "vencido" || estado === "no-encontrado";
 
     return { estado, datosCliente, bloqueado, cerrarSesion };
 }

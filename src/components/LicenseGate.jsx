@@ -19,10 +19,6 @@ const MENSAJES = {
         titulo: "Suscripción vencida",
         texto: "Tu período de pago venció. Regularizá tu situación para seguir usando el POS.",
     },
-    "sesion-remota": {
-        titulo: "Sesión cerrada",
-        texto: "Esta cuenta se inició en otro dispositivo o navegador. Por seguridad, solo se permite una sesión activa a la vez.",
-    },
 };
 
 export default function LicenseGate({ children }) {
