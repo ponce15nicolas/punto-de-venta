@@ -1,18 +1,210 @@
-rules_version='2'
+rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    /* =====================================================
+       HELPERS
+    ===================================================== */
+
+    function estaAutenticado() {
+      return request.auth != null;
+    }
+
+    function emailAutenticado() {
+      return estaAutenticado()
+        ? request.auth.token.get("email", null)
+        : null;
+    }
+
+    function mismoEmail(data) {
+      return estaAutenticado()
+        && emailAutenticado() != null
+        && data.get("email", null) != null
+        && data.get("email", null) == emailAutenticado();
+    }
+
+    function esCliente(clienteId, data) {
+      return estaAutenticado()
+        && (
+          request.auth.uid == clienteId
+          || mismoEmail(data)
+        );
+    }
+
+    /*
+     * Permite comprobar si el usuario autenticado
+     * corresponde a un cliente específico.
+     *
+     * Se usa, por ejemplo, para el historial de pagos.
+     */
+    function perteneceAlCliente(clienteId) {
+      let cliente = get(
+        /databases/$(database)/documents/clientes/$(clienteId)
+      );
+
+      return estaAutenticado()
+        && cliente.exists()
+        && (
+          request.auth.uid == clienteId
+          || (
+            emailAutenticado() != null
+            && cliente.data.get("email", null) == emailAutenticado()
+          )
+        );
+    }
+
+    /* =====================================================
+       CLIENTES
+    ===================================================== */
+
+    match /clientes/{clienteId} {
+
+      /*
+       * Lectura individual.
+       *
+       * Caso 1:
+       * clientes/{uid}
+       *
+       * Caso 2:
+       * login con Google y mismo email,
+       * aunque el UID sea diferente.
+       */
+      allow get: if esCliente(
+        clienteId,
+        resource.data
+      );
+
+      /*
+       * Necesario porque useLicenseCheck puede hacer:
+       *
+       * where("email", "==", user.email)
+       *
+       * Firestore Rules no funciona como filtro:
+       * la consulta debe estar construida de forma que
+       * solamente pueda devolver documentos autorizados.
+       */
+      allow list: if estaAutenticado()
+        && mismoEmail(resource.data);
+
+      /*
+       * El frontend nunca puede:
+       *
+       * - activarse
+       * - cambiar vencimiento
+       * - cambiar plan
+       * - aumentar maxDispositivos
+       * - cambiar dispositivosActivos
+       * - modificar authUids
+       *
+       * Todo eso pasa por Cloud Functions.
+       */
+      allow create, update, delete: if false;
+
+      /* ===================================================
+         DISPOSITIVOS
+      =================================================== */
+
+      match /dispositivos/{deviceId} {
+
+        /*
+         * Aunque sean dispositivos del mismo cliente,
+         * el navegador NO puede leerlos directamente.
+         *
+         * Para consultar dispositivos:
+         * Cloud Function listarDispositivos.
+         *
+         * Para cerrar uno:
+         * Cloud Function cerrarSesionDispositivo.
+         */
+        allow read, write: if false;
+      }
+
+      /* ===================================================
+         CONTROL DE SESIONES
+      =================================================== */
+
+      match /seguridad/{seguridadId} {
+
+        /*
+         * Esta colección contiene el estado interno:
+         *
+         * sessions
+         * sessionId
+         * deviceId
+         * lastSeen
+         *
+         * Es especialmente importante impedir que el cliente
+         * la modifique manualmente.
+         */
+        allow read, write: if false;
+      }
+    }
+
+    /* =====================================================
+       ADMINS
+    ===================================================== */
+
+    match /admins/{adminId} {
+
+      /*
+       * AdminRoute necesita comprobar su propio documento.
+       *
+       * Un administrador no puede consultar desde el navegador
+       * la lista completa de administradores.
+       */
+      allow get: if estaAutenticado()
+        && request.auth.uid == adminId;
+
+      allow list: if false;
+
+      /*
+       * Los admins se administran manualmente o mediante
+       * backend autorizado.
+       */
+      allow create, update, delete: if false;
+    }
+
+    /* =====================================================
+       PAGOS
+    ===================================================== */
+
+    match /pagos/{pagoId} {
+
+      /*
+       * Conservamos compatibilidad con tu regla anterior.
+       *
+       * Permite leer solamente pagos cuyo clienteId
+       * pertenezca al usuario autenticado.
+       *
+       * También funciona para el caso Google/email.
+       */
+      allow get, list: if perteneceAlCliente(
+        resource.data.clienteId
+      );
+
+      /*
+       * Los pagos solamente pueden registrarse
+       * mediante registrarPago Cloud Function.
+       */
+      allow create, update, delete: if false;
+    }
+
+    /* =====================================================
+       TODO LO DEMÁS
+    ===================================================== */
+
+    /*
+     * Fail closed.
+     *
+     * Cualquier colección futura que no tenga una regla
+     * explícita queda denegada.
+     *
+     * Un "allow false" general no anula las reglas
+     * específicas anteriores cuando una de ellas devuelve true.
+     */
     match /{document=**} {
-      // This rule allows anyone with your database reference to view, edit,
-      // and delete all data in your database. It is useful for getting
-      // started, but it is configured to expire after 30 days because it
-      // leaves your app open to attackers. At that time, all client
-      // requests to your database will be denied.
-      //
-      // Make sure to write security rules for your app before that time, or
-      // else all client requests to your database will be denied until you
-      // update your rules.
-      allow read, write: if request.time < timestamp.date(2026, 9, 11);
+      allow read, write: if false;
     }
   }
 }

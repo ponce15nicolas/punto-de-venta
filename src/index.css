@@ -1,42 +1,170 @@
 @import "tailwindcss";
 
-@theme {
-  --font-display: "Roboto Slab", Georgia, serif;
-  --font-body: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+/* =========================================================
+   TEMA GLOBAL — MI NEGOCIO POS
+   Paleta oscura + amarillo principal.
+   Mantiene los nombres de variables anteriores para que
+   cualquier componente viejo siga funcionando.
+========================================================= */
 
-  --color-bg: #182420;
-  --color-surface: #22322B;
-  --color-surface-2: #2B3D34;
-  --color-line: rgba(251, 246, 233, 0.10);
-  --color-paper: #FBF6E9;
-  --color-paper-line: #E4DAC0;
-  --color-ink: #1B2420;
-  --color-ink-dim: #6B6255;
-  --color-cream: #F3EEDE;
-  --color-cream-dim: #A9B6AC;
-  --color-amber: #E8A33D;
-  --color-amber-ink: #241A05;
-  --color-brick: #C1493B;
-  --color-leaf: #6FA287;
+@theme {
+  /* Tipografías */
+  --font-display: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+
+  /* Fondo / superficies */
+  --color-bg: #0B0D12;
+  --color-surface: #11151C;
+  --color-surface-2: #171B23;
+  --color-line: rgba(255, 255, 255, 0.10);
+
+  /* Ticket / tarjetas claras */
+  --color-paper: #FFFFFF;
+  --color-paper-line: #E7E9ED;
+  --color-ink: #111318;
+  --color-ink-dim: #70747D;
+
+  /* Texto */
+  --color-cream: #FFFFFF;
+  --color-cream-dim: #8E949E;
+
+  /* Principal */
+  --color-amber: #FFC61A;
+  --color-amber-ink: #090A0D;
+
+  /* Estados */
+  --color-brick: #EF5A5A;
+  --color-leaf: #35C985;
 }
 
-html, body, #root {
-  height: 100%;
+/* =========================================================
+   BASE
+========================================================= */
+
+:root {
+  font-family: var(--font-body);
+  color: var(--color-cream);
   background: var(--color-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html {
+  min-height: 100%;
+  background: var(--color-bg);
+  color-scheme: dark;
+  overscroll-behavior-y: none;
 }
 
 body {
-  font-family: var(--font-body);
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+  background:
+    radial-gradient(circle at 12% -10%,
+      rgba(255, 198, 26, 0.05),
+      transparent 28rem),
+    linear-gradient(180deg,
+      #0B0D12 0%,
+      #0D1016 100%);
   color: var(--color-cream);
+  font-family: var(--font-body);
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: transparent;
+}
+
+/* =========================================================
+   ELEMENTOS GENERALES
+========================================================= */
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
   -webkit-tap-highlight-color: transparent;
 }
 
-input, select {
-  font-family: inherit;
+button:not(:disabled) {
+  cursor: pointer;
 }
 
-::-webkit-scrollbar { width: 0; height: 0; }
+input,
+select,
+textarea {
+  color: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: rgba(255, 255, 255, 0.28);
+}
+
+input[type="date"] {
+  color-scheme: dark;
+}
+
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+/* =========================================================
+   ACCESIBILIDAD / FOCUS
+========================================================= */
+
+:focus-visible {
+  outline: 2px solid rgba(255, 198, 26, 0.85);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: rgba(255, 198, 26, 0.28);
+  color: #FFFFFF;
+}
+
+/* =========================================================
+   SCROLL
+========================================================= */
+
+html {
+  scrollbar-width: none;
+}
+
+body {
+  -ms-overflow-style: none;
+}
+
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* =========================================================
+   DETALLES VISUALES
+========================================================= */
 
 .ticket-edge::before,
 .ticket-edge::after {
@@ -45,8 +173,78 @@ input, select {
   left: 0;
   right: 0;
   height: 10px;
-  background: radial-gradient(circle at 6px 5px, var(--color-bg) 5px, transparent 5.5px) repeat-x;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 6px 5px,
+      var(--color-bg) 5px,
+      transparent 5.5px) repeat-x;
   background-size: 16px 10px;
 }
-.ticket-edge::before { top: -5px; }
-.ticket-edge::after { bottom: -5px; transform: rotate(180deg); }
+
+.ticket-edge::before {
+  top: -5px;
+}
+
+.ticket-edge::after {
+  bottom: -5px;
+  transform: rotate(180deg);
+}
+
+/* =========================================================
+   UTILIDADES GLOBALES DEL POS
+========================================================= */
+
+.pos-card {
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 24px;
+  background: #151A22;
+}
+
+.pos-card-light {
+  border-radius: 28px;
+  background: #FFFFFF;
+  color: #111318;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
+}
+
+.pos-button-primary {
+  border: 0;
+  border-radius: 16px;
+  background: #FFC61A;
+  color: #090A0D;
+  font-weight: 800;
+  box-shadow: 0 12px 30px rgba(255, 198, 26, 0.18);
+  transition:
+    transform 150ms ease,
+    background-color 150ms ease,
+    opacity 150ms ease;
+}
+
+.pos-button-primary:hover:not(:disabled) {
+  background: #FFD248;
+}
+
+.pos-button-primary:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.pos-button-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* =========================================================
+   MOVIMIENTO REDUCIDO
+========================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
