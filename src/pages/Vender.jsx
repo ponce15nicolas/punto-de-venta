@@ -1,17 +1,142 @@
+// src/pages/Vender.jsx
+
 import {
   useMemo,
   useState,
 } from "react";
+
 import {
   AnimatePresence,
   motion,
 } from "motion/react";
+
 import {
   money,
   daysUntil,
 } from "../lib/format";
+
 import Scanner from "../components/Scanner";
 import PaymentModal from "../components/PaymentModal";
+import Modal from "../components/Modal";
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function getTipoVenta(product) {
+  const tipo =
+    product?.tipoVenta;
+
+  if (
+    tipo === "peso" ||
+    tipo === "precio-libre"
+  ) {
+    return tipo;
+  }
+
+  return "unidad";
+}
+
+function toNumber(
+  value,
+  fallback = 0
+) {
+  const normalized =
+    typeof value === "string"
+      ? value.replace(",", ".")
+      : value;
+
+  const number =
+    Number(normalized);
+
+  return Number.isFinite(number)
+    ? number
+    : fallback;
+}
+
+function roundMoney(value) {
+  return (
+    Math.round(
+      (
+        toNumber(value) +
+        Number.EPSILON
+      ) * 100
+    ) / 100
+  );
+}
+
+function roundQuantity(value) {
+  return (
+    Math.round(
+      (
+        toNumber(value) +
+        Number.EPSILON
+      ) * 1000
+    ) / 1000
+  );
+}
+
+function formatQuantity(value) {
+  return toNumber(
+    value
+  ).toLocaleString(
+    "es-AR",
+    {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 3,
+    }
+  );
+}
+
+function getItemSubtotal(item) {
+  const subtotal =
+    Number(
+      item?.subtotal
+    );
+
+  if (
+    Number.isFinite(
+      subtotal
+    )
+  ) {
+    return roundMoney(
+      subtotal
+    );
+  }
+
+  return roundMoney(
+    toNumber(
+      item?.qty
+    ) *
+      toNumber(
+        item?.price
+      )
+  );
+}
+
+function displayBarcode(
+  barcode
+) {
+  const value =
+    String(
+      barcode || ""
+    );
+
+  if (
+    !value ||
+    value.startsWith(
+      "manual-"
+    )
+  ) {
+    return "Sin código de barras";
+  }
+
+  return value;
+}
+
+/* =========================================================
+   COMPONENTE
+========================================================= */
 
 export default function Vender({
   pos,
@@ -21,42 +146,109 @@ export default function Vender({
     catalog,
     cart,
     openSession,
-    addToCartByBarcode,
+
+    addProductToCart,
     changeCartQty,
+    updateCartWeight,
+    updateCartAmount,
+
     removeFromCart,
     clearCart,
     checkout,
     showToast,
   } = pos;
 
+  /* =========================================================
+     ESTADOS
+  ========================================================= */
+
+  const [
+    search,
+    setSearch,
+  ] = useState("");
+
+  const [
+    scanOpen,
+    setScanOpen,
+  ] = useState(false);
+
+  const [
+    payOpen,
+    setPayOpen,
+  ] = useState(false);
+
+  const [
+    searchFocused,
+    setSearchFocused,
+  ] = useState(false);
+
   /*
-   * Este campo ahora sirve tanto para:
-   * - código de barras
-   * - nombre del producto
+   * Producto que necesita datos adicionales
+   * antes de agregarse:
+   *
+   * - peso
+   * - precio libre
    */
-  const [search, setSearch] =
-    useState("");
+  const [
+    saleProduct,
+    setSaleProduct,
+  ] = useState(null);
 
-  const [scanOpen, setScanOpen] =
-    useState(false);
+  /*
+   * Si es null, agregamos una línea nueva.
+   * Si tiene índice, estamos editando
+   * una línea del ticket.
+   */
+  const [
+    editingIndex,
+    setEditingIndex,
+  ] = useState(null);
 
-  const [payOpen, setPayOpen] =
-    useState(false);
+  const [
+    weightInput,
+    setWeightInput,
+  ] = useState("");
 
-  const [searchFocused, setSearchFocused] =
-    useState(false);
+  const [
+    amountInput,
+    setAmountInput,
+  ] = useState("");
+
+  /* =========================================================
+     PRODUCTOS
+  ========================================================= */
+
+  const products =
+    Object.values(
+      catalog
+    );
 
   /* =========================================================
      ALERTAS
   ========================================================= */
 
-  const products =
-    Object.values(catalog);
-
   const lowStock =
     products.filter(
-      (product) =>
-        Number(product.stock || 0) <= 5
+      (product) => {
+        const tipo =
+          getTipoVenta(
+            product
+          );
+
+        if (
+          tipo ===
+          "precio-libre"
+        ) {
+          return false;
+        }
+
+        return (
+          Number(
+            product.stock ||
+              0
+          ) <= 5
+        );
+      }
     );
 
   const expiring =
@@ -89,99 +281,119 @@ export default function Vender({
         return [];
       }
 
-      return Object.values(catalog)
-        .filter((product) => {
-          const name =
-            String(
-              product.name || ""
-            ).toLowerCase();
+      return Object.values(
+        catalog
+      )
+        .filter(
+          (product) => {
+            const name =
+              String(
+                product.name ||
+                  ""
+              ).toLowerCase();
 
-          const barcode =
-            String(
-              product.barcode || ""
-            ).toLowerCase();
+            const barcode =
+              String(
+                product.barcode ||
+                  ""
+              ).toLowerCase();
 
-          return (
-            name.includes(query) ||
-            barcode.includes(query)
-          );
-        })
-        .sort((a, b) => {
-          /*
-           * Primero mostramos coincidencias exactas.
-           */
-          const aBarcode =
-            String(
-              a.barcode || ""
-            ).toLowerCase();
-
-          const bBarcode =
-            String(
-              b.barcode || ""
-            ).toLowerCase();
-
-          const aName =
-            String(
-              a.name || ""
-            ).toLowerCase();
-
-          const bName =
-            String(
-              b.name || ""
-            ).toLowerCase();
-
-          const aExact =
-            aBarcode === query ||
-            aName === query;
-
-          const bExact =
-            bBarcode === query ||
-            bName === query;
-
-          if (
-            aExact &&
-            !bExact
-          ) {
-            return -1;
+            return (
+              name.includes(
+                query
+              ) ||
+              barcode.includes(
+                query
+              )
+            );
           }
+        )
+        .sort(
+          (a, b) => {
+            const aBarcode =
+              String(
+                a.barcode ||
+                  ""
+              ).toLowerCase();
 
-          if (
-            !aExact &&
-            bExact
-          ) {
-            return 1;
+            const bBarcode =
+              String(
+                b.barcode ||
+                  ""
+              ).toLowerCase();
+
+            const aName =
+              String(
+                a.name ||
+                  ""
+              ).toLowerCase();
+
+            const bName =
+              String(
+                b.name ||
+                  ""
+              ).toLowerCase();
+
+            const aExact =
+              aBarcode ===
+                query ||
+              aName ===
+                query;
+
+            const bExact =
+              bBarcode ===
+                query ||
+              bName ===
+                query;
+
+            if (
+              aExact &&
+              !bExact
+            ) {
+              return -1;
+            }
+
+            if (
+              !aExact &&
+              bExact
+            ) {
+              return 1;
+            }
+
+            const aStarts =
+              aName.startsWith(
+                query
+              );
+
+            const bStarts =
+              bName.startsWith(
+                query
+              );
+
+            if (
+              aStarts &&
+              !bStarts
+            ) {
+              return -1;
+            }
+
+            if (
+              !aStarts &&
+              bStarts
+            ) {
+              return 1;
+            }
+
+            return aName.localeCompare(
+              bName,
+              "es"
+            );
           }
-
-          /*
-           * Después priorizamos nombres que empiezan
-           * por lo escrito.
-           */
-          const aStarts =
-            aName.startsWith(query);
-
-          const bStarts =
-            bName.startsWith(query);
-
-          if (
-            aStarts &&
-            !bStarts
-          ) {
-            return -1;
-          }
-
-          if (
-            !aStarts &&
-            bStarts
-          ) {
-            return 1;
-          }
-
-          return aName.localeCompare(
-            bName,
-            "es"
-          );
-        })
-        .slice(0, 8);
+        )
+        .slice(
+          0,
+          8
+        );
     }, [
       catalog,
       search,
@@ -192,39 +404,422 @@ export default function Vender({
   ========================================================= */
 
   const total =
-    cart.reduce(
-      (acc, item) =>
-        acc +
-        Number(item.qty || 0) *
-        Number(item.price || 0),
-      0
+    roundMoney(
+      cart.reduce(
+        (
+          accumulator,
+          item
+        ) =>
+          accumulator +
+          getItemSubtotal(
+            item
+          ),
+        0
+      )
     );
 
+  /*
+   * Contamos líneas del ticket.
+   *
+   * No sumamos qty porque 0,650 kg
+   * no debe mostrarse como 0,65 ítems.
+   */
   const itemCount =
-    cart.reduce(
-      (acc, item) =>
-        acc +
-        Number(item.qty || 0),
-      0
-    );
+    cart.length;
 
   /* =========================================================
-     AGREGAR PRODUCTO
+     CERRAR MODAL DE PRODUCTO
+  ========================================================= */
+
+  function closeSaleModal() {
+    setSaleProduct(
+      null
+    );
+
+    setEditingIndex(
+      null
+    );
+
+    setWeightInput(
+      ""
+    );
+
+    setAmountInput(
+      ""
+    );
+  }
+
+  /* =========================================================
+     ABRIR PRODUCTO PARA VENDER
   ========================================================= */
 
   function agregarProducto(
     product
   ) {
-    if (!product) {
+    if (
+      !product ||
+      !openSession
+    ) {
       return;
     }
 
-    addToCartByBarcode(
-      product.barcode
+    const tipo =
+      getTipoVenta(
+        product
+      );
+
+    /*
+     * Productos normales se agregan
+     * inmediatamente.
+     */
+    if (
+      tipo ===
+      "unidad"
+    ) {
+      addProductToCart(
+        product
+      );
+
+      setSearch("");
+      setSearchFocused(
+        false
+      );
+
+      return;
+    }
+
+    /*
+     * Peso / importe libre necesitan
+     * un modal antes de agregarse.
+     */
+    setSaleProduct(
+      product
+    );
+
+    setEditingIndex(
+      null
+    );
+
+    setWeightInput(
+      ""
+    );
+
+    setAmountInput(
+      ""
     );
 
     setSearch("");
-    setSearchFocused(false);
+    setSearchFocused(
+      false
+    );
+  }
+
+  /* =========================================================
+     EDITAR LÍNEA ESPECIAL
+  ========================================================= */
+
+  function editarItem(
+    item,
+    index
+  ) {
+    const tipo =
+      getTipoVenta(
+        item
+      );
+
+    if (
+      tipo ===
+      "unidad"
+    ) {
+      return;
+    }
+
+    const product =
+      catalog[
+        item.barcode
+      ] || item;
+
+    setSaleProduct(
+      product
+    );
+
+    setEditingIndex(
+      index
+    );
+
+    if (
+      tipo === "peso"
+    ) {
+      setWeightInput(
+        String(
+          roundQuantity(
+            item.qty
+          )
+        )
+      );
+
+      setAmountInput(
+        String(
+          getItemSubtotal(
+            item
+          )
+        )
+      );
+    } else {
+      setWeightInput(
+        ""
+      );
+
+      setAmountInput(
+        String(
+          getItemSubtotal(
+            item
+          )
+        )
+      );
+    }
+  }
+
+  /* =========================================================
+     CAMBIAR PESO
+  ========================================================= */
+
+  function handleWeightChange(
+    value
+  ) {
+    setWeightInput(
+      value
+    );
+
+    const weight =
+      toNumber(
+        value,
+        0
+      );
+
+    const price =
+      toNumber(
+        saleProduct?.price,
+        0
+      );
+
+    if (
+      !value ||
+      weight <= 0 ||
+      price <= 0
+    ) {
+      setAmountInput(
+        ""
+      );
+
+      return;
+    }
+
+    setAmountInput(
+      String(
+        roundMoney(
+          weight *
+            price
+        )
+      )
+    );
+  }
+
+  /* =========================================================
+     CAMBIAR IMPORTE
+  ========================================================= */
+
+  function handleAmountChange(
+    value
+  ) {
+    setAmountInput(
+      value
+    );
+
+    if (
+      getTipoVenta(
+        saleProduct
+      ) !== "peso"
+    ) {
+      return;
+    }
+
+    const amount =
+      toNumber(
+        value,
+        0
+      );
+
+    const price =
+      toNumber(
+        saleProduct?.price,
+        0
+      );
+
+    if (
+      !value ||
+      amount <= 0 ||
+      price <= 0
+    ) {
+      setWeightInput(
+        ""
+      );
+
+      return;
+    }
+
+    setWeightInput(
+      String(
+        roundQuantity(
+          amount /
+            price
+        )
+      )
+    );
+  }
+
+  /* =========================================================
+     CONFIRMAR PRODUCTO ESPECIAL
+  ========================================================= */
+
+  function confirmarProductoEspecial() {
+    if (!saleProduct) {
+      return;
+    }
+
+    const tipo =
+      getTipoVenta(
+        saleProduct
+      );
+
+    const amount =
+      roundMoney(
+        toNumber(
+          amountInput,
+          0
+        )
+      );
+
+    /* ---------------------------------------------------------
+       PRECIO LIBRE
+    --------------------------------------------------------- */
+
+    if (
+      tipo ===
+      "precio-libre"
+    ) {
+      if (
+        amount <= 0
+      ) {
+        showToast(
+          "Ingresá un importe válido",
+          true
+        );
+
+        return;
+      }
+
+      if (
+        editingIndex !==
+        null
+      ) {
+        const ok =
+          updateCartAmount(
+            editingIndex,
+            amount
+          );
+
+        if (ok) {
+          closeSaleModal();
+        }
+
+        return;
+      }
+
+      const ok =
+        addProductToCart(
+          saleProduct,
+          {
+            amount,
+          }
+        );
+
+      if (ok) {
+        closeSaleModal();
+      }
+
+      return;
+    }
+
+    /* ---------------------------------------------------------
+       PESO
+    --------------------------------------------------------- */
+
+    const weight =
+      roundQuantity(
+        toNumber(
+          weightInput,
+          0
+        )
+      );
+
+    if (
+      weight <= 0
+    ) {
+      showToast(
+        "Ingresá un peso válido",
+        true
+      );
+
+      return;
+    }
+
+    if (
+      amount <= 0
+    ) {
+      showToast(
+        "El importe debe ser mayor a cero",
+        true
+      );
+
+      return;
+    }
+
+    if (
+      editingIndex !==
+      null
+    ) {
+      /*
+       * Si el usuario trabajó con el importe,
+       * updateCartAmount recalcula el peso.
+       */
+      const ok =
+        updateCartAmount(
+          editingIndex,
+          amount
+        );
+
+      if (ok) {
+        closeSaleModal();
+      }
+
+      return;
+    }
+
+    const ok =
+      addProductToCart(
+        saleProduct,
+        {
+          quantity:
+            weight,
+
+          amount,
+        }
+      );
+
+    if (ok) {
+      closeSaleModal();
+    }
   }
 
   /* =========================================================
@@ -244,11 +839,12 @@ export default function Vender({
     }
 
     /*
-     * 1. Mantiene exactamente el funcionamiento
-     *    anterior para código de barras.
+     * 1. Código exacto.
      */
     const exactBarcode =
-      catalog[value];
+      catalog[
+        value
+      ];
 
     if (exactBarcode) {
       agregarProducto(
@@ -259,7 +855,7 @@ export default function Vender({
     }
 
     /*
-     * 2. Buscar un nombre exactamente igual.
+     * 2. Nombre exacto.
      */
     const normalized =
       value.toLowerCase();
@@ -270,7 +866,8 @@ export default function Vender({
       ).find(
         (product) =>
           String(
-            product.name || ""
+            product.name ||
+              ""
           )
             .trim()
             .toLowerCase() ===
@@ -286,11 +883,11 @@ export default function Vender({
     }
 
     /*
-     * 3. Si la búsqueda genera solamente
-     *    un resultado, Enter lo agrega.
+     * 3. Único resultado.
      */
     if (
-      searchResults.length === 1
+      searchResults.length ===
+      1
     ) {
       agregarProducto(
         searchResults[0]
@@ -300,10 +897,11 @@ export default function Vender({
     }
 
     /*
-     * 4. Si no hay coincidencias.
+     * 4. Sin coincidencias.
      */
     if (
-      searchResults.length === 0
+      searchResults.length ===
+      0
     ) {
       showToast(
         "Producto no encontrado",
@@ -313,25 +911,99 @@ export default function Vender({
       return;
     }
 
-    /*
-     * Si hay varias coincidencias dejamos abierto
-     * el listado para que el usuario elija.
-     */
     showToast(
       "Seleccioná un producto de la lista"
     );
   }
 
+  /* =========================================================
+     SCANNER
+  ========================================================= */
+
+  function handleScannerResult(
+    value
+  ) {
+    setScanOpen(
+      false
+    );
+
+    const code =
+      String(
+        value || ""
+      ).trim();
+
+    const product =
+      catalog[
+        code
+      ];
+
+    if (!product) {
+      showToast(
+        "Producto no encontrado. Cargalo en Stock.",
+        true
+      );
+
+      return;
+    }
+
+    agregarProducto(
+      product
+    );
+  }
+
+  /* =========================================================
+     BÚSQUEDA VISIBLE
+  ========================================================= */
+
   const showSearchResults =
     openSession &&
     searchFocused &&
-    search.trim().length > 0;
+    search.trim().length >
+      0;
+
+  /* =========================================================
+     MODAL DATA
+  ========================================================= */
+
+  const modalTipo =
+    getTipoVenta(
+      saleProduct
+    );
+
+  const modalPrice =
+    toNumber(
+      saleProduct?.price
+    );
+
+  const modalStock =
+    toNumber(
+      saleProduct?.stock
+    );
+
+  const modalWeight =
+    toNumber(
+      weightInput
+    );
+
+  const modalAmount =
+    toNumber(
+      amountInput
+    );
+
+  const exceedsStock =
+    modalTipo ===
+      "peso" &&
+    modalWeight >
+      modalStock;
+
+  /* =========================================================
+     UI
+  ========================================================= */
 
   return (
     <div className="pb-3">
-
       {/* =====================================================
-          ALERTA CAJA CERRADA
+          CAJA CERRADA
       ===================================================== */}
 
       {!openSession && (
@@ -346,10 +1018,11 @@ export default function Vender({
       )}
 
       {/* =====================================================
-          ALERTA VENCIMIENTOS
+          VENCIMIENTOS
       ===================================================== */}
 
-      {expiring.length > 0 && (
+      {expiring.length >
+        0 && (
         <Banner
           tone="warning"
           icon={
@@ -363,11 +1036,13 @@ export default function Vender({
         >
           {expiring.length}{" "}
           producto
-          {expiring.length !== 1
+          {expiring.length !==
+          1
             ? "s"
             : ""}{" "}
           por vencer o vencido
-          {expiring.length !== 1
+          {expiring.length !==
+          1
             ? "s"
             : ""}
           .
@@ -375,10 +1050,11 @@ export default function Vender({
       )}
 
       {/* =====================================================
-          ALERTA STOCK BAJO
+          STOCK BAJO
       ===================================================== */}
 
-      {lowStock.length > 0 && (
+      {lowStock.length >
+        0 && (
         <Banner
           tone="danger"
           icon={
@@ -392,7 +1068,8 @@ export default function Vender({
         >
           {lowStock.length}{" "}
           producto
-          {lowStock.length !== 1
+          {lowStock.length !==
+          1
             ? "s"
             : ""}{" "}
           con stock bajo.
@@ -400,7 +1077,7 @@ export default function Vender({
       )}
 
       {/* =====================================================
-          BUSCADOR + SCANNER
+          BUSCADOR
       ===================================================== */}
 
       <div
@@ -411,7 +1088,6 @@ export default function Vender({
         "
       >
         <div className="flex gap-2.5">
-
           <div
             className="
               relative
@@ -458,37 +1134,47 @@ export default function Vender({
               disabled={
                 !openSession
               }
-              value={search}
+              value={
+                search
+              }
               autoComplete="off"
               onFocus={() =>
                 setSearchFocused(
                   true
                 )
               }
-              onChange={(e) => {
+              onChange={(
+                event
+              ) => {
                 setSearch(
-                  e.target.value
+                  event.target
+                    .value
                 );
 
                 setSearchFocused(
                   true
                 );
               }}
-              onKeyDown={(e) => {
+              onKeyDown={(
+                event
+              ) => {
                 if (
-                  e.key ===
+                  event.key ===
                   "Enter"
                 ) {
-                  e.preventDefault();
+                  event.preventDefault();
 
                   handleSearchSubmit();
                 }
 
                 if (
-                  e.key ===
+                  event.key ===
                   "Escape"
                 ) {
-                  setSearch("");
+                  setSearch(
+                    ""
+                  );
+
                   setSearchFocused(
                     false
                   );
@@ -500,11 +1186,16 @@ export default function Vender({
               <button
                 type="button"
                 aria-label="Limpiar búsqueda"
-                onMouseDown={(e) =>
-                  e.preventDefault()
+                onMouseDown={(
+                  event
+                ) =>
+                  event.preventDefault()
                 }
                 onClick={() => {
-                  setSearch("");
+                  setSearch(
+                    ""
+                  );
+
                   setSearchFocused(
                     true
                   );
@@ -530,15 +1221,15 @@ export default function Vender({
             )}
           </div>
 
-          {/* SCANNER */}
-
           <button
             type="button"
             disabled={
               !openSession
             }
             onClick={() =>
-              setScanOpen(true)
+              setScanOpen(
+                true
+              )
             }
             aria-label="Escanear código de barras"
             className="
@@ -560,11 +1251,10 @@ export default function Vender({
           >
             <CameraIcon className="h-5 w-5" />
           </button>
-
         </div>
 
         {/* ===================================================
-            RESULTADOS DE BÚSQUEDA
+            RESULTADOS
         =================================================== */}
 
         <AnimatePresence>
@@ -603,7 +1293,7 @@ export default function Vender({
               "
             >
               {searchResults.length ===
-                0 ? (
+              0 ? (
                 <div
                   className="
                     flex
@@ -682,7 +1372,9 @@ export default function Vender({
                         text-[#FFC61A]
                       "
                     >
-                      {searchResults.length}
+                      {
+                        searchResults.length
+                      }
                     </span>
                   </div>
 
@@ -697,10 +1389,14 @@ export default function Vender({
                         product,
                         index
                       ) => {
+                        const tipo =
+                          getTipoVenta(
+                            product
+                          );
+
                         const stock =
-                          Number(
-                            product.stock ||
-                            0
+                          toNumber(
+                            product.stock
                           );
 
                         return (
@@ -725,9 +1421,9 @@ export default function Vender({
                                 0.02,
                             }}
                             onMouseDown={(
-                              e
+                              event
                             ) =>
-                              e.preventDefault()
+                              event.preventDefault()
                             }
                             onClick={() =>
                               agregarProducto(
@@ -762,7 +1458,12 @@ export default function Vender({
                                 text-[#FFC61A]
                               "
                             >
-                              <BoxIcon className="h-[18px] w-[18px]" />
+                              <ProductTypeIcon
+                                tipo={
+                                  tipo
+                                }
+                                className="h-[18px] w-[18px]"
+                              />
                             </div>
 
                             <div
@@ -788,35 +1489,58 @@ export default function Vender({
                                 className="
                                   mt-1
                                   flex
+                                  flex-wrap
                                   items-center
-                                  gap-2
+                                  gap-1.5
                                   text-[10px]
                                   text-white/35
                                 "
                               >
                                 <span className="truncate">
-                                  {
+                                  {displayBarcode(
                                     product.barcode
-                                  }
+                                  )}
                                 </span>
 
                                 <span>
                                   ·
                                 </span>
 
-                                <span
-                                  className={
-                                    stock <=
+                                {tipo ===
+                                "precio-libre" ? (
+                                  <span className="text-[#FFC61A]">
+                                    Importe libre
+                                  </span>
+                                ) : tipo ===
+                                  "peso" ? (
+                                  <span
+                                    className={
+                                      stock <=
                                       5
-                                      ? "text-red-400"
-                                      : "text-emerald-400"
-                                  }
-                                >
-                                  Stock{" "}
-                                  {
-                                    stock
-                                  }
-                                </span>
+                                        ? "text-red-400"
+                                        : "text-emerald-400"
+                                    }
+                                  >
+                                    {formatQuantity(
+                                      stock
+                                    )}{" "}
+                                    kg disponibles
+                                  </span>
+                                ) : (
+                                  <span
+                                    className={
+                                      stock <=
+                                      5
+                                        ? "text-red-400"
+                                        : "text-emerald-400"
+                                    }
+                                  >
+                                    Stock{" "}
+                                    {
+                                      stock
+                                    }
+                                  </span>
+                                )}
                               </div>
                             </div>
 
@@ -829,9 +1553,12 @@ export default function Vender({
                                   text-[#FFC61A]
                                 "
                               >
-                                {money(
-                                  product.price
-                                )}
+                                {tipo ===
+                                "precio-libre"
+                                  ? "Libre"
+                                  : money(
+                                      product.price
+                                    )}
                               </span>
 
                               <span
@@ -843,7 +1570,10 @@ export default function Vender({
                                   text-white/25
                                 "
                               >
-                                Agregar
+                                {tipo ===
+                                "peso"
+                                  ? "por kg"
+                                  : "Agregar"}
                               </span>
                             </div>
 
@@ -883,7 +1613,6 @@ export default function Vender({
         "
       >
         <div className="p-4 sm:p-5">
-
           {/* CABECERA */}
 
           <div
@@ -957,7 +1686,8 @@ export default function Vender({
               "
             >
               {itemCount}{" "}
-              {itemCount === 1
+              {itemCount ===
+              1
                 ? "ítem"
                 : "ítems"}
             </span>
@@ -972,9 +1702,12 @@ export default function Vender({
             "
           />
 
-          {/* TICKET VACÍO */}
+          {/* =================================================
+              TICKET VACÍO
+          ================================================= */}
 
-          {cart.length === 0 ? (
+          {cart.length ===
+          0 ? (
             <div
               className="
                 flex
@@ -1027,210 +1760,337 @@ export default function Vender({
           ) : (
             <div>
               <AnimatePresence
-                initial={false}
+                initial={
+                  false
+                }
               >
                 {cart.map(
                   (
                     item,
                     index
-                  ) => (
-                    <motion.div
-                      key={
-                        item.barcode
-                      }
-                      layout
-                      initial={{
-                        opacity: 0,
-                        height: 0,
-                        y: 5,
-                      }}
-                      animate={{
-                        opacity: 1,
-                        height:
-                          "auto",
-                        y: 0,
-                      }}
-                      exit={{
-                        opacity: 0,
-                        height: 0,
-                        y: -4,
-                      }}
-                      transition={{
-                        duration:
-                          0.18,
-                      }}
-                      className="
-                        overflow-hidden
-                        border-b
-                        border-black/8
-                        py-3
-                        last:border-b-0
-                      "
-                    >
-                      <div
+                  ) => {
+                    const tipo =
+                      getTipoVenta(
+                        item
+                      );
+
+                    const subtotal =
+                      getItemSubtotal(
+                        item
+                      );
+
+                    return (
+                      <motion.div
+                        key={
+                          item.cartLineId ||
+                          `${item.barcode}-${index}`
+                        }
+                        layout
+                        initial={{
+                          opacity:
+                            0,
+                          height:
+                            0,
+                          y: 5,
+                        }}
+                        animate={{
+                          opacity:
+                            1,
+                          height:
+                            "auto",
+                          y: 0,
+                        }}
+                        exit={{
+                          opacity:
+                            0,
+                          height:
+                            0,
+                          y: -4,
+                        }}
+                        transition={{
+                          duration:
+                            0.18,
+                        }}
                         className="
-                          flex
-                          items-center
-                          gap-2.5
+                          overflow-hidden
+                          border-b
+                          border-black/8
+                          py-3
+                          last:border-b-0
                         "
                       >
-                        <div
-                          className="
-                            min-w-0
-                            flex-1
-                          "
-                        >
-                          <p
-                            className="
-                              truncate
-                              text-sm
-                              font-extrabold
-                              text-[#111318]
-                            "
-                          >
-                            {
-                              item.name
-                            }
-                          </p>
-
-                          <p
-                            className="
-                              mt-0.5
-                              text-[10px]
-                              font-semibold
-                              text-black/40
-                            "
-                          >
-                            {money(
-                              item.price
-                            )}{" "}
-                            c/u
-                          </p>
-                        </div>
-
-                        {/* CANTIDAD */}
+                        {/* ===========================================
+                            PRIMERA FILA
+                        =========================================== */}
 
                         <div
                           className="
                             flex
-                            shrink-0
-                            items-center
-                            gap-1.5
+                            items-start
+                            gap-3
                           "
                         >
-                          <button
-                            type="button"
-                            aria-label={`Restar una unidad de ${item.name}`}
-                            onClick={() =>
-                              changeCartQty(
-                                index,
-                                -1
-                              )
-                            }
+                          <div
                             className="
                               grid
-                              h-8
-                              w-8
+                              h-9
+                              w-9
+                              shrink-0
                               place-items-center
                               rounded-xl
-                              border
-                              border-black/10
-                              bg-[#F4F5F7]
-                              text-[#111318]
-                              transition
-                              hover:bg-[#EDEEF1]
-                              active:scale-[0.96]
+                              bg-[#FFF5CC]
+                              text-[#9A7100]
                             "
                           >
-                            <MinusIcon className="h-3.5 w-3.5" />
-                          </button>
+                            <ProductTypeIcon
+                              tipo={
+                                tipo
+                              }
+                              className="h-4 w-4"
+                            />
+                          </div>
 
-                          <span
+                          <div
                             className="
-                              min-w-[24px]
-                              text-center
+                              min-w-0
+                              flex-1
+                            "
+                          >
+                            <p
+                              className="
+                                truncate
+                                text-sm
+                                font-extrabold
+                                text-[#111318]
+                              "
+                            >
+                              {
+                                item.name
+                              }
+                            </p>
+
+                            {tipo ===
+                            "peso" ? (
+                              <p
+                                className="
+                                  mt-0.5
+                                  text-[10px]
+                                  font-semibold
+                                  text-black/40
+                                "
+                              >
+                                {formatQuantity(
+                                  item.qty
+                                )}{" "}
+                                kg ×{" "}
+                                {money(
+                                  item.price
+                                )}
+                                /kg
+                              </p>
+                            ) : tipo ===
+                              "precio-libre" ? (
+                              <p
+                                className="
+                                  mt-0.5
+                                  text-[10px]
+                                  font-semibold
+                                  text-black/40
+                                "
+                              >
+                                Importe manual
+                              </p>
+                            ) : (
+                              <p
+                                className="
+                                  mt-0.5
+                                  text-[10px]
+                                  font-semibold
+                                  text-black/40
+                                "
+                              >
+                                {money(
+                                  item.price
+                                )}{" "}
+                                c/u
+                              </p>
+                            )}
+                          </div>
+
+                          <div
+                            className="
+                              shrink-0
+                              text-right
                               text-sm
                               font-black
                               text-[#111318]
                             "
                           >
-                            {
-                              item.qty
-                            }
-                          </span>
+                            {money(
+                              subtotal
+                            )}
+                          </div>
 
                           <button
                             type="button"
-                            aria-label={`Sumar una unidad de ${item.name}`}
+                            aria-label={`Eliminar ${item.name}`}
                             onClick={() =>
-                              changeCartQty(
-                                index,
-                                1
+                              removeFromCart(
+                                index
                               )
                             }
                             className="
                               grid
                               h-8
                               w-8
+                              shrink-0
                               place-items-center
                               rounded-xl
-                              bg-[#FFC61A]
-                              text-black
+                              text-red-500
                               transition
-                              hover:bg-[#FFD248]
+                              hover:bg-red-50
                               active:scale-[0.96]
                             "
                           >
-                            <PlusIcon className="h-3.5 w-3.5" />
+                            <TrashIcon className="h-4 w-4" />
                           </button>
                         </div>
 
-                        {/* SUBTOTAL */}
+                        {/* ===========================================
+                            UNIDADES
+                        =========================================== */}
 
-                        <div
-                          className="
-                            min-w-[78px]
-                            shrink-0
-                            text-right
-                            text-sm
-                            font-black
-                            text-[#111318]
-                          "
-                        >
-                          {money(
-                            item.price *
-                            item.qty
-                          )}
-                        </div>
+                        {tipo ===
+                          "unidad" && (
+                          <div
+                            className="
+                              mt-2.5
+                              flex
+                              items-center
+                              justify-end
+                              gap-1.5
+                            "
+                          >
+                            <button
+                              type="button"
+                              aria-label={`Restar una unidad de ${item.name}`}
+                              onClick={() =>
+                                changeCartQty(
+                                  index,
+                                  -1
+                                )
+                              }
+                              className="
+                                grid
+                                h-8
+                                w-8
+                                place-items-center
+                                rounded-xl
+                                border
+                                border-black/10
+                                bg-[#F4F5F7]
+                                text-[#111318]
+                                transition
+                                hover:bg-[#EDEEF1]
+                                active:scale-[0.96]
+                              "
+                            >
+                              <MinusIcon className="h-3.5 w-3.5" />
+                            </button>
 
-                        {/* ELIMINAR */}
+                            <span
+                              className="
+                                min-w-[34px]
+                                text-center
+                                text-sm
+                                font-black
+                                text-[#111318]
+                              "
+                            >
+                              {
+                                item.qty
+                              }
+                            </span>
 
-                        <button
-                          type="button"
-                          aria-label={`Eliminar ${item.name}`}
-                          onClick={() =>
-                            removeFromCart(
-                              index
-                            )
-                          }
-                          className="
-                            grid
-                            h-8
-                            w-8
-                            shrink-0
-                            place-items-center
-                            rounded-xl
-                            text-red-500
-                            transition
-                            hover:bg-red-50
-                            active:scale-[0.96]
-                          "
-                        >
-                          <TrashIcon className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </motion.div>
-                  )
+                            <button
+                              type="button"
+                              aria-label={`Sumar una unidad de ${item.name}`}
+                              onClick={() =>
+                                changeCartQty(
+                                  index,
+                                  1
+                                )
+                              }
+                              className="
+                                grid
+                                h-8
+                                w-8
+                                place-items-center
+                                rounded-xl
+                                bg-[#FFC61A]
+                                text-black
+                                transition
+                                hover:bg-[#FFD248]
+                                active:scale-[0.96]
+                              "
+                            >
+                              <PlusIcon className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        )}
+
+                        {/* ===========================================
+                            PESO / PRECIO LIBRE
+                        =========================================== */}
+
+                        {tipo !==
+                          "unidad" && (
+                          <div
+                            className="
+                              mt-2.5
+                              flex
+                              justify-end
+                            "
+                          >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                editarItem(
+                                  item,
+                                  index
+                                )
+                              }
+                              className="
+                                inline-flex
+                                items-center
+                                gap-1.5
+                                rounded-xl
+                                border
+                                border-black/10
+                                bg-[#F4F5F7]
+                                px-3
+                                py-2
+                                text-[10px]
+                                font-extrabold
+                                text-black/55
+                                transition
+                                hover:bg-[#EDEEF1]
+                                hover:text-black
+                                active:scale-[0.98]
+                              "
+                            >
+                              <EditIcon className="h-3.5 w-3.5" />
+
+                              {tipo ===
+                              "peso"
+                                ? "Editar peso"
+                                : "Editar importe"}
+                            </button>
+                          </div>
+                        )}
+                      </motion.div>
+                    );
+                  }
                 )}
               </AnimatePresence>
             </div>
@@ -1276,24 +2136,31 @@ export default function Vender({
                 "
               >
                 {itemCount}{" "}
-                {itemCount === 1
-                  ? "unidad"
-                  : "unidades"}
+                {itemCount ===
+                1
+                  ? "producto"
+                  : "productos"}
               </span>
             </div>
 
             <motion.div
-              key={total}
+              key={
+                total
+              }
               initial={{
-                scale: 1.06,
+                scale:
+                  1.06,
               }}
               animate={{
                 scale: 1,
               }}
               transition={{
-                type: "spring",
-                stiffness: 400,
-                damping: 24,
+                type:
+                  "spring",
+                stiffness:
+                  400,
+                damping:
+                  24,
               }}
               className="
                 rounded-2xl
@@ -1307,10 +2174,11 @@ export default function Vender({
                 text-black
               "
             >
-              {money(total)}
+              {money(
+                total
+              )}
             </motion.div>
           </div>
-
         </div>
       </section>
 
@@ -1325,7 +2193,9 @@ export default function Vender({
           cart.length === 0
         }
         onClick={() =>
-          setPayOpen(true)
+          setPayOpen(
+            true
+          )
         }
         className="
           mt-4
@@ -1352,17 +2222,22 @@ export default function Vender({
         <PaymentIcon className="h-4 w-4" />
 
         Cobrar venta ·{" "}
-        {money(total)}
+        {money(
+          total
+        )}
       </button>
 
       {/* =====================================================
           VACIAR
       ===================================================== */}
 
-      {cart.length > 0 && (
+      {cart.length >
+        0 && (
         <button
           type="button"
-          onClick={clearCart}
+          onClick={
+            clearCart
+          }
           className="
             mt-2.5
             inline-flex
@@ -1396,17 +2271,17 @@ export default function Vender({
       ===================================================== */}
 
       <Scanner
-        open={scanOpen}
-        onClose={() =>
-          setScanOpen(false)
+        open={
+          scanOpen
         }
-        onResult={(value) => {
-          setScanOpen(false);
-
-          addToCartByBarcode(
-            value
-          );
-        }}
+        onClose={() =>
+          setScanOpen(
+            false
+          )
+        }
+        onResult={
+          handleScannerResult
+        }
       />
 
       {/* =====================================================
@@ -1414,10 +2289,16 @@ export default function Vender({
       ===================================================== */}
 
       <PaymentModal
-        open={payOpen}
-        total={total}
+        open={
+          payOpen
+        }
+        total={
+          total
+        }
         onClose={() =>
-          setPayOpen(false)
+          setPayOpen(
+            false
+          )
         }
         onConfirm={(
           payment
@@ -1434,7 +2315,667 @@ export default function Vender({
           }
         }}
       />
+
+      {/* =====================================================
+          MODAL PESO / IMPORTE LIBRE
+      ===================================================== */}
+
+      <Modal
+        open={
+          !!saleProduct
+        }
+        onClose={
+          closeSaleModal
+        }
+        title={
+          modalTipo ===
+          "peso"
+            ? "Venta por peso"
+            : "Importe de venta"
+        }
+      >
+        {saleProduct && (
+          <div>
+            {/* PRODUCTO */}
+
+            <div
+              className="
+                mb-4
+                overflow-hidden
+                rounded-[22px]
+                bg-white
+                text-[#111318]
+              "
+            >
+              <div className="p-4">
+                <div
+                  className="
+                    flex
+                    items-start
+                    gap-3
+                  "
+                >
+                  <div
+                    className="
+                      grid
+                      h-11
+                      w-11
+                      shrink-0
+                      place-items-center
+                      rounded-2xl
+                      bg-[#FFF5CC]
+                      text-[#9A7100]
+                    "
+                  >
+                    <ProductTypeIcon
+                      tipo={
+                        modalTipo
+                      }
+                      className="h-5 w-5"
+                    />
+                  </div>
+
+                  <div
+                    className="
+                      min-w-0
+                      flex-1
+                    "
+                  >
+                    <p
+                      className="
+                        text-[10px]
+                        font-extrabold
+                        uppercase
+                        tracking-[0.16em]
+                        text-[#B98700]
+                      "
+                    >
+                      {editingIndex !==
+                      null
+                        ? "Editar producto"
+                        : "Agregar al ticket"}
+                    </p>
+
+                    <h3
+                      className="
+                        mt-1
+                        truncate
+                        text-lg
+                        font-black
+                        text-[#111318]
+                      "
+                    >
+                      {
+                        saleProduct.name
+                      }
+                    </h3>
+
+                    <p
+                      className="
+                        mt-1
+                        text-xs
+                        font-semibold
+                        text-black/40
+                      "
+                    >
+                      {modalTipo ===
+                      "peso"
+                        ? `${money(
+                            modalPrice
+                          )} por kg`
+                        : "Importe definido al vender"}
+                    </p>
+                  </div>
+                </div>
+
+                <div
+                  className="
+                    mt-4
+                    h-[3px]
+                    rounded-full
+                    bg-[#FFC61A]
+                  "
+                />
+              </div>
+            </div>
+
+            {/* ===============================================
+                PESO
+            =============================================== */}
+
+            {modalTipo ===
+              "peso" && (
+              <>
+                <div
+                  className="
+                    mb-3
+                    flex
+                    items-center
+                    justify-between
+                    gap-3
+                    rounded-2xl
+                    border
+                    border-white/10
+                    bg-[#151A22]
+                    px-3.5
+                    py-3
+                  "
+                >
+                  <div
+                    className="
+                      flex
+                      items-center
+                      gap-2.5
+                    "
+                  >
+                    <div
+                      className="
+                        grid
+                        h-9
+                        w-9
+                        place-items-center
+                        rounded-xl
+                        bg-white/5
+                        text-[#FFC61A]
+                      "
+                    >
+                      <ScaleIcon className="h-4 w-4" />
+                    </div>
+
+                    <div>
+                      <span
+                        className="
+                          block
+                          text-[9px]
+                          font-bold
+                          uppercase
+                          tracking-[0.1em]
+                          text-white/35
+                        "
+                      >
+                        Disponible
+                      </span>
+
+                      <span
+                        className="
+                          mt-0.5
+                          block
+                          text-sm
+                          font-black
+                          text-white
+                        "
+                      >
+                        {formatQuantity(
+                          modalStock
+                        )}{" "}
+                        kg
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="text-right">
+                    <span
+                      className="
+                        block
+                        text-[9px]
+                        font-bold
+                        uppercase
+                        tracking-[0.1em]
+                        text-white/35
+                      "
+                    >
+                      Precio
+                    </span>
+
+                    <span
+                      className="
+                        mt-0.5
+                        block
+                        text-sm
+                        font-black
+                        text-[#FFC61A]
+                      "
+                    >
+                      {money(
+                        modalPrice
+                      )}
+                      /kg
+                    </span>
+                  </div>
+                </div>
+
+                {/* PESO */}
+
+                <div className="mb-4">
+                  <label
+                    htmlFor="sale-weight"
+                    className="
+                      mb-1.5
+                      block
+                      text-xs
+                      font-bold
+                      text-white/55
+                    "
+                  >
+                    Peso
+                  </label>
+
+                  <div className="relative">
+                    <ScaleIcon
+                      className="
+                        pointer-events-none
+                        absolute
+                        left-4
+                        top-1/2
+                        h-4
+                        w-4
+                        -translate-y-1/2
+                        text-white/30
+                      "
+                    />
+
+                    <input
+                      id="sale-weight"
+                      type="number"
+                      min="0"
+                      step="0.001"
+                      inputMode="decimal"
+                      autoFocus
+                      value={
+                        weightInput
+                      }
+                      onChange={(
+                        event
+                      ) =>
+                        handleWeightChange(
+                          event.target
+                            .value
+                        )
+                      }
+                      placeholder="Ej: 0.650"
+                      className="
+                        w-full
+                        rounded-2xl
+                        border
+                        border-white/10
+                        bg-[#171B23]
+                        py-3.5
+                        pl-11
+                        pr-12
+                        text-lg
+                        font-black
+                        text-white
+                        outline-none
+                        transition
+                        placeholder:text-white/20
+                        focus:border-[#FFC61A]
+                        focus:ring-2
+                        focus:ring-[#FFC61A]/10
+                      "
+                    />
+
+                    <span
+                      className="
+                        pointer-events-none
+                        absolute
+                        right-4
+                        top-1/2
+                        -translate-y-1/2
+                        text-xs
+                        font-extrabold
+                        text-white/35
+                      "
+                    >
+                      kg
+                    </span>
+                  </div>
+                </div>
+
+                {/* SEPARADOR */}
+
+                <div
+                  className="
+                    mb-4
+                    flex
+                    items-center
+                    gap-3
+                  "
+                >
+                  <div className="h-px flex-1 bg-white/10" />
+
+                  <span
+                    className="
+                      text-[9px]
+                      font-extrabold
+                      uppercase
+                      tracking-[0.14em]
+                      text-white/25
+                    "
+                  >
+                    o ingresar importe
+                  </span>
+
+                  <div className="h-px flex-1 bg-white/10" />
+                </div>
+              </>
+            )}
+
+            {/* ===============================================
+                IMPORTE
+            =============================================== */}
+
+            <div className="mb-4">
+              <label
+                htmlFor="sale-amount"
+                className="
+                  mb-1.5
+                  block
+                  text-xs
+                  font-bold
+                  text-white/55
+                "
+              >
+                {modalTipo ===
+                "peso"
+                  ? "Importe"
+                  : "Importe a cobrar"}
+              </label>
+
+              <div className="relative">
+                <span
+                  className="
+                    pointer-events-none
+                    absolute
+                    left-4
+                    top-1/2
+                    -translate-y-1/2
+                    text-base
+                    font-black
+                    text-[#FFC61A]
+                  "
+                >
+                  $
+                </span>
+
+                <input
+                  id="sale-amount"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  autoFocus={
+                    modalTipo ===
+                    "precio-libre"
+                  }
+                  value={
+                    amountInput
+                  }
+                  onChange={(
+                    event
+                  ) =>
+                    handleAmountChange(
+                      event.target
+                        .value
+                    )
+                  }
+                  onKeyDown={(
+                    event
+                  ) => {
+                    if (
+                      event.key ===
+                      "Enter"
+                    ) {
+                      confirmarProductoEspecial();
+                    }
+                  }}
+                  placeholder="0.00"
+                  className="
+                    w-full
+                    rounded-2xl
+                    border
+                    border-white/10
+                    bg-[#171B23]
+                    py-3.5
+                    pl-9
+                    pr-4
+                    text-lg
+                    font-black
+                    text-white
+                    outline-none
+                    transition
+                    placeholder:text-white/20
+                    focus:border-[#FFC61A]
+                    focus:ring-2
+                    focus:ring-[#FFC61A]/10
+                  "
+                />
+              </div>
+            </div>
+
+            {/* ===============================================
+                RESULTADO PESO
+            =============================================== */}
+
+            {modalTipo ===
+              "peso" && (
+              <div
+                className={
+                  `
+                    mb-4
+                    grid
+                    grid-cols-2
+                    gap-2.5
+                    rounded-[22px]
+                    border
+                    p-3.5
+                  ` +
+                  (
+                    exceedsStock
+                      ? `
+                        border-red-400/25
+                        bg-red-500/10
+                      `
+                      : `
+                        border-white/10
+                        bg-[#151A22]
+                      `
+                  )
+                }
+              >
+                <SaleStat
+                  label="Peso"
+                  value={`${formatQuantity(
+                    modalWeight
+                  )} kg`}
+                  danger={
+                    exceedsStock
+                  }
+                />
+
+                <SaleStat
+                  label="Subtotal"
+                  value={money(
+                    modalAmount
+                  )}
+                  highlight={
+                    !exceedsStock
+                  }
+                  danger={
+                    exceedsStock
+                  }
+                />
+              </div>
+            )}
+
+            {exceedsStock && (
+              <div
+                className="
+                  mb-4
+                  rounded-2xl
+                  border
+                  border-red-400/20
+                  bg-red-500/10
+                  px-3.5
+                  py-3
+                  text-xs
+                  font-semibold
+                  text-red-200
+                "
+              >
+                El peso ingresado supera el stock disponible.
+              </div>
+            )}
+
+            {/* ===============================================
+                CONFIRMAR
+            =============================================== */}
+
+            <button
+              type="button"
+              disabled={
+                modalAmount <=
+                  0 ||
+                (
+                  modalTipo ===
+                    "peso" &&
+                  (
+                    modalWeight <=
+                      0 ||
+                    exceedsStock
+                  )
+                )
+              }
+              onClick={
+                confirmarProductoEspecial
+              }
+              className="
+                inline-flex
+                w-full
+                items-center
+                justify-center
+                gap-2
+                rounded-2xl
+                bg-[#FFC61A]
+                px-4
+                py-3.5
+                text-sm
+                font-extrabold
+                text-black
+                shadow-[0_12px_30px_rgba(255,198,26,0.18)]
+                transition
+                hover:bg-[#FFD248]
+                active:scale-[0.99]
+                disabled:cursor-not-allowed
+                disabled:opacity-40
+              "
+            >
+              {editingIndex !==
+              null ? (
+                <EditIcon className="h-4 w-4" />
+              ) : (
+                <PlusIcon className="h-4 w-4" />
+              )}
+
+              {editingIndex !==
+              null
+                ? "Guardar cambios"
+                : "Agregar al ticket"}
+            </button>
+          </div>
+        )}
+      </Modal>
     </div>
+  );
+}
+
+/* =========================================================
+   SALE STAT
+========================================================= */
+
+function SaleStat({
+  label,
+  value,
+  highlight = false,
+  danger = false,
+}) {
+  return (
+    <div className="text-center">
+      <span
+        className="
+          block
+          text-[9px]
+          font-bold
+          uppercase
+          tracking-[0.1em]
+          text-white/35
+        "
+      >
+        {label}
+      </span>
+
+      <span
+        className={
+          `
+            mt-1
+            block
+            truncate
+            text-base
+            font-black
+          ` +
+          (
+            danger
+              ? " text-red-400"
+              : highlight
+                ? " text-[#FFC61A]"
+                : " text-white"
+          )
+        }
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/* =========================================================
+   PRODUCT TYPE ICON
+========================================================= */
+
+function ProductTypeIcon({
+  tipo,
+  className = "",
+}) {
+  if (
+    tipo === "peso"
+  ) {
+    return (
+      <ScaleIcon
+        className={
+          className
+        }
+      />
+    );
+  }
+
+  if (
+    tipo ===
+    "precio-libre"
+  ) {
+    return (
+      <MoneyIcon
+        className={
+          className
+        }
+      />
+    );
+  }
+
+  return (
+    <BoxIcon
+      className={
+        className
+      }
+    />
   );
 }
 
@@ -1452,6 +2993,7 @@ function Banner({
     warning: {
       container:
         "border-[#FFC61A]/25 bg-[#FFC61A]/10 text-[#F3CD62]",
+
       icon:
         "bg-[#FFC61A]/15 text-[#FFC61A]",
     },
@@ -1459,6 +3001,7 @@ function Banner({
     danger: {
       container:
         "border-red-400/20 bg-red-500/10 text-red-200",
+
       icon:
         "bg-red-500/15 text-red-400",
     },
@@ -1491,13 +3034,17 @@ function Banner({
           ? 0
           : undefined
       }
-      onKeyDown={(e) => {
+      onKeyDown={(
+        event
+      ) => {
         if (
           onClick &&
-          (e.key ===
-            "Enter" ||
-            e.key ===
-            " ")
+          (
+            event.key ===
+              "Enter" ||
+            event.key ===
+              " "
+          )
         ) {
           onClick();
         }
@@ -1514,9 +3061,10 @@ function Banner({
         text-sm
         font-semibold
         ${style.container}
-        ${onClick
-          ? "cursor-pointer transition hover:brightness-110 active:scale-[0.995]"
-          : ""
+        ${
+          onClick
+            ? "cursor-pointer transition hover:brightness-110 active:scale-[0.995]"
+            : ""
         }
       `}
     >
@@ -1619,6 +3167,62 @@ function BoxIcon({
   );
 }
 
+function ScaleIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3v4" />
+      <path d="M5 7h14" />
+      <path d="m7 7-4 7h8L7 7Z" />
+      <path d="m17 7-4 7h8l-4-7Z" />
+      <path d="M12 7v13" />
+      <path d="M8 20h8" />
+    </svg>
+  );
+}
+
+function MoneyIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect
+        x="3"
+        y="5"
+        width="18"
+        height="14"
+        rx="2"
+      />
+      <circle
+        cx="12"
+        cy="12"
+        r="2.5"
+      />
+      <path d="M7 9h.01" />
+      <path d="M17 15h.01" />
+    </svg>
+  );
+}
+
 function BarcodeIcon({
   className = "",
 }) {
@@ -1657,6 +3261,7 @@ function CameraIcon({
       aria-hidden="true"
     >
       <path d="M5 7h3l1.5-2h5L16 7h3a2 2 0 0 1 2 2v9H3V9a2 2 0 0 1 2-2Z" />
+
       <circle
         cx="12"
         cy="13"
@@ -1721,6 +3326,26 @@ function PlusIcon({
     >
       <path d="M12 5v14" />
       <path d="M5 12h14" />
+    </svg>
+  );
+}
+
+function EditIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5Z" />
     </svg>
   );
 }
@@ -1839,6 +3464,7 @@ function ClockIcon({
         cy="12"
         r="9"
       />
+
       <path d="M12 7v5l3 2" />
     </svg>
   );

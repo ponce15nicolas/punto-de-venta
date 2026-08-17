@@ -1,33 +1,221 @@
 // src/pages/Historial.jsx
+//
 // Historial de cierres de caja.
+//
+// Compatible con:
+// - productos por unidad
+// - productos por peso
+// - productos con importe libre
 //
 // Incluye:
 // - resumen histórico
 // - detalle de cada turno
 // - diferencias de caja
 // - desglose por método de pago
+// - detalle de cada transacción
+// - productos vendidos dentro de cada ticket
 // - descarga PDF del turno cerrado
-// - detalle completo de transacciones dentro del PDF
+//
+// No requiere dependencias nuevas.
 
-import { useState } from "react";
+import {
+  useMemo,
+  useState,
+} from "react";
+
 import { motion } from "motion/react";
+
 import {
   money,
   fmtDate,
   fmtDateTime,
+  fmtTime,
 } from "../lib/format";
+
 import {
   downloadSessionPdf,
 } from "../lib/pdf";
+
 import Modal from "../components/Modal";
+
+/* =========================================================
+   MÉTODOS DE PAGO
+========================================================= */
 
 const METHOD_LABELS = {
   efectivo: "Efectivo",
-  transferencia:
-    "Transferencia",
+  transferencia: "Transferencia",
   qr: "QR",
   tarjeta: "Tarjeta",
 };
+
+/* =========================================================
+   HELPERS GENERALES
+========================================================= */
+
+function toNumber(
+  value,
+  fallback = 0
+) {
+  const number =
+    Number(value);
+
+  return Number.isFinite(number)
+    ? number
+    : fallback;
+}
+
+function roundMoney(value) {
+  return (
+    Math.round(
+      (
+        toNumber(value) +
+        Number.EPSILON
+      ) * 100
+    ) / 100
+  );
+}
+
+function roundQuantity(value) {
+  return (
+    Math.round(
+      (
+        toNumber(value) +
+        Number.EPSILON
+      ) * 1000
+    ) / 1000
+  );
+}
+
+function getTipoVenta(item) {
+  const tipo =
+    item?.tipoVenta;
+
+  if (
+    tipo === "peso" ||
+    tipo === "precio-libre"
+  ) {
+    return tipo;
+  }
+
+  /*
+   * Ventas antiguas que no tengan tipoVenta
+   * continúan considerándose por unidad.
+   */
+  return "unidad";
+}
+
+function formatQuantity(value) {
+  return roundQuantity(
+    value
+  ).toLocaleString(
+    "es-AR",
+    {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 3,
+    }
+  );
+}
+
+function getItemSubtotal(item) {
+  if (!item) {
+    return 0;
+  }
+
+  const storedSubtotal =
+    Number(
+      item.subtotal
+    );
+
+  if (
+    Number.isFinite(
+      storedSubtotal
+    )
+  ) {
+    return roundMoney(
+      storedSubtotal
+    );
+  }
+
+  return roundMoney(
+    toNumber(
+      item.qty
+    ) *
+      toNumber(
+        item.price
+      )
+  );
+}
+
+function getSaleItemCount(sale) {
+  if (
+    !Array.isArray(
+      sale?.items
+    )
+  ) {
+    return 0;
+  }
+
+  /*
+   * Cada línea cuenta como un producto.
+   *
+   * No sumamos qty porque 0,650 kg
+   * no representan 0,65 productos.
+   */
+  return sale.items.length;
+}
+
+function normalizePaymentMethod(
+  method
+) {
+  return METHOD_LABELS[
+    method
+  ]
+    ? method
+    : "efectivo";
+}
+
+function formatItemDetail(item) {
+  const tipoVenta =
+    getTipoVenta(
+      item
+    );
+
+  if (
+    tipoVenta === "peso"
+  ) {
+    return `${formatQuantity(
+      item?.qty
+    )} kg × ${money(
+      item?.price
+    )}/kg`;
+  }
+
+  if (
+    tipoVenta ===
+    "precio-libre"
+  ) {
+    return "Importe manual";
+  }
+
+  const qty =
+    Math.max(
+      0,
+      Math.trunc(
+        toNumber(
+          item?.qty
+        )
+      )
+    );
+
+  return `${qty} × ${money(
+    item?.price
+  )}`;
+}
+
+/* =========================================================
+   COMPONENTE
+========================================================= */
 
 export default function Historial({
   pos,
@@ -37,43 +225,132 @@ export default function Historial({
     setSelectedSession,
   ] = useState(null);
 
-  const closed =
-    pos.cashSessions
-      .filter(
-        (session) =>
-          session.status ===
-          "closed"
-      )
-      .slice()
-      .reverse();
+  /* =========================================================
+     DATOS SEGUROS
+  ========================================================= */
+
+  const cashSessions =
+    Array.isArray(
+      pos?.cashSessions
+    )
+      ? pos.cashSessions
+      : [];
+
+  const allSales =
+    Array.isArray(
+      pos?.sales
+    )
+      ? pos.sales
+      : [];
 
   /* =========================================================
-     TRANSACCIONES DEL TURNO SELECCIONADO
+     TURNOS CERRADOS
+  ========================================================= */
+
+  const closed =
+    useMemo(() => {
+      return cashSessions
+        .filter(
+          (session) =>
+            session?.status ===
+            "closed"
+        )
+        .slice()
+        .sort(
+          (a, b) => {
+            const aDate =
+              new Date(
+                a?.closeTime ||
+                  a?.openTime ||
+                  0
+              ).getTime();
+
+            const bDate =
+              new Date(
+                b?.closeTime ||
+                  b?.openTime ||
+                  0
+              ).getTime();
+
+            const safeA =
+              Number.isFinite(
+                aDate
+              )
+                ? aDate
+                : 0;
+
+            const safeB =
+              Number.isFinite(
+                bDate
+              )
+                ? bDate
+                : 0;
+
+            return (
+              safeB -
+              safeA
+            );
+          }
+        );
+    }, [
+      cashSessions,
+    ]);
+
+  /* =========================================================
+     VENTAS DEL TURNO SELECCIONADO
   ========================================================= */
 
   const selectedSales =
-    selectedSession
-      ? pos.sales
+    useMemo(() => {
+      if (
+        !selectedSession
+      ) {
+        return [];
+      }
+
+      return allSales
         .filter(
           (sale) =>
-            sale.sessionId ===
+            sale?.sessionId ===
             selectedSession.id
         )
         .slice()
-        .sort((a, b) => {
-          const aTime =
-            new Date(
-              a.timestamp
-            ).getTime();
+        .sort(
+          (a, b) => {
+            const aTime =
+              new Date(
+                a?.timestamp ||
+                  0
+              ).getTime();
 
-          const bTime =
-            new Date(
-              b.timestamp
-            ).getTime();
+            const bTime =
+              new Date(
+                b?.timestamp ||
+                  0
+              ).getTime();
 
-          return aTime - bTime;
-        })
-      : [];
+            return (
+              (
+                Number.isFinite(
+                  aTime
+                )
+                  ? aTime
+                  : 0
+              ) -
+              (
+                Number.isFinite(
+                  bTime
+                )
+                  ? bTime
+                  : 0
+              )
+            );
+          }
+        );
+    }, [
+      allSales,
+      selectedSession,
+    ]);
 
   /* =========================================================
      DESCARGAR PDF
@@ -88,22 +365,24 @@ export default function Historial({
 
     try {
       const sessionSales =
-        pos.sales.filter(
+        allSales.filter(
           (sale) =>
-            sale.sessionId ===
+            sale?.sessionId ===
             session.id
         );
 
       downloadSessionPdf({
         session,
+
         sales:
           sessionSales,
+
         shopName:
-          pos.shopName ||
+          pos?.shopName ||
           "Mi Negocio",
       });
 
-      pos.showToast?.(
+      pos?.showToast?.(
         "PDF descargado"
       );
     } catch (error) {
@@ -112,7 +391,7 @@ export default function Historial({
         error
       );
 
-      pos.showToast?.(
+      pos?.showToast?.(
         "No se pudo generar el PDF",
         true
       );
@@ -175,8 +454,7 @@ export default function Historial({
             text-white
           "
         >
-          Todavía no hay
-          turnos cerrados
+          Todavía no hay turnos cerrados
         </h2>
 
         <p
@@ -189,10 +467,7 @@ export default function Historial({
             text-white/45
           "
         >
-          Cuando cierres una
-          caja, el resumen del
-          turno aparecerá
-          automáticamente acá.
+          Cuando cierres una caja, el resumen del turno aparecerá automáticamente acá.
         </p>
       </div>
     );
@@ -203,49 +478,59 @@ export default function Historial({
   ========================================================= */
 
   const totalVentasHistoricas =
-    closed.reduce(
-      (
-        acc,
-        session
-      ) =>
-        acc +
-        Number(
-          session.totalSales ||
-          0
-        ),
-      0
+    roundMoney(
+      closed.reduce(
+        (
+          accumulator,
+          session
+        ) =>
+          accumulator +
+          toNumber(
+            session?.totalSales
+          ),
+        0
+      )
     );
 
   const totalTicketsHistoricos =
     closed.reduce(
       (
-        acc,
+        accumulator,
         session
       ) =>
-        acc +
-        Number(
-          session.salesCount ||
-          0
+        accumulator +
+        Math.max(
+          0,
+          Math.trunc(
+            toNumber(
+              session?.salesCount
+            )
+          )
         ),
       0
     );
 
   const totalDiferencia =
-    closed.reduce(
-      (
-        acc,
-        session
-      ) =>
-        acc +
-        Number(
-          session.diff || 0
-        ),
-      0
+    roundMoney(
+      closed.reduce(
+        (
+          accumulator,
+          session
+        ) =>
+          accumulator +
+          toNumber(
+            session?.diff
+          ),
+        0
+      )
     );
+
+  /* =========================================================
+     UI
+  ========================================================= */
 
   return (
     <div className="pb-3">
-
       {/* =====================================================
           RESUMEN
       ===================================================== */}
@@ -261,7 +546,6 @@ export default function Historial({
         "
       >
         <div className="p-4 sm:p-5">
-
           <div
             className="
               flex
@@ -303,10 +587,7 @@ export default function Historial({
                   text-black/45
                 "
               >
-                Revisá los
-                turnos cerrados
-                y descargá sus
-                reportes.
+                Revisá los turnos cerrados y descargá sus reportes.
               </p>
             </div>
 
@@ -377,7 +658,7 @@ export default function Historial({
       </section>
 
       {/* =====================================================
-          CABECERA DEL LISTADO
+          CABECERA LISTADO
       ===================================================== */}
 
       <div
@@ -416,6 +697,7 @@ export default function Historial({
 
         <span
           className="
+            shrink-0
             rounded-full
             border
             border-white/10
@@ -428,7 +710,8 @@ export default function Historial({
           "
         >
           {closed.length}{" "}
-          {closed.length === 1
+          {closed.length ===
+          1
             ? "turno"
             : "turnos"}
         </span>
@@ -446,7 +729,8 @@ export default function Historial({
           ) => (
             <SessionCard
               key={
-                session.id
+                session.id ||
+                `${session.openTime}-${index}`
               }
               session={
                 session
@@ -470,7 +754,9 @@ export default function Historial({
 
       <Modal
         open={
-          !!selectedSession
+          Boolean(
+            selectedSession
+          )
         }
         onClose={() =>
           setSelectedSession(
@@ -509,8 +795,8 @@ function SessionCard({
   onClick,
 }) {
   const diff =
-    Number(
-      session.diff || 0
+    roundMoney(
+      session?.diff
     );
 
   const diffTone =
@@ -545,7 +831,9 @@ function SessionCard({
             0.2
           ),
       }}
-      onClick={onClick}
+      onClick={
+        onClick
+      }
       className="
         group
         w-full
@@ -570,8 +858,14 @@ function SessionCard({
           gap-3
         "
       >
-        <div className="flex min-w-0 items-center gap-3">
-
+        <div
+          className="
+            flex
+            min-w-0
+            items-center
+            gap-3
+          "
+        >
           <div
             className="
               grid
@@ -597,7 +891,7 @@ function SessionCard({
               "
             >
               {fmtDate(
-                session.openTime
+                session?.openTime
               )}
             </p>
 
@@ -611,11 +905,11 @@ function SessionCard({
               "
             >
               {getTime(
-                session.openTime
+                session?.openTime
               )}
               {" - "}
               {getTime(
-                session.closeTime
+                session?.closeTime
               )}
             </p>
           </div>
@@ -639,15 +933,21 @@ function SessionCard({
         <MiniStat
           label="Ventas"
           value={money(
-            session.totalSales
+            session?.totalSales
           )}
         />
 
         <MiniStat
           label="Tickets"
           value={
-            session.salesCount ??
-            0
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  session?.salesCount
+                )
+              )
+            )
           }
         />
 
@@ -696,7 +996,7 @@ function SessionCard({
 }
 
 /* =========================================================
-   DETALLE
+   DETALLE DEL TURNO
 ========================================================= */
 
 function SessionDetail({
@@ -705,8 +1005,8 @@ function SessionDetail({
   onDownload,
 }) {
   const diff =
-    Number(
-      session.diff || 0
+    roundMoney(
+      session?.diff
     );
 
   const totals =
@@ -715,10 +1015,24 @@ function SessionDetail({
       sales
     );
 
+  const totalProductLines =
+    sales.reduce(
+      (
+        accumulator,
+        sale
+      ) =>
+        accumulator +
+        getSaleItemCount(
+          sale
+        ),
+      0
+    );
+
   return (
     <div>
-
-      {/* CABECERA */}
+      {/* =====================================================
+          CABECERA
+      ===================================================== */}
 
       <div
         className="
@@ -760,7 +1074,7 @@ function SessionDetail({
                 "
               >
                 {fmtDate(
-                  session.openTime
+                  session?.openTime
                 )}
               </h3>
 
@@ -773,11 +1087,11 @@ function SessionDetail({
                 "
               >
                 {getTime(
-                  session.openTime
+                  session?.openTime
                 )}
                 {" - "}
                 {getTime(
-                  session.closeTime
+                  session?.closeTime
                 )}
               </p>
             </div>
@@ -809,20 +1123,22 @@ function SessionDetail({
         </div>
       </div>
 
-      {/* ESTADÍSTICAS */}
+      {/* =====================================================
+          ESTADÍSTICAS
+      ===================================================== */}
 
       <div className="grid grid-cols-2 gap-2.5">
         <DarkStat
           label="Apertura"
           value={money(
-            session.openAmount
+            session?.openAmount
           )}
         />
 
         <DarkStat
           label="Ventas"
           value={money(
-            session.totalSales
+            session?.totalSales
           )}
           highlight
         />
@@ -830,22 +1146,29 @@ function SessionDetail({
         <DarkStat
           label="Tickets"
           value={
-            session.salesCount ??
+            session?.salesCount ??
             sales.length
+          }
+        />
+
+        <DarkStat
+          label="Productos"
+          value={
+            totalProductLines
           }
         />
 
         <DarkStat
           label="Esperado"
           value={money(
-            session.expectedAmount
+            session?.expectedAmount
           )}
         />
 
         <DarkStat
           label="Contado"
           value={money(
-            session.counted
+            session?.counted
           )}
         />
 
@@ -864,13 +1187,19 @@ function SessionDetail({
         />
       </div>
 
-      {/* RESULTADO */}
+      {/* =====================================================
+          RESULTADO
+      ===================================================== */}
 
       <DifferenceCard
-        diff={diff}
+        diff={
+          diff
+        }
       />
 
-      {/* MÉTODOS DE PAGO */}
+      {/* =====================================================
+          MÉTODOS DE PAGO
+      ===================================================== */}
 
       <div className="mt-4">
         <p
@@ -895,11 +1224,15 @@ function SessionDetail({
               label,
             ]) => (
               <DarkStat
-                key={method}
-                label={label}
+                key={
+                  method
+                }
+                label={
+                  label
+                }
                 value={money(
                   totals[
-                  method
+                    method
                   ]
                 )}
                 highlight={
@@ -912,7 +1245,127 @@ function SessionDetail({
         </div>
       </div>
 
-      {/* INFORMACIÓN PDF */}
+      {/* =====================================================
+          TRANSACCIONES
+      ===================================================== */}
+
+      <div className="mt-5">
+        <div
+          className="
+            mb-2.5
+            flex
+            items-end
+            justify-between
+            gap-3
+          "
+        >
+          <div>
+            <p
+              className="
+                text-[9px]
+                font-extrabold
+                uppercase
+                tracking-[0.14em]
+                text-[#FFC61A]
+              "
+            >
+              Operaciones
+            </p>
+
+            <h4
+              className="
+                mt-1
+                text-sm
+                font-black
+                text-white
+              "
+            >
+              Transacciones del turno
+            </h4>
+          </div>
+
+          <span
+            className="
+              shrink-0
+              rounded-full
+              border
+              border-white/10
+              bg-white/5
+              px-2.5
+              py-1
+              text-[9px]
+              font-bold
+              text-white/40
+            "
+          >
+            {sales.length}{" "}
+            {sales.length === 1
+              ? "venta"
+              : "ventas"}
+          </span>
+        </div>
+
+        {sales.length ===
+        0 ? (
+          <div
+            className="
+              rounded-[20px]
+              border
+              border-white/10
+              bg-white/5
+              px-4
+              py-5
+              text-center
+            "
+          >
+            <ReceiptIcon
+              className="
+                mx-auto
+                h-5
+                w-5
+                text-white/20
+              "
+            />
+
+            <p
+              className="
+                mt-2
+                text-xs
+                font-semibold
+                text-white/35
+              "
+            >
+              No hay transacciones registradas para este turno.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {sales.map(
+              (
+                sale,
+                index
+              ) => (
+                <SaleDetailCard
+                  key={
+                    sale.id ||
+                    `${sale.timestamp}-${index}`
+                  }
+                  sale={
+                    sale
+                  }
+                  index={
+                    index
+                  }
+                />
+              )
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* =====================================================
+          INFORMACIÓN PDF
+      ===================================================== */}
 
       <div
         className="
@@ -963,17 +1416,18 @@ function SessionDetail({
           >
             El PDF incluye las{" "}
             {sales.length}{" "}
-            {sales.length === 1
+            {sales.length ===
+            1
               ? "transacción"
               : "transacciones"}
-            , productos, cantidades,
-            métodos de pago y
-            cierre de caja.
+            , productos, cantidades, métodos de pago y cierre de caja.
           </p>
         </div>
       </div>
 
-      {/* DESCARGAR */}
+      {/* =====================================================
+          DESCARGAR PDF
+      ===================================================== */}
 
       <button
         type="button"
@@ -1009,7 +1463,415 @@ function SessionDetail({
 }
 
 /* =========================================================
-   DESGLOSE
+   DETALLE DE UNA VENTA
+========================================================= */
+
+function SaleDetailCard({
+  sale,
+  index,
+}) {
+  const method =
+    normalizePaymentMethod(
+      sale?.payment?.method
+    );
+
+  const items =
+    Array.isArray(
+      sale?.items
+    )
+      ? sale.items
+      : [];
+
+  const change =
+    roundMoney(
+      sale?.payment?.change
+    );
+
+  const received =
+    roundMoney(
+      sale?.payment?.received
+    );
+
+  const total =
+    roundMoney(
+      sale?.total
+    );
+
+  return (
+    <motion.div
+      initial={{
+        opacity: 0,
+        y: 5,
+      }}
+      animate={{
+        opacity: 1,
+        y: 0,
+      }}
+      transition={{
+        delay:
+          Math.min(
+            index * 0.025,
+            0.15
+          ),
+      }}
+      className="
+        overflow-hidden
+        rounded-[20px]
+        border
+        border-white/10
+        bg-[#151A22]
+      "
+    >
+      {/* CABECERA */}
+
+      <div
+        className="
+          flex
+          items-start
+          justify-between
+          gap-3
+          border-b
+          border-white/[0.07]
+          px-3.5
+          py-3
+        "
+      >
+        <div
+          className="
+            flex
+            min-w-0
+            items-center
+            gap-2.5
+          "
+        >
+          <div
+            className="
+              grid
+              h-9
+              w-9
+              shrink-0
+              place-items-center
+              rounded-xl
+              bg-[#FFC61A]
+              text-black
+            "
+          >
+            <ReceiptIcon className="h-4 w-4" />
+          </div>
+
+          <div className="min-w-0">
+            <p
+              className="
+                text-xs
+                font-extrabold
+                text-white
+              "
+            >
+              Venta #{index + 1}
+            </p>
+
+            <p
+              className="
+                mt-0.5
+                text-[10px]
+                font-semibold
+                text-white/35
+              "
+            >
+              {getSafeTime(
+                sale?.timestamp
+              )}{" "}
+              ·{" "}
+              {
+                METHOD_LABELS[
+                  method
+                ]
+              }
+            </p>
+          </div>
+        </div>
+
+        <span
+          className="
+            shrink-0
+            text-sm
+            font-black
+            text-[#FFC61A]
+          "
+        >
+          {money(
+            total
+          )}
+        </span>
+      </div>
+
+      {/* PRODUCTOS */}
+
+      <div className="px-3.5">
+        {items.length ===
+        0 ? (
+          <div
+            className="
+              py-3
+              text-xs
+              text-white/35
+            "
+          >
+            Sin detalle de productos.
+          </div>
+        ) : (
+          items.map(
+            (
+              item,
+              itemIndex
+            ) => (
+              <SaleItemRow
+                key={
+                  `${sale?.id || index}-${item?.barcode || "item"}-${itemIndex}`
+                }
+                item={
+                  item
+                }
+              />
+            )
+          )
+        )}
+      </div>
+
+      {/* PAGO */}
+
+      {method ===
+        "efectivo" && (
+        <div
+          className="
+            grid
+            grid-cols-2
+            gap-2
+            border-t
+            border-white/[0.07]
+            px-3.5
+            py-3
+          "
+        >
+          <PaymentMiniStat
+            label="Recibido"
+            value={money(
+              received ||
+              total
+            )}
+          />
+
+          <PaymentMiniStat
+            label="Vuelto"
+            value={money(
+              change
+            )}
+            highlight={
+              change > 0
+            }
+          />
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+/* =========================================================
+   PRODUCTO DE UNA VENTA
+========================================================= */
+
+function SaleItemRow({
+  item,
+}) {
+  const tipoVenta =
+    getTipoVenta(
+      item
+    );
+
+  const subtotal =
+    getItemSubtotal(
+      item
+    );
+
+  return (
+    <div
+      className="
+        flex
+        items-center
+        gap-2.5
+        border-b
+        border-white/[0.06]
+        py-3
+        last:border-b-0
+      "
+    >
+      <div
+        className="
+          grid
+          h-8
+          w-8
+          shrink-0
+          place-items-center
+          rounded-xl
+          bg-white/5
+          text-[#FFC61A]
+        "
+      >
+        <ProductTypeIcon
+          tipo={
+            tipoVenta
+          }
+          className="h-3.5 w-3.5"
+        />
+      </div>
+
+      <div
+        className="
+          min-w-0
+          flex-1
+        "
+      >
+        <p
+          className="
+            truncate
+            text-xs
+            font-extrabold
+            text-white
+          "
+        >
+          {item?.name ||
+            "Producto"}
+        </p>
+
+        <p
+          className="
+            mt-0.5
+            truncate
+            text-[10px]
+            font-semibold
+            text-white/35
+          "
+        >
+          {formatItemDetail(
+            item
+          )}
+        </p>
+      </div>
+
+      <span
+        className="
+          shrink-0
+          text-xs
+          font-black
+          text-white
+        "
+      >
+        {money(
+          subtotal
+        )}
+      </span>
+    </div>
+  );
+}
+
+/* =========================================================
+   PRODUCT TYPE ICON
+========================================================= */
+
+function ProductTypeIcon({
+  tipo,
+  className = "",
+}) {
+  if (
+    tipo === "peso"
+  ) {
+    return (
+      <ScaleIcon
+        className={
+          className
+        }
+      />
+    );
+  }
+
+  if (
+    tipo ===
+    "precio-libre"
+  ) {
+    return (
+      <MoneyIcon
+        className={
+          className
+        }
+      />
+    );
+  }
+
+  return (
+    <BoxIcon
+      className={
+        className
+      }
+    />
+  );
+}
+
+/* =========================================================
+   PAYMENT MINI STAT
+========================================================= */
+
+function PaymentMiniStat({
+  label,
+  value,
+  highlight = false,
+}) {
+  return (
+    <div
+      className="
+        min-w-0
+        rounded-xl
+        bg-white/5
+        px-3
+        py-2
+      "
+    >
+      <span
+        className="
+          block
+          text-[8px]
+          font-bold
+          uppercase
+          tracking-[0.09em]
+          text-white/30
+        "
+      >
+        {label}
+      </span>
+
+      <span
+        className={
+          `
+            mt-0.5
+            block
+            truncate
+            text-xs
+            font-black
+          ` +
+          (
+            highlight
+              ? " text-[#FFC61A]"
+              : " text-white"
+          )
+        }
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/* =========================================================
+   DESGLOSE DE PAGOS
 ========================================================= */
 
 function getPaymentTotals(
@@ -1023,21 +1885,27 @@ function getPaymentTotals(
     tarjeta: 0,
   };
 
+  /*
+   * Preferimos el resumen guardado
+   * al cerrar la caja.
+   */
   if (
-    session.paymentTotals &&
+    session?.paymentTotals &&
     typeof session.paymentTotals ===
-    "object"
+      "object"
   ) {
     Object.keys(
       totals
     ).forEach(
       (method) => {
-        totals[method] =
-          Number(
+        totals[
+          method
+        ] =
+          roundMoney(
             session
               .paymentTotals[
-            method
-            ] || 0
+                method
+              ]
           );
       }
     );
@@ -1045,21 +1913,29 @@ function getPaymentTotals(
     return totals;
   }
 
+  /*
+   * Compatibilidad con cierres antiguos:
+   * reconstruimos el desglose desde ventas.
+   */
   sales.forEach(
     (sale) => {
       const method =
-        sale.payment?.method ||
-        "efectivo";
+        normalizePaymentMethod(
+          sale?.payment
+            ?.method
+        );
 
-      if (
-        totals[method] !==
-        undefined
-      ) {
-        totals[method] +=
-          Number(
-            sale.total || 0
-          );
-      }
+      totals[
+        method
+      ] =
+        roundMoney(
+          totals[
+            method
+          ] +
+            toNumber(
+              sale?.total
+            )
+        );
     }
   );
 
@@ -1074,7 +1950,9 @@ function DifferenceSummary({
   value,
 }) {
   const diff =
-    Number(value || 0);
+    roundMoney(
+      value
+    );
 
   return (
     <div
@@ -1090,20 +1968,22 @@ function DifferenceSummary({
           px-3.5
           py-3
         ` +
-        (diff === 0
-          ? `
-            border-emerald-200
-            bg-emerald-50
-          `
-          : diff > 0
+        (
+          diff === 0
             ? `
-            border-[#F2D675]
-            bg-[#FFF8DD]
-          `
-            : `
-            border-red-200
-            bg-red-50
-          `)
+              border-emerald-200
+              bg-emerald-50
+            `
+            : diff > 0
+              ? `
+                border-[#F2D675]
+                bg-[#FFF8DD]
+              `
+              : `
+                border-red-200
+                bg-red-50
+              `
+        )
       }
     >
       <div>
@@ -1144,11 +2024,13 @@ function DifferenceSummary({
             text-base
             font-black
           ` +
-          (diff === 0
-            ? "text-emerald-600"
-            : diff > 0
-              ? "text-[#9A7100]"
-              : "text-red-600")
+          (
+            diff === 0
+              ? " text-emerald-600"
+              : diff > 0
+                ? " text-[#9A7100]"
+                : " text-red-600"
+          )
         }
       >
         {formatDifference(
@@ -1179,20 +2061,22 @@ function DifferenceCard({
           px-3.5
           py-3
         ` +
-        (diff === 0
-          ? `
-            border-emerald-400/20
-            bg-emerald-500/10
-          `
-          : diff > 0
+        (
+          diff === 0
             ? `
-            border-[#FFC61A]/20
-            bg-[#FFC61A]/10
-          `
-            : `
-            border-red-400/20
-            bg-red-500/10
-          `)
+              border-emerald-400/20
+              bg-emerald-500/10
+            `
+            : diff > 0
+              ? `
+                border-[#FFC61A]/20
+                bg-[#FFC61A]/10
+              `
+              : `
+                border-red-400/20
+                bg-red-500/10
+              `
+        )
       }
     >
       <div
@@ -1205,14 +2089,17 @@ function DifferenceCard({
             place-items-center
             rounded-xl
           ` +
-          (diff === 0
-            ? "bg-emerald-500/15 text-emerald-400"
-            : diff > 0
-              ? "bg-[#FFC61A] text-black"
-              : "bg-red-500/15 text-red-400")
+          (
+            diff === 0
+              ? " bg-emerald-500/15 text-emerald-400"
+              : diff > 0
+                ? " bg-[#FFC61A] text-black"
+                : " bg-red-500/15 text-red-400"
+          )
         }
       >
-        {diff === 0 ? (
+        {diff ===
+        0 ? (
           <CheckIcon className="h-4 w-4" />
         ) : (
           <BalanceIcon className="h-4 w-4" />
@@ -1243,9 +2130,7 @@ function DifferenceCard({
             text-white/40
           "
         >
-          Diferencia entre el
-          efectivo esperado y
-          el contado.
+          Diferencia entre el efectivo esperado y el contado.
         </span>
       </div>
     </div>
@@ -1253,7 +2138,7 @@ function DifferenceCard({
 }
 
 /* =========================================================
-   STATS
+   SUMMARY STAT
 ========================================================= */
 
 function SummaryStat({
@@ -1305,9 +2190,11 @@ function SummaryStat({
             font-black
             sm:text-base
           ` +
-          (highlight
-            ? "text-[#9A7100]"
-            : "text-[#111318]")
+          (
+            highlight
+              ? " text-[#9A7100]"
+              : " text-[#111318]"
+          )
         }
       >
         {value}
@@ -1315,6 +2202,10 @@ function SummaryStat({
     </div>
   );
 }
+
+/* =========================================================
+   MINI STAT
+========================================================= */
 
 function MiniStat({
   label,
@@ -1360,12 +2251,24 @@ function MiniStat({
   );
 }
 
+/* =========================================================
+   DARK STAT
+========================================================= */
+
 function DarkStat({
   label,
   value,
   highlight = false,
   tone = "",
 }) {
+  const valueClass =
+    tone ||
+    (
+      highlight
+        ? "text-[#FFC61A]"
+        : "text-white"
+    );
+
   return (
     <div
       className="
@@ -1398,11 +2301,7 @@ function DarkStat({
           truncate
           text-base
           font-black
-          ${tone ||
-          (highlight
-            ? "text-[#FFC61A]"
-            : "text-white")
-          }
+          ${valueClass}
         `}
       >
         {value}
@@ -1412,28 +2311,52 @@ function DarkStat({
 }
 
 /* =========================================================
-   HELPERS
+   HELPERS DE FECHA
 ========================================================= */
 
 function getTime(value) {
+  if (!value) {
+    return "—";
+  }
+
+  /*
+   * fmtTime ya existe en format.js y
+   * evita depender del formato visual
+   * completo de fmtDateTime.
+   */
   const formatted =
-    fmtDateTime(value);
+    fmtTime(
+      value
+    );
 
   if (
-    !formatted ||
-    formatted === "—"
+    formatted &&
+    formatted !== "—"
+  ) {
+    return formatted;
+  }
+
+  /*
+   * Fallback para compatibilidad.
+   */
+  const full =
+    fmtDateTime(
+      value
+    );
+
+  if (
+    !full ||
+    full === "—"
   ) {
     return "—";
   }
 
-  const parts =
-    String(
-      formatted
-    ).split(" ");
+  return full;
+}
 
-  return (
-    parts[1] ||
-    formatted
+function getSafeTime(value) {
+  return getTime(
+    value
   );
 }
 
@@ -1441,7 +2364,9 @@ function formatDifference(
   diff
 ) {
   const value =
-    Number(diff || 0);
+    roundMoney(
+      diff
+    );
 
   if (value > 0) {
     return `+ ${money(
@@ -1451,7 +2376,9 @@ function formatDifference(
 
   if (value < 0) {
     return `- ${money(
-      Math.abs(value)
+      Math.abs(
+        value
+      )
     )}`;
   }
 
@@ -1498,6 +2425,7 @@ function CalendarIcon({
       aria-hidden="true"
     >
       <path d="M6 3v3M18 3v3M4 8h16" />
+
       <path d="M5 5h14a2 2 0 0 1 2 2v12H3V7a2 2 0 0 1 2-2Z" />
     </svg>
   );
@@ -1671,6 +2599,85 @@ function DocumentIcon({
       <path d="M14 2v5h5" />
       <path d="M9 12h6" />
       <path d="M9 16h6" />
+    </svg>
+  );
+}
+
+function BoxIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m4 7 8-4 8 4-8 4-8-4Z" />
+      <path d="M4 7v10l8 4 8-4V7" />
+      <path d="M12 11v10" />
+    </svg>
+  );
+}
+
+function ScaleIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3v4" />
+      <path d="M5 7h14" />
+      <path d="m7 7-4 7h8L7 7Z" />
+      <path d="m17 7-4 7h8l-4-7Z" />
+      <path d="M12 7v13" />
+      <path d="M8 20h8" />
+    </svg>
+  );
+}
+
+function MoneyIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect
+        x="3"
+        y="5"
+        width="18"
+        height="14"
+        rx="2"
+      />
+
+      <circle
+        cx="12"
+        cy="12"
+        r="2.5"
+      />
+
+      <path d="M7 9h.01" />
+      <path d="M17 15h.01" />
     </svg>
   );
 }

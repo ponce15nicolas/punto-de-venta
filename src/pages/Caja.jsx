@@ -1,12 +1,31 @@
 // src/pages/Caja.jsx
-// Pantalla de caja rediseñada con la misma identidad visual del POS.
-// Mantiene toda la lógica original de apertura, cierre, desglose de pagos
-// y ventas del turno. No requiere librerías de iconos externas.
+//
+// Pantalla de caja.
+//
+// Compatible con:
+// - productos por unidad
+// - productos por peso
+// - productos con importe libre
+//
+// No suma los kg como cantidad de ítems.
+// Cada línea vendida cuenta como un producto.
+//
+// No requiere dependencias nuevas.
 
 import { useState } from "react";
 import { motion } from "motion/react";
-import { money, fmtDateTime, fmtTime } from "../lib/format";
+
+import {
+  money,
+  fmtDateTime,
+  fmtTime,
+} from "../lib/format";
+
 import Modal from "../components/Modal";
+
+/* =========================================================
+   MÉTODOS DE PAGO
+========================================================= */
 
 const METHODS = [
   {
@@ -38,7 +57,81 @@ const METHOD_LABEL = {
   tarjeta: "Tarjeta",
 };
 
-export default function Caja({ pos }) {
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function toNumber(
+  value,
+  fallback = 0
+) {
+  const normalized =
+    typeof value === "string"
+      ? value.replace(",", ".")
+      : value;
+
+  const number =
+    Number(normalized);
+
+  return Number.isFinite(number)
+    ? number
+    : fallback;
+}
+
+function roundMoney(value) {
+  return (
+    Math.round(
+      (
+        toNumber(value) +
+        Number.EPSILON
+      ) * 100
+    ) / 100
+  );
+}
+
+function getSaleItemCount(
+  sale
+) {
+  if (
+    !Array.isArray(
+      sale?.items
+    )
+  ) {
+    return 0;
+  }
+
+  /*
+   * Importante:
+   *
+   * No sumamos qty.
+   *
+   * Una venta de 0,650 kg de tomate
+   * representa un producto del ticket,
+   * no 0,65 ítems.
+   */
+  return sale.items.length;
+}
+
+function getPaymentMethod(
+  sale
+) {
+  const method =
+    sale?.payment?.method;
+
+  return METHOD_LABEL[
+    method
+  ]
+    ? method
+    : "efectivo";
+}
+
+/* =========================================================
+   COMPONENTE
+========================================================= */
+
+export default function Caja({
+  pos,
+}) {
   const {
     openSession,
     openCashSession,
@@ -46,26 +139,54 @@ export default function Caja({ pos }) {
     paymentBreakdown,
   } = pos;
 
-  const [openAmount, setOpenAmount] = useState("");
-  const [closeModal, setCloseModal] = useState(false);
-  const [counted, setCounted] = useState("");
+  const [
+    openAmount,
+    setOpenAmount,
+  ] = useState("");
+
+  const [
+    closeModal,
+    setCloseModal,
+  ] = useState(false);
+
+  const [
+    counted,
+    setCounted,
+  ] = useState("");
 
   /* =========================================================
      CAJA CERRADA
   ========================================================= */
 
   if (!openSession) {
-    const montoInicial = parseFloat(openAmount);
+    const montoInicial =
+      toNumber(
+        openAmount,
+        NaN
+      );
+
     const puedeAbrir =
-      !isNaN(montoInicial) &&
+      Number.isFinite(
+        montoInicial
+      ) &&
       montoInicial >= 0;
 
-    const abrirCaja = () => {
-      if (!puedeAbrir) return;
+    function abrirCaja() {
+      if (!puedeAbrir) {
+        return;
+      }
 
-      openCashSession(montoInicial);
-      setOpenAmount("");
-    };
+      const ok =
+        openCashSession(
+          montoInicial
+        );
+
+      if (ok) {
+        setOpenAmount(
+          ""
+        );
+      }
+    }
 
     return (
       <div className="pb-3">
@@ -79,9 +200,17 @@ export default function Caja({ pos }) {
           "
         >
           <div className="p-4 sm:p-5">
-            {/* Cabecera */}
+            {/* ===============================================
+                CABECERA
+            =============================================== */}
 
-            <div className="flex items-start gap-3">
+            <div
+              className="
+                flex
+                items-start
+                gap-3
+              "
+            >
               <div
                 className="
                   grid
@@ -97,7 +226,12 @@ export default function Caja({ pos }) {
                 <RegisterIcon className="h-5 w-5" />
               </div>
 
-              <div className="min-w-0 flex-1">
+              <div
+                className="
+                  min-w-0
+                  flex-1
+                "
+              >
                 <p
                   className="
                     text-[10px]
@@ -144,7 +278,9 @@ export default function Caja({ pos }) {
               "
             />
 
-            {/* Monto inicial */}
+            {/* ===============================================
+                MONTO INICIAL
+            =============================================== */}
 
             <label
               htmlFor="open-cash-amount"
@@ -181,6 +317,7 @@ export default function Caja({ pos }) {
                 step="0.01"
                 min="0"
                 inputMode="decimal"
+                autoComplete="off"
                 className="
                   w-full
                   rounded-2xl
@@ -201,17 +338,35 @@ export default function Caja({ pos }) {
                   focus:ring-[#FFC61A]/15
                 "
                 placeholder="0.00"
-                value={openAmount}
-                onChange={(e) =>
-                  setOpenAmount(e.target.value)
+                value={
+                  openAmount
                 }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                onChange={(
+                  event
+                ) =>
+                  setOpenAmount(
+                    event.target
+                      .value
+                  )
+                }
+                onKeyDown={(
+                  event
+                ) => {
+                  if (
+                    event.key ===
+                    "Enter"
+                  ) {
+                    event.preventDefault();
+
                     abrirCaja();
                   }
                 }}
               />
             </div>
+
+            {/* ===============================================
+                INFORMACIÓN
+            =============================================== */}
 
             <div
               className="
@@ -242,15 +397,22 @@ export default function Caja({ pos }) {
                   text-black/45
                 "
               >
-                Este importe se utilizará para calcular el efectivo esperado al
-                cerrar el turno.
+                Este importe se utilizará para calcular el efectivo esperado al cerrar el turno.
               </p>
             </div>
 
+            {/* ===============================================
+                ABRIR
+            =============================================== */}
+
             <button
               type="button"
-              disabled={!puedeAbrir}
-              onClick={abrirCaja}
+              disabled={
+                !puedeAbrir
+              }
+              onClick={
+                abrirCaja
+              }
               className="
                 mt-4
                 inline-flex
@@ -274,6 +436,7 @@ export default function Caja({ pos }) {
               "
             >
               <UnlockIcon className="h-4 w-4" />
+
               Abrir caja
             </button>
           </div>
@@ -286,44 +449,132 @@ export default function Caja({ pos }) {
      CAJA ABIERTA
   ========================================================= */
 
-  const {
-    sessSales,
-    totals,
-    totalSales,
-  } = paymentBreakdown(openSession.id);
+  const breakdown =
+    paymentBreakdown(
+      openSession.id
+    ) || {};
+
+  const sessSales =
+    Array.isArray(
+      breakdown.sessSales
+    )
+      ? breakdown.sessSales
+      : [];
+
+  const totals =
+    breakdown.totals ||
+    {};
+
+  const totalSales =
+    roundMoney(
+      breakdown.totalSales
+    );
 
   const safeTotals = {
-    efectivo: Number(totals?.efectivo || 0),
-    transferencia: Number(totals?.transferencia || 0),
-    qr: Number(totals?.qr || 0),
-    tarjeta: Number(totals?.tarjeta || 0),
+    efectivo:
+      roundMoney(
+        totals.efectivo
+      ),
+
+    transferencia:
+      roundMoney(
+        totals.transferencia
+      ),
+
+    qr:
+      roundMoney(
+        totals.qr
+      ),
+
+    tarjeta:
+      roundMoney(
+        totals.tarjeta
+      ),
   };
 
   const openAmountNumber =
-    Number(openSession.openAmount || 0);
+    roundMoney(
+      openSession.openAmount
+    );
 
+  /*
+   * Solamente el efectivo se suma
+   * a la caja física.
+   */
   const expectedCash =
-    openAmountNumber +
-    safeTotals.efectivo;
+    roundMoney(
+      openAmountNumber +
+        safeTotals.efectivo
+    );
 
-  const countedNum = parseFloat(counted);
+  const countedNum =
+    toNumber(
+      counted,
+      NaN
+    );
 
   const difference =
-    !isNaN(countedNum)
-      ? countedNum - expectedCash
+    Number.isFinite(
+      countedNum
+    )
+      ? roundMoney(
+          countedNum -
+            expectedCash
+        )
       : null;
 
   const puedeCerrar =
-    !isNaN(countedNum) &&
+    Number.isFinite(
+      countedNum
+    ) &&
     countedNum >= 0;
 
-  const confirmarCierre = () => {
-    if (!puedeCerrar) return;
+  /* =========================================================
+     CERRAR MODAL
+  ========================================================= */
 
-    closeCashSession(countedNum);
-    setCounted("");
-    setCloseModal(false);
-  };
+  function cerrarModalCaja() {
+    setCloseModal(
+      false
+    );
+
+    setCounted(
+      ""
+    );
+  }
+
+  /* =========================================================
+     CONFIRMAR CIERRE
+  ========================================================= */
+
+  function confirmarCierre() {
+    if (!puedeCerrar) {
+      return;
+    }
+
+    const ok =
+      closeCashSession(
+        countedNum
+      );
+
+    /*
+     * Sólo cerramos visualmente
+     * si usePosData confirmó la operación.
+     */
+    if (ok) {
+      setCounted(
+        ""
+      );
+
+      setCloseModal(
+        false
+      );
+    }
+  }
+
+  /* =========================================================
+     UI CAJA ABIERTA
+  ========================================================= */
 
   return (
     <div className="pb-3">
@@ -342,7 +593,7 @@ export default function Caja({ pos }) {
         "
       >
         <div className="p-4 sm:p-5">
-          {/* Cabecera */}
+          {/* CABECERA */}
 
           <div
             className="
@@ -392,8 +643,19 @@ export default function Caja({ pos }) {
                   text-emerald-600
                 "
               >
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                Desde {fmtDateTime(openSession.openTime)}
+                <span
+                  className="
+                    h-1.5
+                    w-1.5
+                    rounded-full
+                    bg-emerald-500
+                  "
+                />
+
+                Desde{" "}
+                {fmtDateTime(
+                  openSession.openTime
+                )}
               </div>
             </div>
 
@@ -422,37 +684,57 @@ export default function Caja({ pos }) {
             "
           />
 
-          {/* Estadísticas */}
+          {/* ===============================================
+              ESTADÍSTICAS
+          =============================================== */}
 
           <div className="grid grid-cols-2 gap-2.5">
             <Stat
               label="Apertura"
-              value={money(openAmountNumber)}
-              icon={<OpenCashIcon className="h-4 w-4" />}
+              value={money(
+                openAmountNumber
+              )}
+              icon={
+                <OpenCashIcon className="h-4 w-4" />
+              }
             />
 
             <Stat
               label="Ventas totales"
-              value={money(totalSales)}
-              icon={<SalesIcon className="h-4 w-4" />}
+              value={money(
+                totalSales
+              )}
+              icon={
+                <SalesIcon className="h-4 w-4" />
+              }
               highlight
             />
 
             <Stat
               label="Tickets"
-              value={sessSales.length}
-              icon={<ReceiptIcon className="h-4 w-4" />}
+              value={
+                sessSales.length
+              }
+              icon={
+                <ReceiptIcon className="h-4 w-4" />
+              }
             />
 
             <Stat
               label="Efectivo esperado"
-              value={money(expectedCash)}
-              icon={<CashIcon className="h-4 w-4" />}
+              value={money(
+                expectedCash
+              )}
+              icon={
+                <CashIcon className="h-4 w-4" />
+              }
               highlight
             />
           </div>
 
-          {/* Métodos de pago */}
+          {/* ===============================================
+              MÉTODOS DE PAGO
+          =============================================== */}
 
           <div className="mt-4">
             <p
@@ -469,75 +751,101 @@ export default function Caja({ pos }) {
             </p>
 
             <div className="grid grid-cols-2 gap-2.5">
-              {METHODS.map((item) => {
-                const Icon = item.icon;
+              {METHODS.map(
+                (item) => {
+                  const Icon =
+                    item.icon;
 
-                return (
-                  <div
-                    key={item.id}
-                    className="
-                      flex
-                      min-w-0
-                      items-center
-                      gap-2.5
-                      rounded-2xl
-                      bg-[#F4F5F7]
-                      px-3
-                      py-3
-                    "
-                  >
+                  return (
                     <div
+                      key={
+                        item.id
+                      }
                       className="
-                        grid
-                        h-9
-                        w-9
-                        shrink-0
-                        place-items-center
-                        rounded-xl
-                        bg-white
-                        text-[#8C6700]
+                        flex
+                        min-w-0
+                        items-center
+                        gap-2.5
+                        rounded-2xl
+                        bg-[#F4F5F7]
+                        px-3
+                        py-3
                       "
                     >
-                      <Icon className="h-4 w-4" />
-                    </div>
-
-                    <div className="min-w-0 flex-1">
-                      <span
+                      <div
                         className="
-                          block
-                          truncate
-                          text-[10px]
-                          font-bold
-                          text-black/40
+                          grid
+                          h-9
+                          w-9
+                          shrink-0
+                          place-items-center
+                          rounded-xl
+                          bg-white
+                          text-[#8C6700]
                         "
                       >
-                        {item.label}
-                      </span>
+                        <Icon className="h-4 w-4" />
+                      </div>
 
-                      <span
+                      <div
                         className="
-                          mt-0.5
-                          block
-                          truncate
-                          text-sm
-                          font-black
-                          text-[#111318]
+                          min-w-0
+                          flex-1
                         "
                       >
-                        {money(safeTotals[item.id])}
-                      </span>
+                        <span
+                          className="
+                            block
+                            truncate
+                            text-[10px]
+                            font-bold
+                            text-black/40
+                          "
+                        >
+                          {
+                            item.label
+                          }
+                        </span>
+
+                        <span
+                          className="
+                            mt-0.5
+                            block
+                            truncate
+                            text-sm
+                            font-black
+                            text-[#111318]
+                          "
+                        >
+                          {money(
+                            safeTotals[
+                              item.id
+                            ]
+                          )}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                }
+              )}
             </div>
           </div>
 
-          {/* Cerrar caja */}
+          {/* ===============================================
+              CERRAR CAJA
+          =============================================== */}
 
           <button
             type="button"
-            onClick={() => setCloseModal(true)}
+            onClick={() => {
+              setCounted(
+                ""
+              );
+
+              setCloseModal(
+                true
+              );
+            }}
             className="
               mt-4
               inline-flex
@@ -559,6 +867,7 @@ export default function Caja({ pos }) {
             "
           >
             <LockIcon className="h-4 w-4" />
+
             Cerrar caja
           </button>
         </div>
@@ -568,7 +877,8 @@ export default function Caja({ pos }) {
           VENTAS DEL TURNO
       ===================================================== */}
 
-      {sessSales.length > 0 && (
+      {sessSales.length >
+        0 && (
         <section>
           <div
             className="
@@ -617,8 +927,13 @@ export default function Caja({ pos }) {
                 text-white/45
               "
             >
-              {sessSales.length}{" "}
-              {sessSales.length === 1 ? "ticket" : "tickets"}
+              {
+                sessSales.length
+              }{" "}
+              {sessSales.length ===
+              1
+                ? "ticket"
+                : "tickets"}
             </span>
           </div>
 
@@ -626,179 +941,251 @@ export default function Caja({ pos }) {
             {sessSales
               .slice()
               .reverse()
-              .map((sale, index) => {
-                const method =
-                  sale.payment?.method ||
-                  "efectivo";
+              .map(
+                (
+                  sale,
+                  index
+                ) => {
+                  const method =
+                    getPaymentMethod(
+                      sale
+                    );
 
-                const paymentMeta =
-                  METHODS.find(
-                    (item) => item.id === method
-                  ) || METHODS[0];
+                  const paymentMeta =
+                    METHODS.find(
+                      (item) =>
+                        item.id ===
+                        method
+                    ) ||
+                    METHODS[0];
 
-                const MethodIcon =
-                  paymentMeta.icon;
+                  const MethodIcon =
+                    paymentMeta.icon;
 
-                const itemCount =
-                  sale.items.reduce(
-                    (acc, item) =>
-                      acc + Number(item.qty || 0),
-                    0
-                  );
+                  const itemCount =
+                    getSaleItemCount(
+                      sale
+                    );
 
-                return (
-                  <motion.article
-                    key={sale.id}
-                    initial={{
-                      opacity: 0,
-                      y: 6,
-                    }}
-                    animate={{
-                      opacity: 1,
-                      y: 0,
-                    }}
-                    transition={{
-                      delay: Math.min(index * 0.03, 0.18),
-                    }}
-                    className="
-                      rounded-[22px]
-                      border
-                      border-white/10
-                      bg-[#151A22]
-                      p-3.5
-                      shadow-[0_12px_30px_rgba(0,0,0,0.14)]
-                    "
-                  >
-                    <div
+                  const saleTotal =
+                    roundMoney(
+                      sale?.total
+                    );
+
+                  const change =
+                    roundMoney(
+                      sale?.payment
+                        ?.change
+                    );
+
+                  return (
+                    <motion.article
+                      key={
+                        sale.id ||
+                        `${sale.timestamp}-${index}`
+                      }
+                      initial={{
+                        opacity:
+                          0,
+                        y: 6,
+                      }}
+                      animate={{
+                        opacity:
+                          1,
+                        y: 0,
+                      }}
+                      transition={{
+                        delay:
+                          Math.min(
+                            index *
+                              0.03,
+                            0.18
+                          ),
+                      }}
                       className="
-                        flex
-                        items-start
-                        justify-between
-                        gap-3
+                        rounded-[22px]
+                        border
+                        border-white/10
+                        bg-[#151A22]
+                        p-3.5
+                        shadow-[0_12px_30px_rgba(0,0,0,0.14)]
                       "
                     >
-                      <div className="flex min-w-0 items-center gap-3">
+                      <div
+                        className="
+                          flex
+                          items-start
+                          justify-between
+                          gap-3
+                        "
+                      >
                         <div
                           className="
-                            grid
-                            h-10
-                            w-10
-                            shrink-0
-                            place-items-center
-                            rounded-xl
-                            bg-[#FFC61A]
-                            text-black
+                            flex
+                            min-w-0
+                            items-center
+                            gap-3
                           "
                         >
-                          <ReceiptIcon className="h-[18px] w-[18px]" />
-                        </div>
-
-                        <div className="min-w-0">
-                          <p
-                            className="
-                              text-sm
-                              font-extrabold
-                              text-white
-                            "
-                          >
-                            {itemCount}{" "}
-                            {itemCount === 1
-                              ? "ítem"
-                              : "ítems"}
-                          </p>
-
                           <div
                             className="
-                              mt-1
-                              flex
-                              items-center
-                              gap-1.5
-                              text-[10px]
-                              font-semibold
-                              text-white/40
+                              grid
+                              h-10
+                              w-10
+                              shrink-0
+                              place-items-center
+                              rounded-xl
+                              bg-[#FFC61A]
+                              text-black
                             "
                           >
-                            <MethodIcon className="h-3.5 w-3.5" />
+                            <ReceiptIcon className="h-[18px] w-[18px]" />
+                          </div>
 
-                            <span>
-                              {METHOD_LABEL[method] ||
-                                paymentMeta.label}
-                            </span>
+                          <div className="min-w-0">
+                            <p
+                              className="
+                                text-sm
+                                font-extrabold
+                                text-white
+                              "
+                            >
+                              {itemCount}{" "}
+                              {itemCount ===
+                              1
+                                ? "producto"
+                                : "productos"}
+                            </p>
 
-                            {method === "efectivo" &&
-                              sale.payment?.change > 0 && (
-                                <>
-                                  <span>·</span>
-                                  <span>
-                                    Vuelto{" "}
-                                    {money(
-                                      sale.payment.change
-                                    )}
-                                  </span>
-                                </>
-                              )}
+                            <div
+                              className="
+                                mt-1
+                                flex
+                                flex-wrap
+                                items-center
+                                gap-1.5
+                                text-[10px]
+                                font-semibold
+                                text-white/40
+                              "
+                            >
+                              <MethodIcon className="h-3.5 w-3.5 shrink-0" />
+
+                              <span>
+                                {METHOD_LABEL[
+                                  method
+                                ] ||
+                                  paymentMeta.label}
+                              </span>
+
+                              {method ===
+                                "efectivo" &&
+                                change >
+                                  0 && (
+                                  <>
+                                    <span>
+                                      ·
+                                    </span>
+
+                                    <span>
+                                      Vuelto{" "}
+                                      {money(
+                                        change
+                                      )}
+                                    </span>
+                                  </>
+                                )}
+                            </div>
                           </div>
                         </div>
-                      </div>
 
-                      <div className="shrink-0 text-right">
-                        <span
+                        <div
                           className="
-                            block
-                            text-[10px]
-                            font-bold
-                            text-white/35
+                            shrink-0
+                            text-right
                           "
                         >
-                          {fmtTime(sale.timestamp)}
-                        </span>
+                          <span
+                            className="
+                              block
+                              text-[10px]
+                              font-bold
+                              text-white/35
+                            "
+                          >
+                            {fmtTime(
+                              sale.timestamp
+                            )}
+                          </span>
 
-                        <span
-                          className="
-                            mt-1
-                            block
-                            text-sm
-                            font-black
-                            text-[#FFC61A]
-                          "
-                        >
-                          {money(sale.total)}
-                        </span>
+                          <span
+                            className="
+                              mt-1
+                              block
+                              text-sm
+                              font-black
+                              text-[#FFC61A]
+                            "
+                          >
+                            {money(
+                              saleTotal
+                            )}
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                  </motion.article>
-                );
-              })}
+                    </motion.article>
+                  );
+                }
+              )}
           </div>
         </section>
       )}
 
       {/* =====================================================
-          MODAL CIERRE DE CAJA
+          MODAL CIERRE
       ===================================================== */}
 
       <Modal
-        open={closeModal}
-        onClose={() => setCloseModal(false)}
+        open={
+          closeModal
+        }
+        onClose={
+          cerrarModalCaja
+        }
         title="Cerrar caja"
       >
         <div>
-          {/* Resumen */}
+          {/* ===============================================
+              RESUMEN
+          =============================================== */}
 
-          <div className="mb-4 grid grid-cols-2 gap-2.5">
+          <div
+            className="
+              mb-4
+              grid
+              grid-cols-2
+              gap-2.5
+            "
+          >
             <DarkStat
               label="Apertura"
-              value={money(openAmountNumber)}
+              value={money(
+                openAmountNumber
+              )}
             />
 
             <DarkStat
               label="Ventas en efectivo"
-              value={money(safeTotals.efectivo)}
+              value={money(
+                safeTotals.efectivo
+              )}
               highlight
             />
           </div>
 
-          {/* Efectivo esperado */}
+          {/* ===============================================
+              EFECTIVO ESPERADO
+          =============================================== */}
 
           <div className="mb-4">
             <label
@@ -827,7 +1214,13 @@ export default function Caja({ pos }) {
                 py-3.5
               "
             >
-              <div className="flex items-center gap-2.5">
+              <div
+                className="
+                  flex
+                  items-center
+                  gap-2.5
+                "
+              >
                 <div
                   className="
                     grid
@@ -861,7 +1254,9 @@ export default function Caja({ pos }) {
                   text-[#FFC61A]
                 "
               >
-                {money(expectedCash)}
+                {money(
+                  expectedCash
+                )}
               </span>
             </div>
 
@@ -873,12 +1268,13 @@ export default function Caja({ pos }) {
                 text-white/35
               "
             >
-              No incluye transferencia, QR ni tarjeta porque esos medios no
-              ingresan a la caja física.
+              No incluye transferencia, QR ni tarjeta porque esos medios no ingresan a la caja física.
             </p>
           </div>
 
-          {/* Efectivo contado */}
+          {/* ===============================================
+              EFECTIVO CONTADO
+          =============================================== */}
 
           <div className="mb-4">
             <label
@@ -916,6 +1312,8 @@ export default function Caja({ pos }) {
                 step="0.01"
                 min="0"
                 inputMode="decimal"
+                autoComplete="off"
+                autoFocus
                 className="
                   w-full
                   rounded-2xl
@@ -936,12 +1334,26 @@ export default function Caja({ pos }) {
                   focus:ring-[#FFC61A]/10
                 "
                 placeholder="0.00"
-                value={counted}
-                onChange={(e) =>
-                  setCounted(e.target.value)
+                value={
+                  counted
                 }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                onChange={(
+                  event
+                ) =>
+                  setCounted(
+                    event.target
+                      .value
+                  )
+                }
+                onKeyDown={(
+                  event
+                ) => {
+                  if (
+                    event.key ===
+                    "Enter"
+                  ) {
+                    event.preventDefault();
+
                     confirmarCierre();
                   }
                 }}
@@ -949,9 +1361,12 @@ export default function Caja({ pos }) {
             </div>
           </div>
 
-          {/* Diferencia */}
+          {/* ===============================================
+              DIFERENCIA
+          =============================================== */}
 
-          {difference !== null && (
+          {difference !==
+            null && (
             <div
               className={
                 `
@@ -965,20 +1380,24 @@ export default function Caja({ pos }) {
                   px-3.5
                   py-3
                 ` +
-                (difference === 0
-                  ? `
-                    border-emerald-400/20
-                    bg-emerald-500/10
-                  `
-                  : difference > 0
+                (
+                  difference ===
+                  0
                     ? `
-                    border-[#FFC61A]/20
-                    bg-[#FFC61A]/10
-                  `
-                    : `
-                    border-red-400/20
-                    bg-red-500/10
-                  `)
+                      border-emerald-400/20
+                      bg-emerald-500/10
+                    `
+                    : difference >
+                        0
+                      ? `
+                        border-[#FFC61A]/20
+                        bg-[#FFC61A]/10
+                      `
+                      : `
+                        border-red-400/20
+                        bg-red-500/10
+                      `
+                )
               }
             >
               <div>
@@ -1004,9 +1423,11 @@ export default function Caja({ pos }) {
                     text-white/50
                   "
                 >
-                  {difference === 0
+                  {difference ===
+                  0
                     ? "Caja exacta"
-                    : difference > 0
+                    : difference >
+                        0
                       ? "Sobrante"
                       : "Faltante"}
                 </span>
@@ -1018,24 +1439,36 @@ export default function Caja({ pos }) {
                     text-lg
                     font-black
                   ` +
-                  (difference === 0
-                    ? "text-emerald-400"
-                    : difference > 0
-                      ? "text-[#FFC61A]"
-                      : "text-red-400")
+                  (
+                    difference ===
+                    0
+                      ? " text-emerald-400"
+                      : difference >
+                          0
+                        ? " text-[#FFC61A]"
+                        : " text-red-400"
+                  )
                 }
               >
-                {money(difference)}
+                {money(
+                  difference
+                )}
               </span>
             </div>
           )}
 
-          {/* Confirmar */}
+          {/* ===============================================
+              CONFIRMAR
+          =============================================== */}
 
           <button
             type="button"
-            disabled={!puedeCerrar}
-            onClick={confirmarCierre}
+            disabled={
+              !puedeCerrar
+            }
+            onClick={
+              confirmarCierre
+            }
             className="
               inline-flex
               w-full
@@ -1058,6 +1491,7 @@ export default function Caja({ pos }) {
             "
           >
             <CheckIcon className="h-4 w-4" />
+
             Confirmar cierre
           </button>
         </div>
@@ -1067,7 +1501,7 @@ export default function Caja({ pos }) {
 }
 
 /* =========================================================
-   TARJETA ESTADÍSTICA CLARA
+   TARJETA ESTADÍSTICA
 ========================================================= */
 
 function Stat({
@@ -1079,6 +1513,7 @@ function Stat({
   return (
     <div
       className="
+        min-w-0
         rounded-2xl
         bg-[#F4F5F7]
         p-3
@@ -1097,6 +1532,8 @@ function Stat({
 
         <span
           className="
+            min-w-0
+            truncate
             text-[9px]
             font-bold
             uppercase
@@ -1114,9 +1551,11 @@ function Stat({
             text-base
             font-black
           ` +
-          (highlight
-            ? "text-[#9A7100]"
-            : "text-[#111318]")
+          (
+            highlight
+              ? " text-[#9A7100]"
+              : " text-[#111318]"
+          )
         }
       >
         {value}
@@ -1126,7 +1565,7 @@ function Stat({
 }
 
 /* =========================================================
-   TARJETA ESTADÍSTICA OSCURA
+   TARJETA OSCURA
 ========================================================= */
 
 function DarkStat({
@@ -1137,6 +1576,7 @@ function DarkStat({
   return (
     <div
       className="
+        min-w-0
         rounded-2xl
         border
         border-white/10
@@ -1147,6 +1587,7 @@ function DarkStat({
       <span
         className="
           block
+          truncate
           text-[9px]
           font-bold
           uppercase
@@ -1166,9 +1607,11 @@ function DarkStat({
             text-base
             font-black
           ` +
-          (highlight
-            ? "text-[#FFC61A]"
-            : "text-white")
+          (
+            highlight
+              ? " text-[#FFC61A]"
+              : " text-white"
+          )
         }
       >
         {value}
@@ -1178,10 +1621,12 @@ function DarkStat({
 }
 
 /* =========================================================
-   ICONOS INLINE
+   ICONOS
 ========================================================= */
 
-function RegisterIcon({ className = "" }) {
+function RegisterIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1203,7 +1648,9 @@ function RegisterIcon({ className = "" }) {
   );
 }
 
-function UnlockIcon({ className = "" }) {
+function UnlockIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1215,13 +1662,22 @@ function UnlockIcon({ className = "" }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <rect x="5" y="10" width="14" height="10" rx="2" />
+      <rect
+        x="5"
+        y="10"
+        width="14"
+        height="10"
+        rx="2"
+      />
+
       <path d="M9 10V7a4 4 0 0 1 7.5-2" />
     </svg>
   );
 }
 
-function LockIcon({ className = "" }) {
+function LockIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1233,13 +1689,22 @@ function LockIcon({ className = "" }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <rect x="5" y="10" width="14" height="10" rx="2" />
+      <rect
+        x="5"
+        y="10"
+        width="14"
+        height="10"
+        rx="2"
+      />
+
       <path d="M8 10V7a4 4 0 0 1 8 0v3" />
     </svg>
   );
 }
 
-function InfoIcon({ className = "" }) {
+function InfoIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1251,14 +1716,21 @@ function InfoIcon({ className = "" }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <circle cx="12" cy="12" r="9" />
+      <circle
+        cx="12"
+        cy="12"
+        r="9"
+      />
+
       <path d="M12 11v5" />
       <path d="M12 8h.01" />
     </svg>
   );
 }
 
-function OpenCashIcon({ className = "" }) {
+function OpenCashIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1277,7 +1749,9 @@ function OpenCashIcon({ className = "" }) {
   );
 }
 
-function SalesIcon({ className = "" }) {
+function SalesIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1297,7 +1771,9 @@ function SalesIcon({ className = "" }) {
   );
 }
 
-function ReceiptIcon({ className = "" }) {
+function ReceiptIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1317,7 +1793,9 @@ function ReceiptIcon({ className = "" }) {
   );
 }
 
-function CashIcon({ className = "" }) {
+function CashIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1329,14 +1807,29 @@ function CashIcon({ className = "" }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <rect x="3" y="6" width="18" height="12" rx="2" />
-      <circle cx="12" cy="12" r="2.5" />
-      <path d="M7 9H6v1M17 15h1v-1" />
+      <rect
+        x="3"
+        y="6"
+        width="18"
+        height="12"
+        rx="2"
+      />
+
+      <circle
+        cx="12"
+        cy="12"
+        r="2.5"
+      />
+
+      <path d="M7 9H6v1" />
+      <path d="M17 15h1v-1" />
     </svg>
   );
 }
 
-function TransferIcon({ className = "" }) {
+function TransferIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1356,7 +1849,9 @@ function TransferIcon({ className = "" }) {
   );
 }
 
-function QrIcon({ className = "" }) {
+function QrIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1377,7 +1872,9 @@ function QrIcon({ className = "" }) {
   );
 }
 
-function CardIcon({ className = "" }) {
+function CardIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}
@@ -1389,14 +1886,23 @@ function CardIcon({ className = "" }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <rect
+        x="3"
+        y="5"
+        width="18"
+        height="14"
+        rx="2"
+      />
+
       <path d="M3 10h18" />
       <path d="M7 15h4" />
     </svg>
   );
 }
 
-function CheckIcon({ className = "" }) {
+function CheckIcon({
+  className = "",
+}) {
   return (
     <svg
       className={className}

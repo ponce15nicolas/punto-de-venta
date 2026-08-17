@@ -1,15 +1,25 @@
 // src/pages/Inventario.jsx
-// Inventario rediseñado con la misma identidad visual del POS.
-// Mantiene la lógica original, filtros, búsqueda, edición, reposición,
-// escáner y eliminación de productos.
-// No requiere librerías de iconos externas.
 
-import { useEffect, useMemo, useState } from "react";
+import {
+  useMemo,
+  useState,
+} from "react";
+
 import { motion } from "motion/react";
-import { money, fmtDate, daysUntil } from "../lib/format";
+
+import {
+  money,
+  fmtDate,
+  daysUntil,
+} from "../lib/format";
+
 import ProductModal from "../components/ProductModal";
 import RestockModal from "../components/RestockModal";
 import Scanner from "../components/Scanner";
+
+/* =========================================================
+   FILTROS
+========================================================= */
 
 const FILTERS = [
   {
@@ -29,6 +39,191 @@ const FILTERS = [
   },
 ];
 
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function getTipoVenta(product) {
+  const tipo =
+    product?.tipoVenta;
+
+  if (
+    tipo === "peso" ||
+    tipo === "precio-libre"
+  ) {
+    return tipo;
+  }
+
+  return "unidad";
+}
+
+function toNumber(
+  value,
+  fallback = 0
+) {
+  const number =
+    Number(value);
+
+  return Number.isFinite(number)
+    ? number
+    : fallback;
+}
+
+function roundWeight(value) {
+  return (
+    Math.round(
+      (
+        toNumber(value) +
+        Number.EPSILON
+      ) * 1000
+    ) / 1000
+  );
+}
+
+function formatWeight(value) {
+  return roundWeight(
+    value
+  ).toLocaleString(
+    "es-AR",
+    {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 3,
+    }
+  );
+}
+
+function formatStock(
+  product
+) {
+  const tipoVenta =
+    getTipoVenta(
+      product
+    );
+
+  if (
+    tipoVenta ===
+    "precio-libre"
+  ) {
+    return "Sin control";
+  }
+
+  const stock =
+    toNumber(
+      product?.stock
+    );
+
+  if (
+    tipoVenta === "peso"
+  ) {
+    return `${formatWeight(
+      stock
+    )} kg`;
+  }
+
+  return `${Math.trunc(
+    stock
+  ).toLocaleString(
+    "es-AR"
+  )} u.`;
+}
+
+function formatBarcode(
+  barcode
+) {
+  const value =
+    String(
+      barcode || ""
+    ).trim();
+
+  if (
+    !value ||
+    value.startsWith(
+      "manual-"
+    )
+  ) {
+    return "Código interno";
+  }
+
+  return value;
+}
+
+function isLowStock(
+  product
+) {
+  const tipoVenta =
+    getTipoVenta(
+      product
+    );
+
+  /*
+   * Los productos de importe libre
+   * no manejan stock.
+   */
+  if (
+    tipoVenta ===
+    "precio-libre"
+  ) {
+    return false;
+  }
+
+  return (
+    toNumber(
+      product?.stock
+    ) <= 5
+  );
+}
+
+function getTypeLabel(
+  tipoVenta
+) {
+  if (
+    tipoVenta === "peso"
+  ) {
+    return "Por peso";
+  }
+
+  if (
+    tipoVenta ===
+    "precio-libre"
+  ) {
+    return "Importe libre";
+  }
+
+  return "Por unidad";
+}
+
+function getPriceLabel(
+  product
+) {
+  const tipoVenta =
+    getTipoVenta(
+      product
+    );
+
+  if (
+    tipoVenta ===
+    "precio-libre"
+  ) {
+    return "Importe libre";
+  }
+
+  if (
+    tipoVenta === "peso"
+  ) {
+    return `${money(
+      product?.price
+    )}/kg`;
+  }
+
+  return money(
+    product?.price
+  );
+}
+
+/* =========================================================
+   COMPONENTE
+========================================================= */
+
 export default function Inventario({
   pos,
   filter,
@@ -42,138 +237,458 @@ export default function Inventario({
     showToast,
   } = pos;
 
-  const [search, setSearch] = useState("");
+  /* =========================================================
+     ESTADOS
+  ========================================================= */
 
-  const [productModal, setProductModal] =
-    useState({
-      open: false,
-      product: null,
-    });
+  const [
+    search,
+    setSearch,
+  ] = useState("");
 
-  const [restockModal, setRestockModal] =
-    useState({
-      open: false,
-      product: null,
-    });
+  const [
+    productModal,
+    setProductModal,
+  ] = useState({
+    open: false,
+    product: null,
+  });
 
-  const [scanOpen, setScanOpen] =
-    useState(false);
+  const [
+    restockModal,
+    setRestockModal,
+  ] = useState({
+    open: false,
+    product: null,
+  });
 
-  const [scannedCode, setScannedCode] =
-    useState(null);
+  const [
+    scanOpen,
+    setScanOpen,
+  ] = useState(false);
 
-  useEffect(() => {
-    if (filter) {
-      setFilter(filter);
-    }
+  const [
+    scannedCode,
+    setScannedCode,
+  ] = useState(null);
 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  /* =========================================================
+     FILTRO ACTIVO SEGURO
+  ========================================================= */
+
+  const activeFilter =
+    FILTERS.some(
+      (item) =>
+        item.id === filter
+    )
+      ? filter
+      : "all";
+
+  /* =========================================================
+     TODOS LOS PRODUCTOS
+  ========================================================= */
+
+  const allProducts =
+    useMemo(
+      () =>
+        Object.values(
+          catalog || {}
+        ).filter(Boolean),
+      [
+        catalog,
+      ]
+    );
 
   /* =========================================================
      LISTADO FILTRADO
   ========================================================= */
 
-  const list = useMemo(() => {
-    let products = Object.values(catalog);
+  const list =
+    useMemo(() => {
+      let products = [
+        ...allProducts,
+      ];
 
-    if (search.trim()) {
-      const q = search
-        .trim()
-        .toLowerCase();
+      const query =
+        String(
+          search || ""
+        )
+          .trim()
+          .toLowerCase();
 
-      products = products.filter(
-        (product) =>
-          product.name
-            .toLowerCase()
-            .includes(q) ||
-          String(product.barcode || "")
-            .toLowerCase()
-            .includes(q)
-      );
-    }
+      /* -----------------------------------------------------
+         BÚSQUEDA
+      ----------------------------------------------------- */
 
-    if (filter === "low") {
-      products = products.filter(
-        (product) =>
-          Number(product.stock || 0) <= 5
-      );
-    }
+      if (query) {
+        products =
+          products.filter(
+            (product) => {
+              const name =
+                String(
+                  product?.name ||
+                    ""
+                ).toLowerCase();
 
-    if (filter === "expiring") {
-      products = products.filter(
-        (product) => {
-          const days = daysUntil(
-            product.expiry
+              const barcode =
+                String(
+                  product?.barcode ||
+                    ""
+                ).toLowerCase();
+
+              return (
+                name.includes(
+                  query
+                ) ||
+                barcode.includes(
+                  query
+                )
+              );
+            }
           );
+      }
 
-          return (
-            days !== null &&
-            days <= 7
+      /* -----------------------------------------------------
+         STOCK BAJO
+      ----------------------------------------------------- */
+
+      if (
+        activeFilter ===
+        "low"
+      ) {
+        products =
+          products.filter(
+            isLowStock
+          );
+      }
+
+      /* -----------------------------------------------------
+         VENCIMIENTOS
+      ----------------------------------------------------- */
+
+      if (
+        activeFilter ===
+        "expiring"
+      ) {
+        products =
+          products.filter(
+            (product) => {
+              const days =
+                daysUntil(
+                  product?.expiry
+                );
+
+              return (
+                days !== null &&
+                days <= 7
+              );
+            }
+          );
+      }
+
+      /* -----------------------------------------------------
+         ORDEN
+      ----------------------------------------------------- */
+
+      products.sort(
+        (a, b) => {
+          const daysA =
+            daysUntil(
+              a?.expiry
+            );
+
+          const daysB =
+            daysUntil(
+              b?.expiry
+            );
+
+          /*
+           * Productos próximos a vencer
+           * primero.
+           */
+          if (
+            daysA !== null &&
+            daysB !== null &&
+            daysA !== daysB
+          ) {
+            return (
+              daysA -
+              daysB
+            );
+          }
+
+          if (
+            daysA !== null &&
+            daysB === null
+          ) {
+            return -1;
+          }
+
+          if (
+            daysA === null &&
+            daysB !== null
+          ) {
+            return 1;
+          }
+
+          return String(
+            a?.name || ""
+          ).localeCompare(
+            String(
+              b?.name ||
+                ""
+            ),
+            "es",
+            {
+              sensitivity:
+                "base",
+            }
           );
         }
       );
-    }
 
-    products.sort((a, b) => {
-      const da = daysUntil(a.expiry);
-      const db = daysUntil(b.expiry);
-
-      if (
-        da === null &&
-        db === null
-      ) {
-        return a.name.localeCompare(
-          b.name
-        );
-      }
-
-      if (da === null) return 1;
-      if (db === null) return -1;
-
-      return da - db;
-    });
-
-    return products;
-  }, [
-    catalog,
-    search,
-    filter,
-  ]);
+      return products;
+    }, [
+      allProducts,
+      search,
+      activeFilter,
+    ]);
 
   /* =========================================================
      RESUMEN
   ========================================================= */
 
-  const allProducts =
-    Object.values(catalog);
-
   const totalProducts =
     allProducts.length;
 
   const lowStockCount =
-    allProducts.filter(
-      (product) =>
-        Number(product.stock || 0) <= 5
-    ).length;
+    useMemo(
+      () =>
+        allProducts.filter(
+          isLowStock
+        ).length,
+      [
+        allProducts,
+      ]
+    );
 
   const expiringCount =
-    allProducts.filter(
-      (product) => {
-        const days = daysUntil(
-          product.expiry
-        );
+    useMemo(
+      () =>
+        allProducts.filter(
+          (product) => {
+            const days =
+              daysUntil(
+                product?.expiry
+              );
 
-        return (
-          days !== null &&
-          days <= 7
-        );
-      }
-    ).length;
+            return (
+              days !== null &&
+              days <= 7
+            );
+          }
+        ).length,
+      [
+        allProducts,
+      ]
+    );
+
+  /* =========================================================
+     MODAL PRODUCTO
+  ========================================================= */
+
+  function openNewProduct() {
+    setScannedCode(
+      null
+    );
+
+    setProductModal({
+      open: true,
+      product: null,
+    });
+  }
+
+  function openEditProduct(
+    product
+  ) {
+    setScannedCode(
+      null
+    );
+
+    setProductModal({
+      open: true,
+      product,
+    });
+  }
+
+  function closeProductModal() {
+    setProductModal({
+      open: false,
+      product: null,
+    });
+
+    setScannedCode(
+      null
+    );
+  }
+
+  function handleProductSave(
+    product,
+    error
+  ) {
+    if (error) {
+      showToast(
+        error,
+        true
+      );
+
+      return;
+    }
+
+    if (!product) {
+      showToast(
+        "Datos del producto inválidos",
+        true
+      );
+
+      return;
+    }
+
+    const editing =
+      Boolean(
+        productModal.product
+      );
+
+    const ok =
+      upsertProduct(
+        product,
+        editing
+      );
+
+    if (!ok) {
+      return;
+    }
+
+    closeProductModal();
+  }
+
+  /* =========================================================
+     MODAL REPOSICIÓN
+  ========================================================= */
+
+  function openRestockModal(
+    product
+  ) {
+    if (
+      getTipoVenta(
+        product
+      ) === "precio-libre"
+    ) {
+      showToast(
+        "Este producto no utiliza stock",
+        true
+      );
+
+      return;
+    }
+
+    setRestockModal({
+      open: true,
+      product,
+    });
+  }
+
+  function closeRestockModal() {
+    setRestockModal({
+      open: false,
+      product: null,
+    });
+  }
+
+  function handleRestock(
+    amount
+  ) {
+    const product =
+      restockModal.product;
+
+    if (!product) {
+      return;
+    }
+
+    const ok =
+      restock(
+        product.barcode,
+        amount
+      );
+
+    /*
+     * Sólo cerramos si la operación
+     * realmente se completó.
+     */
+    if (ok) {
+      closeRestockModal();
+    }
+  }
+
+  /* =========================================================
+     ELIMINAR
+  ========================================================= */
+
+  function handleDeleteProduct(
+    product
+  ) {
+    if (!product) {
+      return;
+    }
+
+    const confirmed =
+      window.confirm(
+        `¿Eliminar ${
+          product.name ||
+          "este producto"
+        } del catálogo?`
+      );
+
+    if (!confirmed) {
+      return;
+    }
+
+    deleteProduct(
+      product.barcode
+    );
+  }
+
+  /* =========================================================
+     SCANNER
+  ========================================================= */
+
+  function handleScannerResult(
+    value
+  ) {
+    const code =
+      String(
+        value || ""
+      ).trim();
+
+    setScanOpen(
+      false
+    );
+
+    if (!code) {
+      return;
+    }
+
+    setScannedCode(
+      code
+    );
+  }
+
+  /* =========================================================
+     UI
+  ========================================================= */
 
   return (
     <div className="pb-3">
-
       {/* =====================================================
           CABECERA / RESUMEN
       ===================================================== */}
@@ -189,7 +704,6 @@ export default function Inventario({
         "
       >
         <div className="p-4 sm:p-5">
-
           <div
             className="
               flex
@@ -199,7 +713,6 @@ export default function Inventario({
             "
           >
             <div className="min-w-0">
-
               <p
                 className="
                   text-[10px]
@@ -234,7 +747,6 @@ export default function Inventario({
               >
                 Administrá productos, stock y vencimientos desde un solo lugar.
               </p>
-
             </div>
 
             <div
@@ -251,7 +763,6 @@ export default function Inventario({
             >
               <BoxIcon className="h-5 w-5" />
             </div>
-
           </div>
 
           <div
@@ -264,10 +775,11 @@ export default function Inventario({
           />
 
           <div className="grid grid-cols-3 gap-2.5">
-
             <SummaryStat
               label="Productos"
-              value={totalProducts}
+              value={
+                totalProducts
+              }
               icon={
                 <BoxIcon className="h-4 w-4" />
               }
@@ -275,12 +787,15 @@ export default function Inventario({
 
             <SummaryStat
               label="Stock bajo"
-              value={lowStockCount}
+              value={
+                lowStockCount
+              }
               icon={
                 <AlertStockIcon className="h-4 w-4" />
               }
               tone={
-                lowStockCount > 0
+                lowStockCount >
+                0
                   ? "text-red-600"
                   : "text-[#111318]"
               }
@@ -288,19 +803,20 @@ export default function Inventario({
 
             <SummaryStat
               label="Por vencer"
-              value={expiringCount}
+              value={
+                expiringCount
+              }
               icon={
                 <ClockIcon className="h-4 w-4" />
               }
               tone={
-                expiringCount > 0
+                expiringCount >
+                0
                   ? "text-[#9A7100]"
                   : "text-[#111318]"
               }
             />
-
           </div>
-
         </div>
       </section>
 
@@ -309,9 +825,7 @@ export default function Inventario({
       ===================================================== */}
 
       <div className="mb-3">
-
         <div className="relative">
-
           <SearchIcon
             className="
               pointer-events-none
@@ -326,6 +840,8 @@ export default function Inventario({
           />
 
           <input
+            type="search"
+            autoComplete="off"
             className="
               w-full
               rounded-2xl
@@ -346,9 +862,16 @@ export default function Inventario({
               focus:ring-[#FFC61A]/10
             "
             placeholder="Buscar producto o código..."
-            value={search}
-            onChange={(e) =>
-              setSearch(e.target.value)
+            value={
+              search
+            }
+            onChange={(
+              event
+            ) =>
+              setSearch(
+                event.target
+                  .value
+              )
             }
           />
 
@@ -356,7 +879,9 @@ export default function Inventario({
             <button
               type="button"
               onClick={() =>
-                setSearch("")
+                setSearch(
+                  ""
+                )
               }
               aria-label="Limpiar búsqueda"
               className="
@@ -373,14 +898,13 @@ export default function Inventario({
                 transition
                 hover:bg-white/5
                 hover:text-white/70
+                active:scale-[0.96]
               "
             >
               <CloseIcon className="h-4 w-4" />
             </button>
           )}
-
         </div>
-
       </div>
 
       {/* =====================================================
@@ -395,57 +919,67 @@ export default function Inventario({
           gap-2
         "
       >
-        {FILTERS.map((item) => {
-          const active =
-            filter === item.id;
+        {FILTERS.map(
+          (item) => {
+            const active =
+              activeFilter ===
+              item.id;
 
-          const Icon = item.icon;
+            const Icon =
+              item.icon;
 
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() =>
-                setFilter(item.id)
-              }
-              className={
-                `
-                  inline-flex
-                  items-center
-                  gap-1.5
-                  rounded-2xl
-                  border
-                  px-3.5
-                  py-2
-                  text-xs
-                  font-extrabold
-                  transition
-                  active:scale-[0.98]
-                ` +
-                (
-                  active
-                    ? `
-                      border-[#FFC61A]
-                      bg-[#FFC61A]
-                      text-black
-                      shadow-[0_8px_22px_rgba(255,198,26,0.14)]
-                    `
-                    : `
-                      border-white/10
-                      bg-[#151A22]
-                      text-white/55
-                      hover:border-white/20
-                      hover:text-white
-                    `
-                )
-              }
-            >
-              <Icon className="h-3.5 w-3.5" />
+            return (
+              <button
+                key={
+                  item.id
+                }
+                type="button"
+                onClick={() =>
+                  setFilter?.(
+                    item.id
+                  )
+                }
+                className={
+                  `
+                    inline-flex
+                    items-center
+                    gap-1.5
+                    rounded-2xl
+                    border
+                    px-3.5
+                    py-2
+                    text-xs
+                    font-extrabold
+                    transition
+                    active:scale-[0.98]
+                  ` +
+                  (
+                    active
+                      ? `
+                        border-[#FFC61A]
+                        bg-[#FFC61A]
+                        text-black
+                        shadow-[0_8px_22px_rgba(255,198,26,0.14)]
+                      `
+                      : `
+                        border-white/10
+                        bg-[#151A22]
+                        text-white/55
+                        hover:border-white/20
+                        hover:text-white
+                      `
+                  )
+                }
+              >
+                <Icon className="h-3.5 w-3.5" />
 
-              {item.label}
-            </button>
-          );
-        })}
+                {
+                  item.label
+                }
+              </button>
+            );
+          }
+        )}
       </div>
 
       {/* =====================================================
@@ -454,11 +988,8 @@ export default function Inventario({
 
       <button
         type="button"
-        onClick={() =>
-          setProductModal({
-            open: true,
-            product: null,
-          })
+        onClick={
+          openNewProduct
         }
         className="
           mb-4
@@ -489,7 +1020,8 @@ export default function Inventario({
           ESTADO VACÍO
       ===================================================== */}
 
-      {list.length === 0 ? (
+      {list.length ===
+      0 ? (
         <div
           className="
             rounded-[28px]
@@ -538,307 +1070,371 @@ export default function Inventario({
             "
           >
             {search ||
-              filter !== "all"
+            activeFilter !==
+              "all"
               ? "No encontramos productos que coincidan con tu búsqueda o filtro."
               : "Agregá tu primer producto para empezar a controlar el stock."}
           </p>
-
         </div>
       ) : (
         <div className="space-y-3">
+          {list.map(
+            (
+              product,
+              index
+            ) => {
+              const tipoVenta =
+                getTipoVenta(
+                  product
+                );
 
-          {list.map((product) => {
-            const days =
-              daysUntil(
-                product.expiry
-              );
+              const precioLibre =
+                tipoVenta ===
+                "precio-libre";
 
-            const stock =
-              Number(
-                product.stock || 0
-              );
+              const ventaPorPeso =
+                tipoVenta ===
+                "peso";
 
-            const lowStock =
-              stock <= 5;
+              const lowStock =
+                isLowStock(
+                  product
+                );
 
-            const expiryInfo =
-              getExpiryInfo(
-                product.expiry,
-                days
-              );
+              const days =
+                daysUntil(
+                  product?.expiry
+                );
 
-            return (
-              <motion.article
-                key={product.barcode}
-                layout
-                initial={{
-                  opacity: 0,
-                  y: 8,
-                }}
-                animate={{
-                  opacity: 1,
-                  y: 0,
-                }}
-                className="
-                  overflow-hidden
-                  rounded-[28px]
-                  bg-white
-                  text-[#111318]
-                  shadow-[0_18px_50px_rgba(0,0,0,0.18)]
-                "
-              >
-                <div className="p-4 sm:p-5">
+              const expiryInfo =
+                getExpiryInfo(
+                  product?.expiry,
+                  days
+                );
 
-                  {/* PRODUCTO */}
+              const stockInfo =
+                getStockInfo(
+                  product,
+                  lowStock
+                );
 
-                  <div
-                    className="
-                      flex
-                      items-start
-                      justify-between
-                      gap-3
-                    "
-                  >
+              return (
+                <motion.article
+                  key={
+                    product.barcode ||
+                    `${product.name}-${index}`
+                  }
+                  layout
+                  initial={{
+                    opacity:
+                      0,
+                    y: 8,
+                  }}
+                  animate={{
+                    opacity:
+                      1,
+                    y: 0,
+                  }}
+                  transition={{
+                    duration:
+                      0.18,
+                    delay:
+                      Math.min(
+                        index *
+                          0.025,
+                        0.15
+                      ),
+                  }}
+                  className="
+                    overflow-hidden
+                    rounded-[28px]
+                    bg-white
+                    text-[#111318]
+                    shadow-[0_18px_50px_rgba(0,0,0,0.18)]
+                  "
+                >
+                  <div className="p-4 sm:p-5">
+                    {/* =========================================
+                        PRODUCTO
+                    ========================================= */}
+
                     <div
                       className="
                         flex
-                        min-w-0
                         items-start
+                        justify-between
                         gap-3
                       "
                     >
                       <div
                         className="
-                          grid
-                          h-11
-                          w-11
-                          shrink-0
-                          place-items-center
-                          rounded-2xl
-                          bg-[#FFF5CC]
-                          text-[#9A7100]
+                          flex
+                          min-w-0
+                          items-start
+                          gap-3
                         "
                       >
-                        <BoxIcon className="h-5 w-5" />
-                      </div>
-
-                      <div className="min-w-0">
-
-                        <p
-                          className="
-                            text-[10px]
-                            font-extrabold
-                            uppercase
-                            tracking-[0.14em]
-                            text-[#B98700]
-                          "
-                        >
-                          Producto
-                        </p>
-
-                        <h3
-                          className="
-                            mt-1
-                            truncate
-                            text-[16px]
-                            font-black
-                            tracking-[-0.01em]
-                            text-[#111318]
-                          "
-                        >
-                          {product.name}
-                        </h3>
-
                         <div
                           className="
-                            mt-1
-                            flex
-                            items-center
-                            gap-1.5
-                            text-[10px]
-                            font-semibold
-                            text-black/35
+                            grid
+                            h-11
+                            w-11
+                            shrink-0
+                            place-items-center
+                            rounded-2xl
+                            bg-[#FFF5CC]
+                            text-[#9A7100]
                           "
                         >
-                          <BarcodeIcon className="h-3.5 w-3.5" />
-
-                          <span className="truncate">
-                            {product.barcode}
-                          </span>
+                          <ProductTypeIcon
+                            tipo={
+                              tipoVenta
+                            }
+                            className="h-5 w-5"
+                          />
                         </div>
 
+                        <div className="min-w-0">
+                          <p
+                            className="
+                              text-[10px]
+                              font-extrabold
+                              uppercase
+                              tracking-[0.14em]
+                              text-[#B98700]
+                            "
+                          >
+                            {getTypeLabel(
+                              tipoVenta
+                            )}
+                          </p>
+
+                          <h3
+                            className="
+                              mt-1
+                              truncate
+                              text-[16px]
+                              font-black
+                              tracking-[-0.01em]
+                              text-[#111318]
+                            "
+                          >
+                            {
+                              product.name
+                            }
+                          </h3>
+
+                          <div
+                            className="
+                              mt-1
+                              flex
+                              min-w-0
+                              items-center
+                              gap-1.5
+                              text-[10px]
+                              font-semibold
+                              text-black/35
+                            "
+                          >
+                            <BarcodeIcon className="h-3.5 w-3.5 shrink-0" />
+
+                            <span className="truncate">
+                              {formatBarcode(
+                                product.barcode
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* PRECIO */}
+
+                      <div
+                        className="
+                          max-w-[130px]
+                          shrink-0
+                          rounded-2xl
+                          bg-[#FFC61A]
+                          px-3
+                          py-2
+                          text-right
+                        "
+                      >
+                        <span
+                          className="
+                            block
+                            text-[9px]
+                            font-bold
+                            uppercase
+                            tracking-[0.08em]
+                            text-black/45
+                          "
+                        >
+                          {ventaPorPeso
+                            ? "Precio / kg"
+                            : precioLibre
+                              ? "Precio"
+                              : "Precio"}
+                        </span>
+
+                        <span
+                          className="
+                            mt-0.5
+                            block
+                            truncate
+                            text-sm
+                            font-black
+                            text-black
+                          "
+                        >
+                          {getPriceLabel(
+                            product
+                          )}
+                        </span>
                       </div>
                     </div>
 
                     <div
                       className="
-                        shrink-0
-                        rounded-2xl
+                        my-4
+                        h-[3px]
+                        rounded-full
                         bg-[#FFC61A]
-                        px-3
-                        py-2
-                        text-right
                       "
-                    >
-                      <span
-                        className="
-                          block
-                          text-[9px]
-                          font-bold
-                          uppercase
-                          tracking-[0.08em]
-                          text-black/45
-                        "
-                      >
-                        Precio
-                      </span>
+                    />
 
-                      <span
-                        className="
-                          mt-0.5
-                          block
-                          text-sm
-                          font-black
-                          text-black
-                        "
-                      >
-                        {money(product.price)}
-                      </span>
+                    {/* =========================================
+                        ESTADOS
+                    ========================================= */}
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <StatusCard
+                        label={
+                          precioLibre
+                            ? "Inventario"
+                            : "Stock"
+                        }
+                        value={
+                          stockInfo.value
+                        }
+                        icon={
+                          precioLibre ? (
+                            <MoneyIcon className="h-4 w-4" />
+                          ) : ventaPorPeso ? (
+                            <ScaleIcon className="h-4 w-4" />
+                          ) : (
+                            <StockIcon className="h-4 w-4" />
+                          )
+                        }
+                        tone={
+                          stockInfo.tone
+                        }
+                        helper={
+                          stockInfo.helper
+                        }
+                      />
+
+                      <StatusCard
+                        label="Vencimiento"
+                        value={
+                          expiryInfo.value
+                        }
+                        icon={
+                          <CalendarIcon className="h-4 w-4" />
+                        }
+                        tone={
+                          expiryInfo.tone
+                        }
+                        helper={
+                          expiryInfo.helper
+                        }
+                      />
                     </div>
 
-                  </div>
+                    {/* =========================================
+                        ACCIONES
+                    ========================================= */}
 
-                  <div
-                    className="
-                      my-4
-                      h-[3px]
-                      rounded-full
-                      bg-[#FFC61A]
-                    "
-                  />
-
-                  {/* ESTADOS */}
-
-                  <div className="grid grid-cols-2 gap-2.5">
-
-                    <StatusCard
-                      label="Stock"
-                      value={`${stock} u.`}
-                      icon={
-                        <StockIcon className="h-4 w-4" />
-                      }
-                      tone={
-                        lowStock
-                          ? "danger"
-                          : "success"
-                      }
-                      helper={
-                        lowStock
-                          ? "Stock bajo"
-                          : "Disponible"
-                      }
-                    />
-
-                    <StatusCard
-                      label="Vencimiento"
-                      value={expiryInfo.value}
-                      icon={
-                        <CalendarIcon className="h-4 w-4" />
-                      }
-                      tone={expiryInfo.tone}
-                      helper={
-                        expiryInfo.helper
-                      }
-                    />
-
-                  </div>
-
-                  {/* ACCIONES */}
-
-                  <div
-                    className="
-                      mt-4
-                      grid
-                      grid-cols-2
-                      gap-2
-                    "
-                  >
-
-                    <SmallBtn
-                      onClick={() =>
-                        setProductModal({
-                          open: true,
-                          product,
-                        })
-                      }
-                      icon={
-                        <EditIcon className="h-4 w-4" />
+                    <div
+                      className={
+                        precioLibre
+                          ? "mt-4 grid grid-cols-1 gap-2"
+                          : "mt-4 grid grid-cols-2 gap-2"
                       }
                     >
-                      Editar
-                    </SmallBtn>
+                      <SmallBtn
+                        onClick={() =>
+                          openEditProduct(
+                            product
+                          )
+                        }
+                        icon={
+                          <EditIcon className="h-4 w-4" />
+                        }
+                      >
+                        Editar
+                      </SmallBtn>
 
-                    <SmallBtn
-                      primary
+                      {!precioLibre && (
+                        <SmallBtn
+                          primary
+                          onClick={() =>
+                            openRestockModal(
+                              product
+                            )
+                          }
+                          icon={
+                            ventaPorPeso ? (
+                              <ScalePlusIcon className="h-4 w-4" />
+                            ) : (
+                              <PlusStockIcon className="h-4 w-4" />
+                            )
+                          }
+                        >
+                          {ventaPorPeso
+                            ? "Sumar peso"
+                            : "Sumar stock"}
+                        </SmallBtn>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
                       onClick={() =>
-                        setRestockModal({
-                          open: true,
-                          product,
-                        })
-                      }
-                      icon={
-                        <PlusStockIcon className="h-4 w-4" />
-                      }
-                    >
-                      Sumar stock
-                    </SmallBtn>
-
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (
-                        confirm(
-                          `¿Eliminar ${product.name} del catálogo?`
+                        handleDeleteProduct(
+                          product
                         )
-                      ) {
-                        deleteProduct(
-                          product.barcode
-                        );
                       }
-                    }}
-                    className="
-                      mt-2.5
-                      inline-flex
-                      w-full
-                      items-center
-                      justify-center
-                      gap-2
-                      rounded-2xl
-                      border
-                      border-red-200
-                      bg-red-50
-                      px-4
-                      py-3
-                      text-xs
-                      font-extrabold
-                      text-red-600
-                      transition
-                      hover:bg-red-100
-                      active:scale-[0.99]
-                    "
-                  >
-                    <TrashIcon className="h-4 w-4" />
+                      className="
+                        mt-2.5
+                        inline-flex
+                        w-full
+                        items-center
+                        justify-center
+                        gap-2
+                        rounded-2xl
+                        border
+                        border-red-200
+                        bg-red-50
+                        px-4
+                        py-3
+                        text-xs
+                        font-extrabold
+                        text-red-600
+                        transition
+                        hover:bg-red-100
+                        active:scale-[0.99]
+                      "
+                    >
+                      <TrashIcon className="h-4 w-4" />
 
-                    Eliminar producto
-                  </button>
-
-                </div>
-              </motion.article>
-            );
-          })}
-
+                      Eliminar producto
+                    </button>
+                  </div>
+                </motion.article>
+              );
+            }
+          )}
         </div>
       )}
 
@@ -847,48 +1443,26 @@ export default function Inventario({
       ===================================================== */}
 
       <ProductModal
-        open={productModal.open}
-        product={productModal.product}
-        scannedCode={scannedCode}
-        onScan={() =>
-          setScanOpen(true)
+        open={
+          productModal.open
         }
-        onClose={() => {
-          setProductModal({
-            open: false,
-            product: null,
-          });
-
-          setScannedCode(null);
-        }}
-        onSave={(
-          product,
-          error
-        ) => {
-          if (error) {
-            showToast(
-              error,
-              true
-            );
-
-            return;
-          }
-
-          const ok =
-            upsertProduct(
-              product,
-              !!productModal.product
-            );
-
-          if (ok) {
-            setProductModal({
-              open: false,
-              product: null,
-            });
-
-            setScannedCode(null);
-          }
-        }}
+        product={
+          productModal.product
+        }
+        scannedCode={
+          scannedCode
+        }
+        onScan={() =>
+          setScanOpen(
+            true
+          )
+        }
+        onClose={
+          closeProductModal
+        }
+        onSave={
+          handleProductSave
+        }
       />
 
       {/* =====================================================
@@ -896,25 +1470,18 @@ export default function Inventario({
       ===================================================== */}
 
       <RestockModal
-        open={restockModal.open}
-        product={restockModal.product}
-        onClose={() =>
-          setRestockModal({
-            open: false,
-            product: null,
-          })
+        open={
+          restockModal.open
         }
-        onConfirm={(n) => {
-          restock(
-            restockModal.product.barcode,
-            n
-          );
-
-          setRestockModal({
-            open: false,
-            product: null,
-          });
-        }}
+        product={
+          restockModal.product
+        }
+        onClose={
+          closeRestockModal
+        }
+        onConfirm={
+          handleRestock
+        }
       />
 
       {/* =====================================================
@@ -922,18 +1489,143 @@ export default function Inventario({
       ===================================================== */}
 
       <Scanner
-        open={scanOpen}
-        onClose={() =>
-          setScanOpen(false)
+        open={
+          scanOpen
         }
-        onResult={(value) => {
-          setScanOpen(false);
-          setScannedCode(value);
-        }}
+        onClose={() =>
+          setScanOpen(
+            false
+          )
+        }
+        onResult={
+          handleScannerResult
+        }
       />
-
     </div>
   );
+}
+
+/* =========================================================
+   INFORMACIÓN DE STOCK
+========================================================= */
+
+function getStockInfo(
+  product,
+  lowStock
+) {
+  const tipoVenta =
+    getTipoVenta(
+      product
+    );
+
+  if (
+    tipoVenta ===
+    "precio-libre"
+  ) {
+    return {
+      value:
+        "Sin control",
+
+      helper:
+        "Importe manual",
+
+      tone:
+        "neutral",
+    };
+  }
+
+  return {
+    value:
+      formatStock(
+        product
+      ),
+
+    helper:
+      lowStock
+        ? tipoVenta ===
+          "peso"
+          ? "Poco peso disponible"
+          : "Stock bajo"
+        : "Disponible",
+
+    tone:
+      lowStock
+        ? "danger"
+        : "success",
+  };
+}
+
+/* =========================================================
+   INFORMACIÓN DE VENCIMIENTO
+========================================================= */
+
+function getExpiryInfo(
+  expiry,
+  days
+) {
+  if (!expiry) {
+    return {
+      value:
+        "Sin fecha",
+
+      helper:
+        "Sin vencimiento",
+
+      tone:
+        "neutral",
+    };
+  }
+
+  if (
+    days !== null &&
+    days < 0
+  ) {
+    return {
+      value:
+        "Vencido",
+
+      helper:
+        fmtDate(
+          expiry
+        ),
+
+      tone:
+        "danger",
+    };
+  }
+
+  if (
+    days !== null &&
+    days <= 7
+  ) {
+    return {
+      value:
+        days === 0
+          ? "Vence hoy"
+          : `En ${days}d`,
+
+      helper:
+        fmtDate(
+          expiry
+        ),
+
+      tone:
+        "warning",
+    };
+  }
+
+  return {
+    value:
+      fmtDate(
+        expiry
+      ),
+
+    helper:
+      "Vigente",
+
+    tone:
+      "success",
+  };
 }
 
 /* =========================================================
@@ -955,7 +1647,6 @@ function SummaryStat({
         p-3
       "
     >
-
       <div
         className="
           mb-1.5
@@ -992,13 +1683,12 @@ function SummaryStat({
       >
         {value}
       </span>
-
     </div>
   );
 }
 
 /* =========================================================
-   ESTADO STOCK / VENCIMIENTO
+   STATUS CARD
 ========================================================= */
 
 function StatusCard({
@@ -1010,27 +1700,47 @@ function StatusCard({
 }) {
   const styles = {
     success: {
-      box: "bg-emerald-50",
-      icon: "bg-emerald-100 text-emerald-600",
-      value: "text-emerald-700",
+      box:
+        "bg-emerald-50",
+
+      icon:
+        "bg-emerald-100 text-emerald-600",
+
+      value:
+        "text-emerald-700",
     },
 
     warning: {
-      box: "bg-[#FFF8DD]",
-      icon: "bg-[#FFF1B6] text-[#9A7100]",
-      value: "text-[#9A7100]",
+      box:
+        "bg-[#FFF8DD]",
+
+      icon:
+        "bg-[#FFF1B6] text-[#9A7100]",
+
+      value:
+        "text-[#9A7100]",
     },
 
     danger: {
-      box: "bg-red-50",
-      icon: "bg-red-100 text-red-600",
-      value: "text-red-600",
+      box:
+        "bg-red-50",
+
+      icon:
+        "bg-red-100 text-red-600",
+
+      value:
+        "text-red-600",
     },
 
     neutral: {
-      box: "bg-[#F4F5F7]",
-      icon: "bg-white text-black/35",
-      value: "text-[#111318]",
+      box:
+        "bg-[#F4F5F7]",
+
+      icon:
+        "bg-white text-black/35",
+
+      value:
+        "text-[#111318]",
     },
   };
 
@@ -1047,7 +1757,6 @@ function StatusCard({
         ${style.box}
       `}
     >
-
       <div
         className="
           flex
@@ -1070,7 +1779,6 @@ function StatusCard({
         </div>
 
         <div className="min-w-0">
-
           <span
             className="
               block
@@ -1110,16 +1818,14 @@ function StatusCard({
           >
             {helper}
           </span>
-
         </div>
       </div>
-
     </div>
   );
 }
 
 /* =========================================================
-   BOTONES
+   BOTÓN PEQUEÑO
 ========================================================= */
 
 function SmallBtn({
@@ -1131,7 +1837,9 @@ function SmallBtn({
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={
+        onClick
+      }
       className={
         `
           inline-flex
@@ -1170,55 +1878,49 @@ function SmallBtn({
 }
 
 /* =========================================================
-   VENCIMIENTO
+   ICONO SEGÚN TIPO
 ========================================================= */
 
-function getExpiryInfo(
-  expiry,
-  days
-) {
-  if (!expiry) {
-    return {
-      value: "Sin fecha",
-      helper: "Sin vencimiento",
-      tone: "neutral",
-    };
+function ProductTypeIcon({
+  tipo,
+  className = "",
+}) {
+  if (
+    tipo === "peso"
+  ) {
+    return (
+      <ScaleIcon
+        className={
+          className
+        }
+      />
+    );
   }
 
   if (
-    days !== null &&
-    days < 0
+    tipo ===
+    "precio-libre"
   ) {
-    return {
-      value: "Vencido",
-      helper: fmtDate(expiry),
-      tone: "danger",
-    };
+    return (
+      <MoneyIcon
+        className={
+          className
+        }
+      />
+    );
   }
 
-  if (
-    days !== null &&
-    days <= 7
-  ) {
-    return {
-      value:
-        days === 0
-          ? "Vence hoy"
-          : `En ${days}d`,
-      helper: fmtDate(expiry),
-      tone: "warning",
-    };
-  }
-
-  return {
-    value: fmtDate(expiry),
-    helper: "Vigente",
-    tone: "success",
-  };
+  return (
+    <BoxIcon
+      className={
+        className
+      }
+    />
+  );
 }
 
 /* =========================================================
-   ICONOS INLINE
+   ICONOS
 ========================================================= */
 
 function BoxIcon({
@@ -1242,6 +1944,64 @@ function BoxIcon({
   );
 }
 
+function ScaleIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3v4" />
+      <path d="M5 7h14" />
+      <path d="m7 7-4 7h8L7 7Z" />
+      <path d="m17 7-4 7h8l-4-7Z" />
+      <path d="M12 7v13" />
+      <path d="M8 20h8" />
+    </svg>
+  );
+}
+
+function MoneyIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect
+        x="3"
+        y="5"
+        width="18"
+        height="14"
+        rx="2"
+      />
+
+      <circle
+        cx="12"
+        cy="12"
+        r="2.5"
+      />
+
+      <path d="M7 9h.01" />
+      <path d="M17 15h.01" />
+    </svg>
+  );
+}
+
 function SearchIcon({
   className = "",
 }) {
@@ -1261,6 +2021,7 @@ function SearchIcon({
         cy="11"
         r="7"
       />
+
       <path d="m20 20-3.5-3.5" />
     </svg>
   );
@@ -1277,7 +2038,6 @@ function CloseIcon({
       stroke="currentColor"
       strokeWidth="2.2"
       strokeLinecap="round"
-      strokeLinejoin="round"
       aria-hidden="true"
     >
       <path d="M6 6l12 12" />
@@ -1307,6 +2067,7 @@ function GridIcon({
         height="6"
         rx="1"
       />
+
       <rect
         x="14"
         y="4"
@@ -1314,6 +2075,7 @@ function GridIcon({
         height="6"
         rx="1"
       />
+
       <rect
         x="4"
         y="14"
@@ -1321,6 +2083,7 @@ function GridIcon({
         height="6"
         rx="1"
       />
+
       <rect
         x="14"
         y="14"
@@ -1373,6 +2136,7 @@ function ClockIcon({
         cy="12"
         r="9"
       />
+
       <path d="M12 7v5l3 2" />
     </svg>
   );
@@ -1477,6 +2241,7 @@ function CalendarIcon({
       <path d="M6 3v3" />
       <path d="M18 3v3" />
       <path d="M4 8h16" />
+
       <path d="M5 5h14a2 2 0 0 1 2 2v12H3V7a2 2 0 0 1 2-2Z" />
     </svg>
   );
@@ -1497,7 +2262,8 @@ function EditIcon({
       aria-hidden="true"
     >
       <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
+
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" />
     </svg>
   );
 }
@@ -1520,6 +2286,31 @@ function PlusStockIcon({
       <path d="M8 8V5h8v3" />
       <path d="M12 12v5" />
       <path d="M9.5 14.5h5" />
+    </svg>
+  );
+}
+
+function ScalePlusIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3v4" />
+      <path d="M5 7h14" />
+      <path d="m7 7-4 7h8L7 7Z" />
+      <path d="M12 7v13" />
+      <path d="M8 20h8" />
+      <path d="M17 12v6" />
+      <path d="M14 15h6" />
     </svg>
   );
 }
