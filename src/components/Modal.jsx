@@ -1,8 +1,7 @@
 // src/components/Modal.jsx
-// Modal base rediseñado con la misma identidad visual del POS.
-// Mantiene AnimatePresence + motion/react, cierre por backdrop y bottom sheet.
-// No requiere librerías externas.
 
+import { useEffect } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 
 export default function Modal({
@@ -11,22 +10,77 @@ export default function Modal({
   title,
   children,
 }) {
-  return (
+  /* =========================================================
+     BLOQUEAR SCROLL DEL FONDO
+  ========================================================= */
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const previousOverflow =
+      document.body.style.overflow;
+
+    document.body.style.overflow =
+      "hidden";
+
+    return () => {
+      document.body.style.overflow =
+        previousOverflow;
+    };
+  }, [open]);
+
+  /* =========================================================
+     CERRAR CON ESC
+  ========================================================= */
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    window.addEventListener(
+      "keydown",
+      handleKeyDown
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleKeyDown
+      );
+    };
+  }, [open, onClose]);
+
+  /* =========================================================
+     PORTAL
+  ========================================================= */
+
+  if (
+    typeof document === "undefined"
+  ) {
+    return null;
+  }
+
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
           className="
             fixed
             inset-0
-            z-[100]
+            z-[9999]
             flex
             items-end
             justify-center
+            overflow-hidden
             bg-black/75
-            px-0
             backdrop-blur-[3px]
             sm:items-center
-            sm:px-4
+            sm:p-4
           "
           initial={{
             opacity: 0,
@@ -40,8 +94,11 @@ export default function Modal({
           transition={{
             duration: 0.18,
           }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
+          onClick={(event) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
               onClose();
             }
           }}
@@ -49,8 +106,11 @@ export default function Modal({
           <motion.div
             className="
               relative
+              flex
+              max-h-[calc(100dvh-12px)]
               w-full
               max-w-[520px]
+              flex-col
               overflow-hidden
               rounded-t-[30px]
               border
@@ -59,6 +119,8 @@ export default function Modal({
               from-[#11151C]
               to-[#0D1016]
               shadow-[0_-20px_70px_rgba(0,0,0,0.48)]
+
+              sm:max-h-[calc(100dvh-32px)]
               sm:rounded-[30px]
             "
             initial={{
@@ -78,10 +140,18 @@ export default function Modal({
               stiffness: 400,
               damping: 38,
             }}
+            role="dialog"
+            aria-modal="true"
+            aria-label={title}
           >
+            {/* ===============================================
+                TIRADOR MOBILE
+            =============================================== */}
+
             <div
               className="
                 flex
+                shrink-0
                 justify-center
                 pb-1
                 pt-2.5
@@ -99,9 +169,14 @@ export default function Modal({
               />
             </div>
 
+            {/* ===============================================
+                HEADER
+            =============================================== */}
+
             <div
               className="
                 relative
+                shrink-0
                 border-b
                 border-white/10
                 px-4
@@ -169,14 +244,20 @@ export default function Modal({
               </button>
             </div>
 
+            {/* ===============================================
+                CONTENIDO SCROLLEABLE
+            =============================================== */}
+
             <div
               className="
-                max-h-[calc(88vh-76px)]
+                min-h-0
+                flex-1
                 overflow-y-auto
+                overscroll-contain
                 px-4
-                pb-[calc(20px+env(safe-area-inset-bottom))]
+                pb-[calc(28px+env(safe-area-inset-bottom))]
                 pt-4
-                sm:max-h-[78vh]
+                [-webkit-overflow-scrolling:touch]
                 sm:px-5
                 sm:pb-5
                 sm:pt-5
@@ -187,12 +268,13 @@ export default function Modal({
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }
 
 /* =========================================================
-   ICONOS INLINE
+   ICONO
 ========================================================= */
 
 function CloseIcon({
