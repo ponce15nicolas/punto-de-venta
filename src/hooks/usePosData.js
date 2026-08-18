@@ -1,26 +1,17 @@
 // src/hooks/usePosData.js
 //
-// Estado y lógica principal del punto de venta.
-//
-// Soporta:
-// - productos por unidad
-// - productos por peso
-// - productos de importe libre
-// - stock entero o decimal
-// - carrito
-// - ventas
-// - caja
-// - métodos de pago
-// - persistencia local
-// - notificaciones
-//
-// Compatibilidad:
-// Los productos antiguos que no tengan "tipoVenta"
-// se consideran automáticamente "unidad".
+// Lógica principal del POS.
+// - unidad / peso / importe libre
+// - carrito, ventas y caja
+// - sincronización en tiempo real con Firestore
+// - migración desde localStorage
+// - caché local de respaldo
 
 import {
   useCallback,
   useEffect,
+  useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -30,6 +21,24 @@ import {
 } from "../lib/storage";
 
 import { uid } from "../lib/format";
+
+import {
+  checkoutCloud,
+  closeCashSessionCloud,
+  deleteProductCloud,
+  openCashSessionCloud,
+  restockProductCloud,
+  saveShopNameCloud,
+  subscribeCashSessions,
+  subscribePosConfig,
+  subscribeProducts,
+  subscribeSales,
+  upsertProductCloud,
+} from "../services/pos/posFirestore";
+
+import {
+  migrateLocalPosToFirestore,
+} from "../services/pos/posMigration";
 
 /* =========================================================
    CONFIGURACIÓN
@@ -48,8 +57,21 @@ const PRODUCT_TYPES = [
   "precio-libre",
 ];
 
+const DEFAULT_SHOP_NAME =
+  "Mi Negocio";
+
+/*
+ * Identifica a qué cliente pertenece
+ * la caché local actual.
+ *
+ * Evita migrar datos de un comercio
+ * hacia otro si utilizan el mismo navegador.
+ */
+const LOCAL_OWNER_KEY =
+  "cloudOwnerClienteId";
+
 /* =========================================================
-   HELPERS GENERALES
+   HELPERS
 ========================================================= */
 
 function toNumber(
@@ -64,9 +86,7 @@ function toNumber(
     : fallback;
 }
 
-function roundMoney(
-  value
-) {
+function roundMoney(value) {
   return (
     Math.round(
       (
@@ -77,9 +97,7 @@ function roundMoney(
   );
 }
 
-function roundQuantity(
-  value
-) {
+function roundQuantity(value) {
   return (
     Math.round(
       (
@@ -115,6 +133,18 @@ function normalizeProduct(
   return {
     ...product,
 
+    barcode:
+      String(
+        product.barcode ||
+          ""
+      ).trim(),
+
+    name:
+      String(
+        product.name ||
+          ""
+      ).trim(),
+
     tipoVenta,
 
     unidadMedida:
@@ -137,7 +167,8 @@ function normalizeProduct(
       tipoVenta ===
       "precio-libre"
         ? 0
-        : tipoVenta === "peso"
+        : tipoVenta ===
+            "peso"
           ? roundQuantity(
               toNumber(
                 product.stock
@@ -154,6 +185,60 @@ function normalizeProduct(
   };
 }
 
+function normalizeCatalog(
+  value
+) {
+  if (
+    !value ||
+    typeof value !==
+      "object" ||
+    Array.isArray(value)
+  ) {
+    return {};
+  }
+
+  const entries = [];
+
+  for (
+    const [
+      barcode,
+      product,
+    ] of Object.entries(
+      value
+    )
+  ) {
+    const normalized =
+      normalizeProduct({
+        ...product,
+
+        barcode:
+          product?.barcode ||
+          barcode,
+      });
+
+    if (
+      normalized?.barcode
+    ) {
+      entries.push([
+        normalized.barcode,
+        normalized,
+      ]);
+    }
+  }
+
+  return Object.fromEntries(
+    entries
+  );
+}
+
+function normalizeArray(
+  value
+) {
+  return Array.isArray(value)
+    ? value.filter(Boolean)
+    : [];
+}
+
 function getItemSubtotal(
   item
 ) {
@@ -163,7 +248,9 @@ function getItemSubtotal(
 
   if (
     Number.isFinite(
-      Number(item.subtotal)
+      Number(
+        item.subtotal
+      )
     )
   ) {
     return roundMoney(
@@ -172,8 +259,12 @@ function getItemSubtotal(
   }
 
   return roundMoney(
-    toNumber(item.qty) *
-      toNumber(item.price)
+    toNumber(
+      item.qty
+    ) *
+      toNumber(
+        item.price
+      )
   );
 }
 
@@ -181,11 +272,145 @@ function generarCodigoInterno() {
   return `manual-${Date.now()}-${uid()}`;
 }
 
+function sortCashSessions(
+  sessions
+) {
+  return [
+    ...sessions,
+  ].sort(
+    (
+      a,
+      b
+    ) => {
+      const aTime =
+        new Date(
+          a?.openTime ||
+            0
+        ).getTime();
+
+      const bTime =
+        new Date(
+          b?.openTime ||
+            0
+        ).getTime();
+
+      return (
+        (
+          Number.isFinite(
+            aTime
+          )
+            ? aTime
+            : 0
+        ) -
+        (
+          Number.isFinite(
+            bTime
+          )
+            ? bTime
+            : 0
+        )
+      );
+    }
+  );
+}
+
+function mapCloudError(
+  error
+) {
+  const code =
+    String(
+      error?.code ||
+        ""
+    ).toLowerCase();
+
+  if (
+    code.includes(
+      "permission-denied"
+    )
+  ) {
+    return "No tenés permisos para sincronizar estos datos";
+  }
+
+  if (
+    code.includes(
+      "unavailable"
+    ) ||
+    code.includes(
+      "network"
+    )
+  ) {
+    return "No se pudo conectar con la nube. Revisá tu conexión";
+  }
+
+  if (
+    code.includes(
+      "cash-already-open"
+    )
+  ) {
+    return "Ya hay una caja abierta en otro dispositivo";
+  }
+
+  if (
+    code.includes(
+      "cash-not-open"
+    ) ||
+    code.includes(
+      "cash-session-mismatch"
+    ) ||
+    code.includes(
+      "cash-already-closed"
+    )
+  ) {
+    return "La caja cambió en otro dispositivo. Actualizá e intentá nuevamente";
+  }
+
+  if (
+    code.includes(
+      "product-changed"
+    )
+  ) {
+    return (
+      error?.message ||
+      "El producto cambió. Volvé a agregarlo al ticket"
+    );
+  }
+
+  return (
+    error?.message ||
+    "No se pudo completar la operación"
+  );
+}
+
 /* =========================================================
    HOOK
 ========================================================= */
 
-export function usePosData() {
+export function usePosData({
+  clienteId = null,
+  deviceId = null,
+} = {}) {
+  const cleanClienteId =
+    String(
+      clienteId ||
+        ""
+    ).trim();
+
+  const cleanDeviceId =
+    String(
+      deviceId ||
+        ""
+    ).trim();
+
+  const cloudRequested =
+    Boolean(
+      cleanClienteId &&
+      cleanDeviceId
+    );
+
+  /* =========================================================
+     ESTADO
+  ========================================================= */
+
   const [
     catalog,
     setCatalog,
@@ -205,7 +430,7 @@ export function usePosData() {
     shopName,
     setShopNameState,
   ] = useState(
-    "Mi Negocio"
+    DEFAULT_SHOP_NAME
   );
 
   const [
@@ -219,90 +444,67 @@ export function usePosData() {
   ] = useState(false);
 
   const [
+    syncStatus,
+    setSyncStatus,
+  ] = useState(
+    cloudRequested
+      ? "starting"
+      : "local"
+  );
+
+  const [
     toastMsg,
     setToastMsg,
   ] = useState(null);
 
   /* =========================================================
-     CARGAR DATOS
+     REFS
   ========================================================= */
 
+  const catalogRef =
+    useRef({});
+
+  const salesRef =
+    useRef([]);
+
+  const cashSessionsRef =
+    useRef([]);
+
+  const cloudActiveRef =
+    useRef(false);
+
+  const syncErrorShownRef =
+    useRef(false);
+
+  const checkoutInFlightRef =
+    useRef(false);
+
+  const openingCashRef =
+    useRef(false);
+
+  const closingCashRef =
+    useRef(false);
+
   useEffect(() => {
-    try {
-      const savedCatalog =
-        storeGet(
-          "catalog",
-          {}
-        ) || {};
+    catalogRef.current =
+      catalog;
+  }, [
+    catalog,
+  ]);
 
-      /*
-       * Normalizamos productos antiguos.
-       *
-       * De esta forma no hace falta editar
-       * todos los productos existentes.
-       */
-      const normalizedCatalog =
-        Object.fromEntries(
-          Object.entries(
-            savedCatalog
-          ).map(
-            ([
-              barcode,
-              product,
-            ]) => [
-              barcode,
-              normalizeProduct({
-                ...product,
-                barcode:
-                  product?.barcode ||
-                  barcode,
-              }),
-            ]
-          )
-        );
+  useEffect(() => {
+    salesRef.current =
+      sales;
+  }, [
+    sales,
+  ]);
 
-      setCatalog(
-        normalizedCatalog
-      );
-
-      setSales(
-        storeGet(
-          "sales",
-          []
-        ) || []
-      );
-
-      setCashSessions(
-        storeGet(
-          "cashSessions",
-          []
-        ) || []
-      );
-
-      setShopNameState(
-        storeGet(
-          "shopName",
-          "Mi Negocio"
-        ) ||
-          "Mi Negocio"
-      );
-    } catch (error) {
-      console.error(
-        "Error cargando datos del POS:",
-        error
-      );
-
-      setCatalog({});
-      setSales([]);
-      setCashSessions([]);
-
-      setShopNameState(
-        "Mi Negocio"
-      );
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
+  useEffect(() => {
+    cashSessionsRef.current =
+      cashSessions;
+  }, [
+    cashSessions,
+  ]);
 
   /* =========================================================
      TOAST
@@ -310,7 +512,9 @@ export function usePosData() {
 
   const clearToast =
     useCallback(() => {
-      setToastMsg(null);
+      setToastMsg(
+        null
+      );
     }, []);
 
   const showToast =
@@ -329,17 +533,27 @@ export function usePosData() {
     );
 
   /* =========================================================
-     PERSISTENCIA
+     CACHÉ LOCAL
   ========================================================= */
 
   const persistCatalog =
     useCallback(
       (next) => {
-        setCatalog(next);
+        const normalized =
+          normalizeCatalog(
+            next
+          );
+
+        catalogRef.current =
+          normalized;
+
+        setCatalog(
+          normalized
+        );
 
         storeSet(
           "catalog",
-          next
+          normalized
         );
       },
       []
@@ -348,11 +562,21 @@ export function usePosData() {
   const persistSales =
     useCallback(
       (next) => {
-        setSales(next);
+        const normalized =
+          normalizeArray(
+            next
+          );
+
+        salesRef.current =
+          normalized;
+
+        setSales(
+          normalized
+        );
 
         storeSet(
           "sales",
-          next
+          normalized
         );
       },
       []
@@ -361,27 +585,37 @@ export function usePosData() {
   const persistCashSessions =
     useCallback(
       (next) => {
-        setCashSessions(next);
+        const normalized =
+          sortCashSessions(
+            normalizeArray(
+              next
+            )
+          );
+
+        cashSessionsRef.current =
+          normalized;
+
+        setCashSessions(
+          normalized
+        );
 
         storeSet(
           "cashSessions",
-          next
+          normalized
         );
       },
       []
     );
 
-  const setShopName =
+  const persistShopName =
     useCallback(
       (name) => {
         const cleanName =
           String(
-            name || ""
-          ).trim();
-
-        if (!cleanName) {
-          return;
-        }
+            name ||
+              ""
+          ).trim() ||
+          DEFAULT_SHOP_NAME;
 
         setShopNameState(
           cleanName
@@ -396,15 +630,599 @@ export function usePosData() {
     );
 
   /* =========================================================
+     CARGAR LOCALSTORAGE
+  ========================================================= */
+
+  useEffect(() => {
+    try {
+      const savedCatalog =
+        normalizeCatalog(
+          storeGet(
+            "catalog",
+            {}
+          ) || {}
+        );
+
+      const savedSales =
+        normalizeArray(
+          storeGet(
+            "sales",
+            []
+          ) || []
+        );
+
+      const savedCashSessions =
+        sortCashSessions(
+          normalizeArray(
+            storeGet(
+              "cashSessions",
+              []
+            ) || []
+          )
+        );
+
+      const savedShopName =
+        String(
+          storeGet(
+            "shopName",
+            DEFAULT_SHOP_NAME
+          ) ||
+            DEFAULT_SHOP_NAME
+        ).trim() ||
+        DEFAULT_SHOP_NAME;
+
+      catalogRef.current =
+        savedCatalog;
+
+      salesRef.current =
+        savedSales;
+
+      cashSessionsRef.current =
+        savedCashSessions;
+
+      setCatalog(
+        savedCatalog
+      );
+
+      setSales(
+        savedSales
+      );
+
+      setCashSessions(
+        savedCashSessions
+      );
+
+      setShopNameState(
+        savedShopName
+      );
+    } catch (error) {
+      console.error(
+        "Error cargando datos locales del POS:",
+        error
+      );
+
+      catalogRef.current =
+        {};
+
+      salesRef.current =
+        [];
+
+      cashSessionsRef.current =
+        [];
+
+      setCatalog({});
+      setSales([]);
+      setCashSessions([]);
+
+      setShopNameState(
+        DEFAULT_SHOP_NAME
+      );
+    } finally {
+      if (
+        !cloudRequested
+      ) {
+        setSyncStatus(
+          "local"
+        );
+
+        setLoaded(
+          true
+        );
+      }
+    }
+  }, [
+    cloudRequested,
+  ]);
+
+    /* =========================================================
+     MIGRACIÓN + FIRESTORE
+  ========================================================= */
+
+  useEffect(() => {
+    if (
+      !cloudRequested
+    ) {
+      cloudActiveRef.current =
+        false;
+
+      setSyncStatus(
+        "local"
+      );
+
+      setLoaded(
+        true
+      );
+
+      return undefined;
+    }
+
+    let cancelled =
+      false;
+
+    let unsubscribers =
+      [];
+
+    cloudActiveRef.current =
+      false;
+
+    syncErrorShownRef.current =
+      false;
+
+    setLoaded(
+      false
+    );
+
+    setSyncStatus(
+      "starting"
+    );
+
+    async function startCloudSync() {
+      try {
+        const cachedOwner =
+          String(
+            storeGet(
+              LOCAL_OWNER_KEY,
+              ""
+            ) ||
+              ""
+          ).trim();
+
+        const cacheBelongsToClient =
+          !cachedOwner ||
+          cachedOwner ===
+            cleanClienteId;
+
+        /*
+         * Primera activación Cloud.
+         *
+         * Los datos locales existentes
+         * se consideran pertenecientes
+         * al cliente autenticado.
+         */
+        if (
+          !cachedOwner
+        ) {
+          storeSet(
+            LOCAL_OWNER_KEY,
+            cleanClienteId
+          );
+        }
+
+        /*
+         * Si la caché pertenece a otro
+         * cliente no la migramos.
+         */
+        if (
+          cachedOwner &&
+          !cacheBelongsToClient
+        ) {
+          catalogRef.current =
+            {};
+
+          salesRef.current =
+            [];
+
+          cashSessionsRef.current =
+            [];
+
+          setCatalog({});
+          setSales([]);
+          setCashSessions([]);
+          setCart([]);
+
+          setShopNameState(
+            DEFAULT_SHOP_NAME
+          );
+        }
+
+        /*
+         * Migración de datos históricos.
+         */
+        if (
+          cacheBelongsToClient
+        ) {
+          const migrationResult =
+            await migrateLocalPosToFirestore({
+              clienteId:
+                cleanClienteId,
+
+              deviceId:
+                cleanDeviceId,
+            });
+
+          if (
+            cancelled
+          ) {
+            return;
+          }
+
+          if (
+            migrationResult
+              ?.reason ===
+            "migration-in-progress"
+          ) {
+            setSyncStatus(
+              "syncing"
+            );
+          }
+        }
+
+        if (
+          cancelled
+        ) {
+          return;
+        }
+
+        /*
+         * Desde acá Firestore pasa a ser
+         * la fuente principal.
+         *
+         * No hacemos fallback automático
+         * a escrituras locales si una
+         * operación Cloud falla.
+         *
+         * Eso evita divergencias entre
+         * distintos dispositivos.
+         */
+        cloudActiveRef.current =
+          true;
+
+        const initialSnapshots = {
+          products: false,
+          sales: false,
+          cash: false,
+          config: false,
+        };
+
+        function markSnapshot(
+          key
+        ) {
+          initialSnapshots[
+            key
+          ] = true;
+
+          const ready =
+            Object.values(
+              initialSnapshots
+            ).every(
+              Boolean
+            );
+
+          if (
+            ready &&
+            !cancelled
+          ) {
+            storeSet(
+              LOCAL_OWNER_KEY,
+              cleanClienteId
+            );
+
+            setSyncStatus(
+              "synced"
+            );
+
+            setLoaded(
+              true
+            );
+          }
+        }
+
+        function handleListenerError(
+          error
+        ) {
+          console.error(
+            "Error en sincronización del POS:",
+            error
+          );
+
+          if (
+            cancelled
+          ) {
+            return;
+          }
+
+          setSyncStatus(
+            "error"
+          );
+
+          setLoaded(
+            true
+          );
+
+          if (
+            !syncErrorShownRef
+              .current
+          ) {
+            syncErrorShownRef.current =
+              true;
+
+            showToast(
+              mapCloudError(
+                error
+              ),
+              true
+            );
+          }
+        }
+
+        unsubscribers = [
+          subscribeProducts(
+            cleanClienteId,
+
+            (
+              nextCatalog
+            ) => {
+              if (
+                cancelled
+              ) {
+                return;
+              }
+
+              persistCatalog(
+                nextCatalog
+              );
+
+              markSnapshot(
+                "products"
+              );
+            },
+
+            handleListenerError
+          ),
+
+          subscribeSales(
+            cleanClienteId,
+
+            (
+              nextSales
+            ) => {
+              if (
+                cancelled
+              ) {
+                return;
+              }
+
+              persistSales(
+                nextSales
+              );
+
+              markSnapshot(
+                "sales"
+              );
+            },
+
+            handleListenerError
+          ),
+
+          subscribeCashSessions(
+            cleanClienteId,
+
+            (
+              nextSessions
+            ) => {
+              if (
+                cancelled
+              ) {
+                return;
+              }
+
+              persistCashSessions(
+                nextSessions
+              );
+
+              markSnapshot(
+                "cash"
+              );
+            },
+
+            handleListenerError
+          ),
+
+          subscribePosConfig(
+            cleanClienteId,
+
+            (config) => {
+              if (
+                cancelled
+              ) {
+                return;
+              }
+
+              persistShopName(
+                config?.shopName ||
+                  DEFAULT_SHOP_NAME
+              );
+
+              markSnapshot(
+                "config"
+              );
+            },
+
+            handleListenerError
+          ),
+        ];
+      } catch (error) {
+        console.error(
+          "No se pudo iniciar la sincronización Cloud del POS:",
+          error
+        );
+
+        if (
+          cancelled
+        ) {
+          return;
+        }
+
+        /*
+         * Si Firestore todavía no puede
+         * inicializarse, conservamos el
+         * funcionamiento local.
+         *
+         * Esto es útil si temporalmente
+         * Cloud no está disponible.
+         */
+        cloudActiveRef.current =
+          false;
+
+        setSyncStatus(
+          "error"
+        );
+
+        setLoaded(
+          true
+        );
+
+        if (
+          !syncErrorShownRef
+            .current
+        ) {
+          syncErrorShownRef.current =
+            true;
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+        }
+      }
+    }
+
+    startCloudSync();
+
+    return () => {
+      cancelled =
+        true;
+
+      for (
+        const unsubscribe of
+        unsubscribers
+      ) {
+        try {
+          unsubscribe?.();
+        } catch (error) {
+          console.error(
+            "Error cerrando listener del POS:",
+            error
+          );
+        }
+      }
+
+      cloudActiveRef.current =
+        false;
+    };
+  }, [
+    cloudRequested,
+    cleanClienteId,
+    cleanDeviceId,
+    persistCatalog,
+    persistSales,
+    persistCashSessions,
+    persistShopName,
+    showToast,
+  ]);
+  
+  /* =========================================================
+     NOMBRE DEL NEGOCIO
+  ========================================================= */
+
+  const setShopName =
+    useCallback(
+      async (name) => {
+        const cleanName =
+          String(
+            name ||
+              ""
+          ).trim();
+
+        if (
+          !cleanName
+        ) {
+          return false;
+        }
+
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          persistShopName(
+            cleanName
+          );
+
+          return true;
+        }
+
+        try {
+          await saveShopNameCloud(
+            cleanClienteId,
+            cleanName
+          );
+
+          persistShopName(
+            cleanName
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error guardando nombre del negocio:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        persistShopName,
+        showToast,
+      ]
+    );
+
+  /* =========================================================
      CAJA ABIERTA
   ========================================================= */
 
   const openSession =
-    cashSessions.find(
-      (session) =>
-        session.status ===
-        "open"
-    ) || null;
+    useMemo(
+      () =>
+        cashSessions.find(
+          (session) =>
+            session?.status ===
+            "open"
+        ) || null,
+      [
+        cashSessions,
+      ]
+    );
 
   /* =========================================================
      BUSCAR PRODUCTO
@@ -415,21 +1233,23 @@ export function usePosData() {
       (barcode) => {
         const code =
           String(
-            barcode || ""
+            barcode ||
+              ""
           ).trim();
 
-        if (!code) {
+        if (
+          !code
+        ) {
           return null;
         }
 
         return (
-          catalog[code] ||
-          null
+          catalogRef.current[
+            code
+          ] || null
         );
       },
-      [
-        catalog,
-      ]
+      []
     );
 
   /* =========================================================
@@ -438,11 +1258,14 @@ export function usePosData() {
 
   const upsertProduct =
     useCallback(
-      (
+      async (
         product,
-        isEdit
+        isEdit = false,
+        previousBarcode = null
       ) => {
-        if (!product) {
+        if (
+          !product
+        ) {
           showToast(
             "Datos del producto inválidos",
             true
@@ -450,6 +1273,9 @@ export function usePosData() {
 
           return false;
         }
+
+        const currentCatalog =
+          catalogRef.current;
 
         const tipoVenta =
           normalizeProductType(
@@ -462,10 +1288,19 @@ export function usePosData() {
               ""
           ).trim();
 
-        if (!barcode) {
+        if (
+          !barcode
+        ) {
           barcode =
             generarCodigoInterno();
         }
+
+        const previousCode =
+          String(
+            previousBarcode ||
+              product?.originalBarcode ||
+              ""
+          ).trim();
 
         const name =
           String(
@@ -504,7 +1339,9 @@ export function usePosData() {
             );
         }
 
-        if (!name) {
+        if (
+          !name
+        ) {
           showToast(
             "Ingresá el nombre del producto",
             true
@@ -552,12 +1389,32 @@ export function usePosData() {
           return false;
         }
 
+        const conflict =
+          currentCatalog[
+            barcode
+          ];
+
         if (
           !isEdit &&
-          catalog[barcode]
+          conflict
         ) {
           showToast(
             "Ya existe un producto con ese código",
+            true
+          );
+
+          return false;
+        }
+
+        if (
+          isEdit &&
+          previousCode &&
+          previousCode !==
+            barcode &&
+          conflict
+        ) {
+          showToast(
+            "Ya existe otro producto con ese código",
             true
           );
 
@@ -570,11 +1427,8 @@ export function usePosData() {
 
             barcode,
             name,
-
             price,
-
             stock,
-
             tipoVenta,
 
             unidadMedida:
@@ -589,23 +1443,77 @@ export function usePosData() {
               null,
           });
 
-        persistCatalog({
-          ...catalog,
+        try {
+          if (
+            cloudActiveRef
+              .current
+          ) {
+            await upsertProductCloud(
+              cleanClienteId,
+              normalizedProduct,
+              {
+                previousBarcode:
+                  previousCode ||
+                  undefined,
+              }
+            );
+          }
 
-          [barcode]:
-            normalizedProduct,
-        });
+          /*
+           * Actualización local inmediata.
+           *
+           * Si Cloud está activo, el listener
+           * confirmará después el estado final.
+           */
+          const next = {
+            ...catalogRef.current,
+          };
 
-        showToast(
-          isEdit
-            ? "Producto actualizado"
-            : "Producto agregado"
-        );
+          if (
+            isEdit &&
+            previousCode &&
+            previousCode !==
+              barcode
+          ) {
+            delete next[
+              previousCode
+            ];
+          }
 
-        return true;
+          next[
+            barcode
+          ] =
+            normalizedProduct;
+
+          persistCatalog(
+            next
+          );
+
+          showToast(
+            isEdit
+              ? "Producto actualizado"
+              : "Producto agregado"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error guardando producto:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
       },
       [
-        catalog,
+        cleanClienteId,
         persistCatalog,
         showToast,
       ]
@@ -617,48 +1525,83 @@ export function usePosData() {
 
   const deleteProduct =
     useCallback(
-      (barcode) => {
+      async (barcode) => {
         const code =
           String(
-            barcode || ""
+            barcode ||
+              ""
           ).trim();
 
         if (
           !code ||
-          !catalog[code]
+          !catalogRef.current[
+            code
+          ]
         ) {
-          return;
+          return false;
         }
 
-        const next = {
-          ...catalog,
-        };
+        try {
+          if (
+            cloudActiveRef
+              .current
+          ) {
+            await deleteProductCloud(
+              cleanClienteId,
+              code
+            );
+          }
 
-        delete next[code];
+          const next = {
+            ...catalogRef.current,
+          };
 
-        persistCatalog(
-          next
-        );
+          delete next[
+            code
+          ];
 
-        /*
-         * Si estaba agregado al ticket,
-         * también lo quitamos.
-         */
-        setCart(
-          (previous) =>
-            previous.filter(
-              (item) =>
-                item.barcode !==
-                code
-            )
-        );
+          persistCatalog(
+            next
+          );
 
-        showToast(
-          "Producto eliminado"
-        );
+          /*
+           * Si estaba en el ticket,
+           * también lo quitamos.
+           */
+          setCart(
+            (
+              previous
+            ) =>
+              previous.filter(
+                (item) =>
+                  item.barcode !==
+                  code
+              )
+          );
+
+          showToast(
+            "Producto eliminado"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error eliminando producto:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
       },
       [
-        catalog,
+        cleanClienteId,
         persistCatalog,
         showToast,
       ]
@@ -670,19 +1613,24 @@ export function usePosData() {
 
   const restock =
     useCallback(
-      (
+      async (
         barcode,
         add
       ) => {
         const code =
           String(
-            barcode || ""
+            barcode ||
+              ""
           ).trim();
 
         const product =
-          catalog[code];
+          catalogRef.current[
+            code
+          ];
 
-        if (!product) {
+        if (
+          !product
+        ) {
           showToast(
             "Producto no encontrado",
             true
@@ -737,52 +1685,97 @@ export function usePosData() {
           return false;
         }
 
-        const currentStock =
-          toNumber(
-            product.stock
-          );
+        try {
+          let nextStock;
 
-        const nextStock =
-          tipoVenta ===
-          "peso"
-            ? roundQuantity(
-                currentStock +
-                  amount
-              )
-            : Math.trunc(
-                currentStock +
-                  amount
+          if (
+            cloudActiveRef
+              .current
+          ) {
+            nextStock =
+              await restockProductCloud(
+                cleanClienteId,
+                code,
+                amount
+              );
+          } else {
+            const currentStock =
+              toNumber(
+                product.stock
               );
 
-        persistCatalog({
-          ...catalog,
+            nextStock =
+              tipoVenta ===
+              "peso"
+                ? roundQuantity(
+                    currentStock +
+                      amount
+                  )
+                : Math.trunc(
+                    currentStock +
+                      amount
+                  );
+          }
 
-          [code]: {
-            ...product,
+          const current =
+            catalogRef.current[
+              code
+            ] || product;
 
-            stock:
-              nextStock,
-          },
-        });
+          persistCatalog({
+            ...catalogRef.current,
 
-        showToast(
-          tipoVenta ===
-          "peso"
-            ? "Stock por peso actualizado"
-            : "Stock actualizado"
-        );
+            [code]: {
+              ...current,
 
-        return true;
+              stock:
+                tipoVenta ===
+                "peso"
+                  ? roundQuantity(
+                      nextStock
+                    )
+                  : Math.max(
+                      0,
+                      Math.trunc(
+                        nextStock
+                      )
+                    ),
+            },
+          });
+
+          showToast(
+            tipoVenta ===
+            "peso"
+              ? "Stock por peso actualizado"
+              : "Stock actualizado"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error actualizando stock:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
       },
       [
-        catalog,
+        cleanClienteId,
         persistCatalog,
         showToast,
       ]
     );
 
   /* =========================================================
-     AGREGAR PRODUCTO CONFIGURADO AL CARRITO
+     AGREGAR PRODUCTO AL CARRITO
   ========================================================= */
 
   const addProductToCart =
@@ -791,7 +1784,9 @@ export function usePosData() {
         product,
         options = {}
       ) => {
-        if (!product) {
+        if (
+          !product
+        ) {
           showToast(
             "Producto no encontrado",
             true
@@ -800,7 +1795,18 @@ export function usePosData() {
           return false;
         }
 
-        if (!openSession) {
+        const currentOpenSession =
+          cashSessionsRef.current
+            .find(
+              (session) =>
+                session?.status ===
+                "open"
+            ) ||
+          null;
+
+        if (
+          !currentOpenSession
+        ) {
           showToast(
             "Abrí la caja primero",
             true
@@ -821,7 +1827,7 @@ export function usePosData() {
           ).trim();
 
         /* -----------------------------------------------------
-           POR UNIDAD
+           UNIDAD
         ----------------------------------------------------- */
 
         if (
@@ -833,7 +1839,9 @@ export function usePosData() {
               product.stock
             );
 
-          if (stock <= 0) {
+          if (
+            stock <= 0
+          ) {
             showToast(
               "Sin stock disponible",
               true
@@ -867,7 +1875,8 @@ export function usePosData() {
               ) + 1;
 
             if (
-              nextQty > stock
+              nextQty >
+              stock
             ) {
               showToast(
                 "No hay más stock disponible",
@@ -945,7 +1954,7 @@ export function usePosData() {
         }
 
         /* -----------------------------------------------------
-           POR PESO
+           PESO
         ----------------------------------------------------- */
 
         if (
@@ -957,7 +1966,9 @@ export function usePosData() {
               product.stock
             );
 
-          if (stock <= 0) {
+          if (
+            stock <= 0
+          ) {
             showToast(
               "Sin stock disponible",
               true
@@ -986,9 +1997,7 @@ export function usePosData() {
             );
 
           /*
-           * Si ingresaron importe,
-           * calculamos automáticamente
-           * el peso.
+           * Importe -> peso.
            */
           if (
             amount > 0 &&
@@ -1011,9 +2020,7 @@ export function usePosData() {
           }
 
           /*
-           * Si ingresaron peso,
-           * calculamos automáticamente
-           * el importe.
+           * Peso -> importe.
            */
           if (
             quantity > 0 &&
@@ -1046,11 +2053,6 @@ export function usePosData() {
             return false;
           }
 
-          /*
-           * Sumamos el peso que ya está
-           * dentro del ticket para evitar
-           * superar el stock disponible.
-           */
           const alreadyInCart =
             cart
               .filter(
@@ -1084,7 +2086,8 @@ export function usePosData() {
               `Stock insuficiente. Disponible: ${stock.toLocaleString(
                 "es-AR",
                 {
-                  maximumFractionDigits: 3,
+                  maximumFractionDigits:
+                    3,
                 }
               )} kg`,
               true
@@ -1134,7 +2137,7 @@ export function usePosData() {
         }
 
         /* -----------------------------------------------------
-           PRECIO LIBRE
+           IMPORTE LIBRE
         ----------------------------------------------------- */
 
         const amount =
@@ -1146,7 +2149,9 @@ export function usePosData() {
             )
           );
 
-        if (amount <= 0) {
+        if (
+          amount <= 0
+        ) {
           showToast(
             "Ingresá un importe válido",
             true
@@ -1174,11 +2179,6 @@ export function usePosData() {
             unidadMedida:
               null,
 
-            /*
-             * Para mantener compatibilidad
-             * con los cálculos existentes,
-             * price contiene el importe.
-             */
             price:
               amount,
 
@@ -1197,7 +2197,6 @@ export function usePosData() {
       },
       [
         cart,
-        openSession,
         showToast,
       ]
     );
@@ -1214,14 +2213,28 @@ export function usePosData() {
       ) => {
         const code =
           String(
-            barcode || ""
+            barcode ||
+              ""
           ).trim();
 
-        if (!code) {
+        if (
+          !code
+        ) {
           return false;
         }
 
-        if (!openSession) {
+        const currentOpenSession =
+          cashSessionsRef.current
+            .find(
+              (session) =>
+                session?.status ===
+                "open"
+            ) ||
+          null;
+
+        if (
+          !currentOpenSession
+        ) {
           showToast(
             "Abrí la caja primero",
             true
@@ -1231,9 +2244,13 @@ export function usePosData() {
         }
 
         const product =
-          catalog[code];
+          catalogRef.current[
+            code
+          ];
 
-        if (!product) {
+        if (
+          !product
+        ) {
           showToast(
             "Producto no encontrado. Cargalo en Stock.",
             true
@@ -1248,9 +2265,8 @@ export function usePosData() {
           );
 
         /*
-         * Para peso o precio libre,
-         * Vender.jsx debe mostrar primero
-         * el modal correspondiente.
+         * Peso e importe libre
+         * requieren modal previo.
          */
         if (
           normalized.tipoVenta !==
@@ -1274,8 +2290,6 @@ export function usePosData() {
         );
       },
       [
-        catalog,
-        openSession,
         addProductToCart,
         showToast,
       ]
@@ -1294,28 +2308,22 @@ export function usePosData() {
         const item =
           cart[index];
 
-        if (!item) {
+        if (
+          !item
+        ) {
           return;
         }
 
-        const tipoVenta =
+        if (
           normalizeProductType(
             item.tipoVenta
-          );
-
-        /*
-         * Peso e importe libre se editan
-         * mediante su valor específico.
-         */
-        if (
-          tipoVenta !==
-          "unidad"
+          ) !== "unidad"
         ) {
           return;
         }
 
         const product =
-          catalog[
+          catalogRef.current[
             item.barcode
           ];
 
@@ -1388,13 +2396,12 @@ export function usePosData() {
       },
       [
         cart,
-        catalog,
         showToast,
       ]
     );
 
   /* =========================================================
-     ACTUALIZAR PESO DE UNA LÍNEA
+     ACTUALIZAR PESO
   ========================================================= */
 
   const updateCartWeight =
@@ -1416,11 +2423,13 @@ export function usePosData() {
         }
 
         const product =
-          catalog[
+          catalogRef.current[
             item.barcode
           ];
 
-        if (!product) {
+        if (
+          !product
+        ) {
           return false;
         }
 
@@ -1435,10 +2444,6 @@ export function usePosData() {
           return false;
         }
 
-        /*
-         * Peso de otras líneas del
-         * mismo producto.
-         */
         const otherWeight =
           cart.reduce(
             (
@@ -1469,16 +2474,14 @@ export function usePosData() {
             0
           );
 
-        const stock =
-          toNumber(
-            product.stock
-          );
-
         if (
           roundQuantity(
             otherWeight +
               nextQuantity
-          ) > stock
+          ) >
+          toNumber(
+            product.stock
+          )
         ) {
           showToast(
             "El peso supera el stock disponible",
@@ -1518,13 +2521,12 @@ export function usePosData() {
       },
       [
         cart,
-        catalog,
         showToast,
       ]
     );
 
   /* =========================================================
-     ACTUALIZAR IMPORTE DE UNA LÍNEA
+     ACTUALIZAR IMPORTE
   ========================================================= */
 
   const updateCartAmount =
@@ -1536,7 +2538,9 @@ export function usePosData() {
         const item =
           cart[index];
 
-        if (!item) {
+        if (
+          !item
+        ) {
           return false;
         }
 
@@ -1627,7 +2631,9 @@ export function usePosData() {
     useCallback(
       (index) => {
         setCart(
-          (previous) =>
+          (
+            previous
+          ) =>
             previous.filter(
               (
                 _,
@@ -1651,7 +2657,7 @@ export function usePosData() {
     }, []);
 
   /* =========================================================
-     TOTAL DEL CARRITO
+     TOTAL
   ========================================================= */
 
   const getCartTotal =
@@ -1683,7 +2689,7 @@ export function usePosData() {
     useCallback(
       (sessionId) => {
         const sessSales =
-          sales.filter(
+          salesRef.current.filter(
             (sale) =>
               sale.sessionId ===
               sessionId
@@ -1696,35 +2702,33 @@ export function usePosData() {
           tarjeta: 0,
         };
 
-        sessSales.forEach(
-          (sale) => {
-            const method =
-              sale.payment
-                ?.method ||
-              "efectivo";
+        for (
+          const sale of
+          sessSales
+        ) {
+          const requestedMethod =
+            sale.payment?.method ||
+            "efectivo";
 
-            if (
+          const method =
+            PAYMENT_METHODS.includes(
+              requestedMethod
+            )
+              ? requestedMethod
+              : "efectivo";
+
+          totals[
+            method
+          ] =
+            roundMoney(
               totals[
                 method
-              ] ===
-              undefined
-            ) {
-              totals[
-                method
-              ] = 0;
-            }
-
-            totals[method] =
-              roundMoney(
-                totals[
-                  method
-                ] +
-                  toNumber(
-                    sale.total
-                  )
-              );
-          }
-        );
+              ] +
+                toNumber(
+                  sale.total
+                )
+            );
+        }
 
         const totalSales =
           roundMoney(
@@ -1747,9 +2751,7 @@ export function usePosData() {
           totalSales,
         };
       },
-      [
-        sales,
-      ]
+      []
     );
 
   /* =========================================================
@@ -1758,8 +2760,30 @@ export function usePosData() {
 
   const checkout =
     useCallback(
-      (payment) => {
-        if (!openSession) {
+      async (payment) => {
+        /*
+         * Protección adicional contra
+         * doble click / doble confirmación.
+         */
+        if (
+          checkoutInFlightRef
+            .current
+        ) {
+          return false;
+        }
+
+        const currentOpenSession =
+          cashSessionsRef.current
+            .find(
+              (session) =>
+                session?.status ===
+                "open"
+            ) ||
+          null;
+
+        if (
+          !currentOpenSession
+        ) {
           showToast(
             "Abrí la caja primero",
             true
@@ -1774,25 +2798,25 @@ export function usePosData() {
           return false;
         }
 
-        /* ---------------------------------------------------
-           VALIDAR STOCK
-        --------------------------------------------------- */
+        const currentCatalog =
+          catalogRef.current;
+
+        /* -----------------------------------------------------
+           VALIDACIÓN LOCAL PREVIA
+        ----------------------------------------------------- */
 
         const stockNecesario =
           {};
 
         for (
-          const item of cart
+          const item of
+          cart
         ) {
           const tipoVenta =
             normalizeProductType(
               item.tipoVenta
             );
 
-          /*
-           * Importe libre no descuenta
-           * stock.
-           */
           if (
             tipoVenta ===
             "precio-libre"
@@ -1801,11 +2825,13 @@ export function usePosData() {
           }
 
           const product =
-            catalog[
+            currentCatalog[
               item.barcode
             ];
 
-          if (!product) {
+          if (
+            !product
+          ) {
             showToast(
               `Producto no encontrado: ${item.name}`,
               true
@@ -1836,7 +2862,7 @@ export function usePosData() {
           )
         ) {
           const product =
-            catalog[
+            currentCatalog[
               barcode
             ];
 
@@ -1844,7 +2870,8 @@ export function usePosData() {
             !product ||
             toNumber(
               product.stock
-            ) + 0.000001 <
+            ) +
+              0.000001 <
               required
           ) {
             showToast(
@@ -1859,9 +2886,9 @@ export function usePosData() {
           }
         }
 
-        /* ---------------------------------------------------
+        /* -----------------------------------------------------
            TOTAL
-        --------------------------------------------------- */
+        ----------------------------------------------------- */
 
         const total =
           roundMoney(
@@ -1889,9 +2916,9 @@ export function usePosData() {
           return false;
         }
 
-        /* ---------------------------------------------------
-           MÉTODO
-        --------------------------------------------------- */
+        /* -----------------------------------------------------
+           PAGO
+        ----------------------------------------------------- */
 
         const requestedMethod =
           payment?.method ||
@@ -1903,10 +2930,6 @@ export function usePosData() {
           )
             ? requestedMethod
             : "efectivo";
-
-        /* ---------------------------------------------------
-           MONTO RECIBIDO
-        --------------------------------------------------- */
 
         const received =
           method ===
@@ -1939,170 +2962,279 @@ export function usePosData() {
               )
             : 0;
 
-        /* ---------------------------------------------------
-           CREAR VENTA
-        --------------------------------------------------- */
+        const saleId =
+          uid();
 
-        const sale = {
-          id: uid(),
+        const timestamp =
+          new Date()
+            .toISOString();
 
-          timestamp:
-            new Date()
-              .toISOString(),
+        const saleItems =
+          cart.map(
+            (item) => {
+              const tipoVenta =
+                normalizeProductType(
+                  item.tipoVenta
+                );
 
-          items:
-            cart.map(
-              (item) => {
-                const tipoVenta =
-                  normalizeProductType(
-                    item.tipoVenta
-                  );
+              return {
+                barcode:
+                  item.barcode,
 
-                return {
-                  barcode:
-                    item.barcode,
+                name:
+                  item.name,
 
-                  name:
-                    item.name,
+                tipoVenta,
 
-                  tipoVenta,
+                unidadMedida:
+                  tipoVenta ===
+                  "peso"
+                    ? item.unidadMedida ||
+                      "kg"
+                    : null,
 
-                  unidadMedida:
-                    tipoVenta ===
-                    "peso"
-                      ? item.unidadMedida ||
-                        "kg"
-                      : null,
+                price:
+                  roundMoney(
+                    item.price
+                  ),
 
-                  price:
-                    roundMoney(
-                      item.price
-                    ),
+                qty:
+                  tipoVenta ===
+                  "peso"
+                    ? roundQuantity(
+                        item.qty
+                      )
+                    : toNumber(
+                        item.qty
+                      ),
 
-                  qty:
-                    tipoVenta ===
-                    "peso"
-                      ? roundQuantity(
-                          item.qty
-                        )
-                      : toNumber(
-                          item.qty
-                        ),
+                subtotal:
+                  getItemSubtotal(
+                    item
+                  ),
+              };
+            }
+          );
 
-                  subtotal:
-                    getItemSubtotal(
-                      item
-                    ),
-                };
-              }
+        const normalizedPayment = {
+          method,
+
+          received:
+            roundMoney(
+              received
             ),
 
-          total,
-
-          sessionId:
-            openSession.id,
-
-          payment: {
-            method,
-
-            received:
-              roundMoney(
-                received
-              ),
-
-            change,
-          },
+          change,
         };
 
-        /* ---------------------------------------------------
-           DESCONTAR STOCK
-        --------------------------------------------------- */
+        checkoutInFlightRef.current =
+          true;
 
-        const nextCatalog = {
-          ...catalog,
-        };
+        try {
+          let sale;
 
-        Object.entries(
-          stockNecesario
-        ).forEach(
-          ([
-            barcode,
-            required,
-          ]) => {
-            const current =
-              nextCatalog[
-                barcode
-              ];
+          /* ---------------------------------------------------
+             CLOUD
+          --------------------------------------------------- */
 
-            if (!current) {
-              return;
-            }
+          if (
+            cloudActiveRef
+              .current
+          ) {
+            /*
+             * checkoutCloud utiliza una transacción:
+             *
+             * - verifica stock real en Firestore;
+             * - descuenta stock;
+             * - registra la venta;
+             * - actualiza los totales de caja;
+             * - evita repetir el mismo saleId.
+             */
+            const result =
+              await checkoutCloud(
+                cleanClienteId,
+                {
+                  saleId,
 
-            const tipoVenta =
-              normalizeProductType(
-                current.tipoVenta
+                  items:
+                    saleItems,
+
+                  payment:
+                    normalizedPayment,
+
+                  deviceId:
+                    cleanDeviceId,
+
+                  timestamp,
+                }
               );
 
-            const nextStock =
-              toNumber(
-                current.stock
-              ) -
-              required;
+            sale =
+              result?.sale ||
+              {
+                id:
+                  saleId,
 
-            nextCatalog[
-              barcode
-            ] = {
-              ...current,
+                timestamp,
 
-              stock:
-                tipoVenta ===
-                "peso"
-                  ? roundQuantity(
-                      Math.max(
-                        0,
-                        nextStock
-                      )
-                    )
-                  : Math.max(
-                      0,
-                      Math.trunc(
-                        nextStock
-                      )
-                    ),
+                items:
+                  saleItems,
+
+                total,
+
+                sessionId:
+                  currentOpenSession.id,
+
+                payment:
+                  normalizedPayment,
+
+                deviceId:
+                  cleanDeviceId ||
+                  null,
+              };
+
+            /*
+             * Lo mostramos de inmediato.
+             *
+             * El listener reemplazará luego
+             * el estado con la versión Cloud.
+             */
+            if (
+              !salesRef.current.some(
+                (item) =>
+                  item.id ===
+                  sale.id
+              )
+            ) {
+              persistSales([
+                ...salesRef.current,
+                sale,
+              ]);
+            }
+          } else {
+            /* -------------------------------------------------
+               MODO LOCAL
+            ------------------------------------------------- */
+
+            sale = {
+              id:
+                saleId,
+
+              timestamp,
+
+              items:
+                saleItems,
+
+              total,
+
+              sessionId:
+                currentOpenSession.id,
+
+              payment:
+                normalizedPayment,
             };
+
+            const nextCatalog = {
+              ...catalogRef.current,
+            };
+
+            for (
+              const [
+                barcode,
+                required,
+              ] of Object.entries(
+                stockNecesario
+              )
+            ) {
+              const current =
+                nextCatalog[
+                  barcode
+                ];
+
+              if (
+                !current
+              ) {
+                continue;
+              }
+
+              const tipoVenta =
+                normalizeProductType(
+                  current.tipoVenta
+                );
+
+              const nextStock =
+                toNumber(
+                  current.stock
+                ) -
+                required;
+
+              nextCatalog[
+                barcode
+              ] = {
+                ...current,
+
+                stock:
+                  tipoVenta ===
+                  "peso"
+                    ? roundQuantity(
+                        Math.max(
+                          0,
+                          nextStock
+                        )
+                      )
+                    : Math.max(
+                        0,
+                        Math.trunc(
+                          nextStock
+                        )
+                      ),
+              };
+            }
+
+            persistCatalog(
+              nextCatalog
+            );
+
+            persistSales([
+              ...salesRef.current,
+              sale,
+            ]);
           }
-        );
 
-        /* ---------------------------------------------------
-           GUARDAR
-        --------------------------------------------------- */
+          setCart([]);
 
-        persistSales([
-          ...sales,
-          sale,
-        ]);
+          showToast(
+            `Venta registrada · ${total.toFixed(
+              2
+            )}`
+          );
 
-        persistCatalog(
-          nextCatalog
-        );
+          return true;
+        } catch (error) {
+          console.error(
+            "Error registrando venta:",
+            error
+          );
 
-        setCart([]);
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
 
-        showToast(
-          `Venta registrada · ${total.toFixed(
-            2
-          )}`
-        );
-
-        return true;
+          return false;
+        } finally {
+          checkoutInFlightRef.current =
+            false;
+        }
       },
       [
-        openSession,
         cart,
-        catalog,
-        sales,
-        persistSales,
+        cleanClienteId,
+        cleanDeviceId,
         persistCatalog,
+        persistSales,
         showToast,
       ]
     );
@@ -2113,8 +3245,28 @@ export function usePosData() {
 
   const openCashSession =
     useCallback(
-      (openAmount) => {
-        if (openSession) {
+      async (
+        openAmount
+      ) => {
+        if (
+          openingCashRef
+            .current
+        ) {
+          return false;
+        }
+
+        const currentOpenSession =
+          cashSessionsRef.current
+            .find(
+              (session) =>
+                session?.status ===
+                "open"
+            ) ||
+          null;
+
+        if (
+          currentOpenSession
+        ) {
           showToast(
             "Ya hay una caja abierta",
             true
@@ -2143,60 +3295,129 @@ export function usePosData() {
           return false;
         }
 
-        const session = {
-          id: uid(),
+        const sessionId =
+          uid();
 
-          openTime:
-            new Date()
-              .toISOString(),
+        openingCashRef.current =
+          true;
 
-          openAmount:
-            roundMoney(
-              amount
+        try {
+          let session;
+
+          if (
+            cloudActiveRef
+              .current
+          ) {
+            session =
+              await openCashSessionCloud(
+                cleanClienteId,
+                {
+                  sessionId,
+
+                  openAmount:
+                    roundMoney(
+                      amount
+                    ),
+
+                  deviceId:
+                    cleanDeviceId,
+                }
+              );
+          } else {
+            session = {
+              id:
+                sessionId,
+
+              openTime:
+                new Date()
+                  .toISOString(),
+
+              openAmount:
+                roundMoney(
+                  amount
+                ),
+
+              closeTime:
+                null,
+
+              closeAmount:
+                null,
+
+              expectedAmount:
+                null,
+
+              counted:
+                null,
+
+              diff:
+                null,
+
+              totalSales:
+                0,
+
+              salesCount:
+                0,
+
+              paymentTotals: {
+                efectivo:
+                  0,
+
+                transferencia:
+                  0,
+
+                qr:
+                  0,
+
+                tarjeta:
+                  0,
+              },
+
+              status:
+                "open",
+            };
+          }
+
+          if (
+            !cashSessionsRef
+              .current.some(
+                (item) =>
+                  item.id ===
+                  session.id
+              )
+          ) {
+            persistCashSessions([
+              ...cashSessionsRef.current,
+              session,
+            ]);
+          }
+
+          showToast(
+            "Caja abierta"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error abriendo caja:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
             ),
+            true
+          );
 
-          closeTime:
-            null,
-
-          closeAmount:
-            null,
-
-          expectedAmount:
-            null,
-
-          counted:
-            null,
-
-          diff:
-            null,
-
-          totalSales:
-            null,
-
-          salesCount:
-            null,
-
-          paymentTotals:
-            null,
-
-          status:
-            "open",
-        };
-
-        persistCashSessions([
-          ...cashSessions,
-          session,
-        ]);
-
-        showToast(
-          "Caja abierta"
-        );
-
-        return true;
+          return false;
+        } finally {
+          openingCashRef.current =
+            false;
+        }
       },
       [
-        openSession,
-        cashSessions,
+        cleanClienteId,
+        cleanDeviceId,
         persistCashSessions,
         showToast,
       ]
@@ -2208,8 +3429,28 @@ export function usePosData() {
 
   const closeCashSession =
     useCallback(
-      (counted) => {
-        if (!openSession) {
+      async (
+        counted
+      ) => {
+        if (
+          closingCashRef
+            .current
+        ) {
+          return false;
+        }
+
+        const currentOpenSession =
+          cashSessionsRef.current
+            .find(
+              (session) =>
+                session?.status ===
+                "open"
+            ) ||
+          null;
+
+        if (
+          !currentOpenSession
+        ) {
           showToast(
             "No hay una caja abierta",
             true
@@ -2238,100 +3479,154 @@ export function usePosData() {
           return false;
         }
 
-        const {
-          sessSales,
-          totals,
-          totalSales,
-        } =
-          paymentBreakdown(
-            openSession.id
+        closingCashRef.current =
+          true;
+
+        try {
+          let closedSession;
+
+          if (
+            cloudActiveRef
+              .current
+          ) {
+            closedSession =
+              await closeCashSessionCloud(
+                cleanClienteId,
+                {
+                  sessionId:
+                    currentOpenSession.id,
+
+                  counted:
+                    countedAmount,
+
+                  deviceId:
+                    cleanDeviceId,
+                }
+              );
+          } else {
+            const {
+              sessSales,
+              totals,
+              totalSales,
+            } =
+              paymentBreakdown(
+                currentOpenSession.id
+              );
+
+            /*
+             * Solamente efectivo forma
+             * parte de la caja física.
+             */
+            const expected =
+              roundMoney(
+                toNumber(
+                  currentOpenSession
+                    .openAmount
+                ) +
+                  toNumber(
+                    totals.efectivo
+                  )
+              );
+
+            const diff =
+              roundMoney(
+                countedAmount -
+                  expected
+              );
+
+            closedSession = {
+              ...currentOpenSession,
+
+              closeTime:
+                new Date()
+                  .toISOString(),
+
+              closeAmount:
+                roundMoney(
+                  countedAmount
+                ),
+
+              expectedAmount:
+                expected,
+
+              counted:
+                roundMoney(
+                  countedAmount
+                ),
+
+              diff,
+
+              totalSales,
+
+              salesCount:
+                sessSales.length,
+
+              paymentTotals:
+                totals,
+
+              status:
+                "closed",
+            };
+          }
+
+          persistCashSessions(
+            cashSessionsRef.current.map(
+              (session) =>
+                session.id ===
+                currentOpenSession.id
+                  ? {
+                      ...session,
+                      ...closedSession,
+
+                      status:
+                        "closed",
+                    }
+                  : session
+            )
           );
 
-        /*
-         * Solo el efectivo entra
-         * físicamente en la caja.
-         */
-        const expected =
-          roundMoney(
-            toNumber(
-              openSession.openAmount
-            ) +
-              toNumber(
-                totals.efectivo
-              )
+          const diff =
+            roundMoney(
+              closedSession?.diff
+            );
+
+          if (
+            diff === 0
+          ) {
+            showToast(
+              "Caja cerrada · sin diferencia"
+            );
+          } else {
+            showToast(
+              `Caja cerrada · diferencia ${diff.toFixed(
+                2
+              )}`
+            );
+          }
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error cerrando caja:",
+            error
           );
 
-        const diff =
-          roundMoney(
-            countedAmount -
-              expected
-          );
-
-        const now =
-          new Date()
-            .toISOString();
-
-        const next =
-          cashSessions.map(
-            (session) =>
-              session.id ===
-              openSession.id
-                ? {
-                    ...session,
-
-                    closeTime:
-                      now,
-
-                    closeAmount:
-                      roundMoney(
-                        countedAmount
-                      ),
-
-                    expectedAmount:
-                      expected,
-
-                    counted:
-                      roundMoney(
-                        countedAmount
-                      ),
-
-                    diff,
-
-                    totalSales,
-
-                    salesCount:
-                      sessSales.length,
-
-                    paymentTotals:
-                      totals,
-
-                    status:
-                      "closed",
-                  }
-                : session
-          );
-
-        persistCashSessions(
-          next
-        );
-
-        if (diff === 0) {
           showToast(
-            "Caja cerrada · sin diferencia"
+            mapCloudError(
+              error
+            ),
+            true
           );
-        } else {
-          showToast(
-            `Caja cerrada · diferencia ${diff.toFixed(
-              2
-            )}`
-          );
+
+          return false;
+        } finally {
+          closingCashRef.current =
+            false;
         }
-
-        return true;
       },
       [
-        openSession,
-        cashSessions,
+        cleanClienteId,
+        cleanDeviceId,
         paymentBreakdown,
         persistCashSessions,
         showToast,
@@ -2344,6 +3639,12 @@ export function usePosData() {
 
   return {
     loaded,
+
+    syncStatus,
+
+    cloudEnabled:
+      cloudRequested &&
+      cloudActiveRef.current,
 
     catalog,
     sales,

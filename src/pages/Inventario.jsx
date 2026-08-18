@@ -2,6 +2,7 @@
 
 import {
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -92,9 +93,7 @@ function formatWeight(value) {
   );
 }
 
-function formatStock(
-  product
-) {
+function formatStock(product) {
   const tipoVenta =
     getTipoVenta(
       product
@@ -155,10 +154,6 @@ function isLowStock(
       product
     );
 
-  /*
-   * Los productos de importe libre
-   * no manejan stock.
-   */
   if (
     tipoVenta ===
     "precio-libre"
@@ -237,10 +232,6 @@ export default function Inventario({
     showToast,
   } = pos;
 
-  /* =========================================================
-     ESTADOS
-  ========================================================= */
-
   const [
     search,
     setSearch,
@@ -272,8 +263,24 @@ export default function Inventario({
     setScannedCode,
   ] = useState(null);
 
+  /*
+   * Evitan disparar dos veces una operación
+   * mientras Firestore todavía está respondiendo.
+   *
+   * useRef permite bloquear inmediatamente sin
+   * depender de un ciclo adicional de render.
+   */
+  const savingProductRef =
+    useRef(false);
+
+  const restockingRef =
+    useRef(false);
+
+  const deletingProductsRef =
+    useRef(new Set());
+
   /* =========================================================
-     FILTRO ACTIVO SEGURO
+     FILTRO ACTIVO
   ========================================================= */
 
   const activeFilter =
@@ -285,7 +292,7 @@ export default function Inventario({
       : "all";
 
   /* =========================================================
-     TODOS LOS PRODUCTOS
+     PRODUCTOS
   ========================================================= */
 
   const allProducts =
@@ -299,10 +306,6 @@ export default function Inventario({
       ]
     );
 
-  /* =========================================================
-     LISTADO FILTRADO
-  ========================================================= */
-
   const list =
     useMemo(() => {
       let products = [
@@ -315,10 +318,6 @@ export default function Inventario({
         )
           .trim()
           .toLowerCase();
-
-      /* -----------------------------------------------------
-         BÚSQUEDA
-      ----------------------------------------------------- */
 
       if (query) {
         products =
@@ -348,10 +347,6 @@ export default function Inventario({
           );
       }
 
-      /* -----------------------------------------------------
-         STOCK BAJO
-      ----------------------------------------------------- */
-
       if (
         activeFilter ===
         "low"
@@ -361,10 +356,6 @@ export default function Inventario({
             isLowStock
           );
       }
-
-      /* -----------------------------------------------------
-         VENCIMIENTOS
-      ----------------------------------------------------- */
 
       if (
         activeFilter ===
@@ -386,10 +377,6 @@ export default function Inventario({
           );
       }
 
-      /* -----------------------------------------------------
-         ORDEN
-      ----------------------------------------------------- */
-
       products.sort(
         (a, b) => {
           const daysA =
@@ -402,10 +389,6 @@ export default function Inventario({
               b?.expiry
             );
 
-          /*
-           * Productos próximos a vencer
-           * primero.
-           */
           if (
             daysA !== null &&
             daysB !== null &&
@@ -494,7 +477,7 @@ export default function Inventario({
     );
 
   /* =========================================================
-     MODAL PRODUCTO
+     PRODUCTO
   ========================================================= */
 
   function openNewProduct() {
@@ -532,7 +515,7 @@ export default function Inventario({
     );
   }
 
-  function handleProductSave(
+  async function handleProductSave(
     product,
     error
   ) {
@@ -554,26 +537,65 @@ export default function Inventario({
       return;
     }
 
+    if (
+      savingProductRef.current
+    ) {
+      return;
+    }
+
     const editing =
       Boolean(
         productModal.product
       );
 
-    const ok =
-      upsertProduct(
-        product,
-        editing
+    /*
+     * Necesario para Firestore si durante
+     * una edición cambia el código.
+     *
+     * El usePosData local actual ignora
+     * este tercer argumento sin romperse.
+     */
+    const previousBarcode =
+      productModal.product
+        ?.barcode ||
+      null;
+
+    savingProductRef.current =
+      true;
+
+    try {
+      const ok =
+        await Promise.resolve(
+          upsertProduct(
+            product,
+            editing,
+            previousBarcode
+          )
+        );
+
+      if (!ok) {
+        return;
+      }
+
+      closeProductModal();
+    } catch (errorSave) {
+      console.error(
+        "Error guardando producto:",
+        errorSave
       );
 
-    if (!ok) {
-      return;
+      showToast(
+        "No se pudo guardar el producto",
+        true
+      );
+    } finally {
+      savingProductRef.current =
+        false;
     }
-
-    closeProductModal();
   }
 
   /* =========================================================
-     MODAL REPOSICIÓN
+     REPOSICIÓN
   ========================================================= */
 
   function openRestockModal(
@@ -605,28 +627,47 @@ export default function Inventario({
     });
   }
 
-  function handleRestock(
+  async function handleRestock(
     amount
   ) {
     const product =
       restockModal.product;
 
-    if (!product) {
+    if (
+      !product ||
+      restockingRef.current
+    ) {
       return;
     }
 
-    const ok =
-      restock(
-        product.barcode,
-        amount
+    restockingRef.current =
+      true;
+
+    try {
+      const ok =
+        await Promise.resolve(
+          restock(
+            product.barcode,
+            amount
+          )
+        );
+
+      if (ok) {
+        closeRestockModal();
+      }
+    } catch (error) {
+      console.error(
+        "Error reponiendo stock:",
+        error
       );
 
-    /*
-     * Sólo cerramos si la operación
-     * realmente se completó.
-     */
-    if (ok) {
-      closeRestockModal();
+      showToast(
+        "No se pudo actualizar el stock",
+        true
+      );
+    } finally {
+      restockingRef.current =
+        false;
     }
   }
 
@@ -634,10 +675,33 @@ export default function Inventario({
      ELIMINAR
   ========================================================= */
 
-  function handleDeleteProduct(
+  async function handleDeleteProduct(
     product
   ) {
     if (!product) {
+      return;
+    }
+
+    const barcode =
+      String(
+        product.barcode ||
+          ""
+      ).trim();
+
+    if (!barcode) {
+      showToast(
+        "El producto no tiene un código válido",
+        true
+      );
+
+      return;
+    }
+
+    if (
+      deletingProductsRef.current.has(
+        barcode
+      )
+    ) {
       return;
     }
 
@@ -653,9 +717,36 @@ export default function Inventario({
       return;
     }
 
-    deleteProduct(
-      product.barcode
+    deletingProductsRef.current.add(
+      barcode
     );
+
+    try {
+      const ok =
+        await Promise.resolve(
+          deleteProduct(
+            barcode
+          )
+        );
+
+      if (ok === false) {
+        return;
+      }
+    } catch (error) {
+      console.error(
+        "Error eliminando producto:",
+        error
+      );
+
+      showToast(
+        "No se pudo eliminar el producto",
+        true
+      );
+    } finally {
+      deletingProductsRef.current.delete(
+        barcode
+      );
+    }
   }
 
   /* =========================================================
@@ -690,7 +781,7 @@ export default function Inventario({
   return (
     <div className="pb-3">
       {/* =====================================================
-          CABECERA / RESUMEN
+          CABECERA
       ===================================================== */}
 
       <section
@@ -794,8 +885,7 @@ export default function Inventario({
                 <AlertStockIcon className="h-4 w-4" />
               }
               tone={
-                lowStockCount >
-                0
+                lowStockCount > 0
                   ? "text-red-600"
                   : "text-[#111318]"
               }
@@ -810,8 +900,7 @@ export default function Inventario({
                 <ClockIcon className="h-4 w-4" />
               }
               tone={
-                expiringCount >
-                0
+                expiringCount > 0
                   ? "text-[#9A7100]"
                   : "text-[#111318]"
               }
@@ -869,8 +958,7 @@ export default function Inventario({
               event
             ) =>
               setSearch(
-                event.target
-                  .value
+                event.target.value
               )
             }
           />
@@ -879,9 +967,7 @@ export default function Inventario({
             <button
               type="button"
               onClick={() =>
-                setSearch(
-                  ""
-                )
+                setSearch("")
               }
               aria-label="Limpiar búsqueda"
               className="
@@ -973,9 +1059,7 @@ export default function Inventario({
               >
                 <Icon className="h-3.5 w-3.5" />
 
-                {
-                  item.label
-                }
+                {item.label}
               </button>
             );
           }
@@ -1017,11 +1101,10 @@ export default function Inventario({
       </button>
 
       {/* =====================================================
-          ESTADO VACÍO
+          LISTADO
       ===================================================== */}
 
-      {list.length ===
-      0 ? (
+      {list.length === 0 ? (
         <div
           className="
             rounded-[28px]
@@ -1070,8 +1153,7 @@ export default function Inventario({
             "
           >
             {search ||
-            activeFilter !==
-              "all"
+            activeFilter !== "all"
               ? "No encontramos productos que coincidan con tu búsqueda o filtro."
               : "Agregá tu primer producto para empezar a controlar el stock."}
           </p>
@@ -1126,24 +1208,19 @@ export default function Inventario({
                   }
                   layout
                   initial={{
-                    opacity:
-                      0,
+                    opacity: 0,
                     y: 8,
                   }}
                   animate={{
-                    opacity:
-                      1,
+                    opacity: 1,
                     y: 0,
                   }}
                   transition={{
-                    duration:
-                      0.18,
-                    delay:
-                      Math.min(
-                        index *
-                          0.025,
-                        0.15
-                      ),
+                    duration: 0.18,
+                    delay: Math.min(
+                      index * 0.025,
+                      0.15
+                    ),
                   }}
                   className="
                     overflow-hidden
@@ -1154,10 +1231,6 @@ export default function Inventario({
                   "
                 >
                   <div className="p-4 sm:p-5">
-                    {/* =========================================
-                        PRODUCTO
-                    ========================================= */}
-
                     <div
                       className="
                         flex
@@ -1247,8 +1320,6 @@ export default function Inventario({
                         </div>
                       </div>
 
-                      {/* PRECIO */}
-
                       <div
                         className="
                           max-w-[130px]
@@ -1272,9 +1343,7 @@ export default function Inventario({
                         >
                           {ventaPorPeso
                             ? "Precio / kg"
-                            : precioLibre
-                              ? "Precio"
-                              : "Precio"}
+                            : "Precio"}
                         </span>
 
                         <span
@@ -1302,10 +1371,6 @@ export default function Inventario({
                         bg-[#FFC61A]
                       "
                     />
-
-                    {/* =========================================
-                        ESTADOS
-                    ========================================= */}
 
                     <div className="grid grid-cols-2 gap-2.5">
                       <StatusCard
@@ -1350,10 +1415,6 @@ export default function Inventario({
                         }
                       />
                     </div>
-
-                    {/* =========================================
-                        ACCIONES
-                    ========================================= */}
 
                     <div
                       className={
@@ -1439,7 +1500,7 @@ export default function Inventario({
       )}
 
       {/* =====================================================
-          MODAL PRODUCTO
+          MODALES
       ===================================================== */}
 
       <ProductModal
@@ -1465,10 +1526,6 @@ export default function Inventario({
         }
       />
 
-      {/* =====================================================
-          MODAL STOCK
-      ===================================================== */}
-
       <RestockModal
         open={
           restockModal.open
@@ -1483,10 +1540,6 @@ export default function Inventario({
           handleRestock
         }
       />
-
-      {/* =====================================================
-          SCANNER
-      ===================================================== */}
 
       <Scanner
         open={
@@ -1543,7 +1596,7 @@ function getStockInfo(
     helper:
       lowStock
         ? tipoVenta ===
-          "peso"
+            "peso"
           ? "Poco peso disponible"
           : "Stock bajo"
         : "Disponible",
@@ -1688,7 +1741,7 @@ function SummaryStat({
 }
 
 /* =========================================================
-   STATUS CARD
+   ESTADO
 ========================================================= */
 
 function StatusCard({
@@ -1825,7 +1878,7 @@ function StatusCard({
 }
 
 /* =========================================================
-   BOTÓN PEQUEÑO
+   BOTÓN
 ========================================================= */
 
 function SmallBtn({
@@ -2241,7 +2294,6 @@ function CalendarIcon({
       <path d="M6 3v3" />
       <path d="M18 3v3" />
       <path d="M4 8h16" />
-
       <path d="M5 5h14a2 2 0 0 1 2 2v12H3V7a2 2 0 0 1 2-2Z" />
     </svg>
   );
@@ -2262,7 +2314,6 @@ function EditIcon({
       aria-hidden="true"
     >
       <path d="M12 20h9" />
-
       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" />
     </svg>
   );

@@ -2,6 +2,7 @@
 
 import {
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -11,21 +12,20 @@ import {
 } from "motion/react";
 
 import {
-  money,
   daysUntil,
+  money,
 } from "../lib/format";
 
-import Scanner from "../components/Scanner";
-import PaymentModal from "../components/PaymentModal";
 import Modal from "../components/Modal";
+import PaymentModal from "../components/PaymentModal";
+import Scanner from "../components/Scanner";
 
 /* =========================================================
    HELPERS
 ========================================================= */
 
 function getTipoVenta(product) {
-  const tipo =
-    product?.tipoVenta;
+  const tipo = product?.tipoVenta;
 
   if (
     tipo === "peso" ||
@@ -37,17 +37,13 @@ function getTipoVenta(product) {
   return "unidad";
 }
 
-function toNumber(
-  value,
-  fallback = 0
-) {
+function toNumber(value, fallback = 0) {
   const normalized =
     typeof value === "string"
       ? value.replace(",", ".")
       : value;
 
-  const number =
-    Number(normalized);
+  const number = Number(normalized);
 
   return Number.isFinite(number)
     ? number
@@ -57,10 +53,7 @@ function toNumber(
 function roundMoney(value) {
   return (
     Math.round(
-      (
-        toNumber(value) +
-        Number.EPSILON
-      ) * 100
+      (toNumber(value) + Number.EPSILON) * 100
     ) / 100
   );
 }
@@ -68,18 +61,13 @@ function roundMoney(value) {
 function roundQuantity(value) {
   return (
     Math.round(
-      (
-        toNumber(value) +
-        Number.EPSILON
-      ) * 1000
+      (toNumber(value) + Number.EPSILON) * 1000
     ) / 1000
   );
 }
 
 function formatQuantity(value) {
-  return toNumber(
-    value
-  ).toLocaleString(
+  return roundQuantity(value).toLocaleString(
     "es-AR",
     {
       minimumFractionDigits: 0,
@@ -89,46 +77,26 @@ function formatQuantity(value) {
 }
 
 function getItemSubtotal(item) {
-  const subtotal =
-    Number(
-      item?.subtotal
-    );
+  const stored = Number(item?.subtotal);
 
-  if (
-    Number.isFinite(
-      subtotal
-    )
-  ) {
-    return roundMoney(
-      subtotal
-    );
+  if (Number.isFinite(stored)) {
+    return roundMoney(stored);
   }
 
   return roundMoney(
-    toNumber(
-      item?.qty
-    ) *
-      toNumber(
-        item?.price
-      )
+    toNumber(item?.qty) *
+      toNumber(item?.price)
   );
 }
 
-function displayBarcode(
-  barcode
-) {
-  const value =
-    String(
-      barcode || ""
-    );
+function displayBarcode(barcode) {
+  const value = String(barcode || "").trim();
 
   if (
     !value ||
-    value.startsWith(
-      "manual-"
-    )
+    value.startsWith("manual-")
   ) {
-    return "Sin código de barras";
+    return "Código interno";
   }
 
   return value;
@@ -146,410 +114,236 @@ export default function Vender({
     catalog,
     cart,
     openSession,
-
     addProductToCart,
     changeCartQty,
-    updateCartWeight,
     updateCartAmount,
-
     removeFromCart,
     clearCart,
     checkout,
     showToast,
   } = pos;
 
-  /* =========================================================
-     ESTADOS
-  ========================================================= */
+  const [search, setSearch] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
 
-  const [
-    search,
-    setSearch,
-  ] = useState("");
+  const [scanOpen, setScanOpen] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
 
-  const [
-    scanOpen,
-    setScanOpen,
-  ] = useState(false);
+  const [saleProduct, setSaleProduct] = useState(null);
+  const [editingIndex, setEditingIndex] = useState(null);
 
-  const [
-    payOpen,
-    setPayOpen,
-  ] = useState(false);
+  const [weightInput, setWeightInput] = useState("");
+  const [amountInput, setAmountInput] = useState("");
 
-  const [
-    searchFocused,
-    setSearchFocused,
-  ] = useState(false);
-
-  /*
-   * Producto que necesita datos adicionales
-   * antes de agregarse:
-   *
-   * - peso
-   * - precio libre
-   */
-  const [
-    saleProduct,
-    setSaleProduct,
-  ] = useState(null);
-
-  /*
-   * Si es null, agregamos una línea nueva.
-   * Si tiene índice, estamos editando
-   * una línea del ticket.
-   */
-  const [
-    editingIndex,
-    setEditingIndex,
-  ] = useState(null);
-
-  const [
-    weightInput,
-    setWeightInput,
-  ] = useState("");
-
-  const [
-    amountInput,
-    setAmountInput,
-  ] = useState("");
+  const checkoutInFlightRef = useRef(false);
 
   /* =========================================================
      PRODUCTOS
   ========================================================= */
 
-  const products =
-    Object.values(
-      catalog
-    );
+  const products = useMemo(
+    () =>
+      Object.values(
+        catalog || {}
+      ).filter(Boolean),
+    [catalog]
+  );
 
   /* =========================================================
      ALERTAS
   ========================================================= */
 
-  const lowStock =
-    products.filter(
-      (product) => {
-        const tipo =
-          getTipoVenta(
-            product
-          );
-
+  const lowStock = useMemo(
+    () =>
+      products.filter((product) => {
         if (
-          tipo ===
+          getTipoVenta(product) ===
           "precio-libre"
         ) {
           return false;
         }
 
-        return (
-          Number(
-            product.stock ||
-              0
-          ) <= 5
-        );
-      }
-    );
+        return toNumber(product?.stock) <= 5;
+      }),
+    [products]
+  );
 
-  const expiring =
-    products.filter(
-      (product) => {
-        const days =
-          daysUntil(
-            product.expiry
-          );
+  const expiring = useMemo(
+    () =>
+      products.filter((product) => {
+        const days = daysUntil(
+          product?.expiry
+        );
 
         return (
           days !== null &&
           days <= 7
         );
-      }
-    );
+      }),
+    [products]
+  );
 
   /* =========================================================
-     BUSCAR PRODUCTOS
+     BÚSQUEDA
   ========================================================= */
 
-  const searchResults =
-    useMemo(() => {
-      const query =
-        search
-          .trim()
-          .toLowerCase();
+  const searchResults = useMemo(() => {
+    const query = search
+      .trim()
+      .toLowerCase();
 
-      if (!query) {
-        return [];
-      }
+    if (!query) {
+      return [];
+    }
 
-      return Object.values(
-        catalog
-      )
-        .filter(
-          (product) => {
-            const name =
-              String(
-                product.name ||
-                  ""
-              ).toLowerCase();
+    return products
+      .filter((product) => {
+        const name = String(
+          product?.name || ""
+        ).toLowerCase();
 
-            const barcode =
-              String(
-                product.barcode ||
-                  ""
-              ).toLowerCase();
+        const barcode = String(
+          product?.barcode || ""
+        ).toLowerCase();
 
-            return (
-              name.includes(
-                query
-              ) ||
-              barcode.includes(
-                query
-              )
-            );
-          }
-        )
-        .sort(
-          (a, b) => {
-            const aBarcode =
-              String(
-                a.barcode ||
-                  ""
-              ).toLowerCase();
-
-            const bBarcode =
-              String(
-                b.barcode ||
-                  ""
-              ).toLowerCase();
-
-            const aName =
-              String(
-                a.name ||
-                  ""
-              ).toLowerCase();
-
-            const bName =
-              String(
-                b.name ||
-                  ""
-              ).toLowerCase();
-
-            const aExact =
-              aBarcode ===
-                query ||
-              aName ===
-                query;
-
-            const bExact =
-              bBarcode ===
-                query ||
-              bName ===
-                query;
-
-            if (
-              aExact &&
-              !bExact
-            ) {
-              return -1;
-            }
-
-            if (
-              !aExact &&
-              bExact
-            ) {
-              return 1;
-            }
-
-            const aStarts =
-              aName.startsWith(
-                query
-              );
-
-            const bStarts =
-              bName.startsWith(
-                query
-              );
-
-            if (
-              aStarts &&
-              !bStarts
-            ) {
-              return -1;
-            }
-
-            if (
-              !aStarts &&
-              bStarts
-            ) {
-              return 1;
-            }
-
-            return aName.localeCompare(
-              bName,
-              "es"
-            );
-          }
-        )
-        .slice(
-          0,
-          8
+        return (
+          name.includes(query) ||
+          barcode.includes(query)
         );
-    }, [
-      catalog,
-      search,
-    ]);
+      })
+      .sort((a, b) => {
+        const aName = String(
+          a?.name || ""
+        ).toLowerCase();
+
+        const bName = String(
+          b?.name || ""
+        ).toLowerCase();
+
+        const aBarcode = String(
+          a?.barcode || ""
+        ).toLowerCase();
+
+        const bBarcode = String(
+          b?.barcode || ""
+        ).toLowerCase();
+
+        const aExact =
+          aName === query ||
+          aBarcode === query;
+
+        const bExact =
+          bName === query ||
+          bBarcode === query;
+
+        if (aExact && !bExact) {
+          return -1;
+        }
+
+        if (!aExact && bExact) {
+          return 1;
+        }
+
+        const aStarts =
+          aName.startsWith(query);
+
+        const bStarts =
+          bName.startsWith(query);
+
+        if (aStarts && !bStarts) {
+          return -1;
+        }
+
+        if (!aStarts && bStarts) {
+          return 1;
+        }
+
+        return aName.localeCompare(
+          bName,
+          "es"
+        );
+      })
+      .slice(0, 8);
+  }, [products, search]);
+
+  const showSearchResults =
+    Boolean(openSession) &&
+    searchFocused &&
+    search.trim().length > 0;
 
   /* =========================================================
      TOTALES
   ========================================================= */
 
-  const total =
-    roundMoney(
-      cart.reduce(
-        (
-          accumulator,
-          item
-        ) =>
-          accumulator +
-          getItemSubtotal(
-            item
-          ),
-        0
-      )
-    );
+  const total = roundMoney(
+    cart.reduce(
+      (accumulator, item) =>
+        accumulator +
+        getItemSubtotal(item),
+      0
+    )
+  );
 
-  /*
-   * Contamos líneas del ticket.
-   *
-   * No sumamos qty porque 0,650 kg
-   * no debe mostrarse como 0,65 ítems.
-   */
-  const itemCount =
-    cart.length;
+  const itemCount = cart.length;
 
   /* =========================================================
-     CERRAR MODAL DE PRODUCTO
+     PRODUCTO ESPECIAL
   ========================================================= */
 
   function closeSaleModal() {
-    setSaleProduct(
-      null
-    );
-
-    setEditingIndex(
-      null
-    );
-
-    setWeightInput(
-      ""
-    );
-
-    setAmountInput(
-      ""
-    );
+    setSaleProduct(null);
+    setEditingIndex(null);
+    setWeightInput("");
+    setAmountInput("");
   }
 
-  /* =========================================================
-     ABRIR PRODUCTO PARA VENDER
-  ========================================================= */
-
-  function agregarProducto(
-    product
-  ) {
-    if (
-      !product ||
-      !openSession
-    ) {
+  function agregarProducto(product) {
+    if (!product || !openSession) {
       return;
     }
 
     const tipo =
-      getTipoVenta(
-        product
-      );
+      getTipoVenta(product);
 
-    /*
-     * Productos normales se agregan
-     * inmediatamente.
-     */
-    if (
-      tipo ===
-      "unidad"
-    ) {
-      addProductToCart(
-        product
-      );
+    if (tipo === "unidad") {
+      const ok =
+        addProductToCart(
+          product
+        );
 
-      setSearch("");
-      setSearchFocused(
-        false
-      );
+      if (ok) {
+        setSearch("");
+        setSearchFocused(false);
+      }
 
       return;
     }
 
-    /*
-     * Peso / importe libre necesitan
-     * un modal antes de agregarse.
-     */
-    setSaleProduct(
-      product
-    );
-
-    setEditingIndex(
-      null
-    );
-
-    setWeightInput(
-      ""
-    );
-
-    setAmountInput(
-      ""
-    );
+    setSaleProduct(product);
+    setEditingIndex(null);
+    setWeightInput("");
+    setAmountInput("");
 
     setSearch("");
-    setSearchFocused(
-      false
-    );
+    setSearchFocused(false);
   }
 
-  /* =========================================================
-     EDITAR LÍNEA ESPECIAL
-  ========================================================= */
-
-  function editarItem(
-    item,
-    index
-  ) {
+  function editarItem(item, index) {
     const tipo =
-      getTipoVenta(
-        item
-      );
+      getTipoVenta(item);
 
-    if (
-      tipo ===
-      "unidad"
-    ) {
+    if (tipo === "unidad") {
       return;
     }
 
     const product =
-      catalog[
-        item.barcode
-      ] || item;
+      catalog?.[item.barcode] ||
+      item;
 
-    setSaleProduct(
-      product
-    );
+    setSaleProduct(product);
+    setEditingIndex(index);
 
-    setEditingIndex(
-      index
-    );
-
-    if (
-      tipo === "peso"
-    ) {
+    if (tipo === "peso") {
       setWeightInput(
         String(
           roundQuantity(
@@ -560,81 +354,53 @@ export default function Vender({
 
       setAmountInput(
         String(
-          getItemSubtotal(
-            item
-          )
+          getItemSubtotal(item)
         )
       );
     } else {
-      setWeightInput(
-        ""
-      );
+      setWeightInput("");
 
       setAmountInput(
         String(
-          getItemSubtotal(
-            item
-          )
+          getItemSubtotal(item)
         )
       );
     }
   }
 
-  /* =========================================================
-     CAMBIAR PESO
-  ========================================================= */
+  function handleWeightChange(value) {
+    setWeightInput(value);
 
-  function handleWeightChange(
-    value
-  ) {
-    setWeightInput(
-      value
+    const weight = toNumber(
+      value,
+      0
     );
 
-    const weight =
-      toNumber(
-        value,
-        0
-      );
-
-    const price =
-      toNumber(
-        saleProduct?.price,
-        0
-      );
+    const price = toNumber(
+      saleProduct?.price,
+      0
+    );
 
     if (
       !value ||
       weight <= 0 ||
       price <= 0
     ) {
-      setAmountInput(
-        ""
-      );
-
+      setAmountInput("");
       return;
     }
 
     setAmountInput(
       String(
         roundMoney(
-          weight *
-            price
+          weight * price
         )
       )
     );
   }
 
-  /* =========================================================
-     CAMBIAR IMPORTE
-  ========================================================= */
-
-  function handleAmountChange(
-    value
-  ) {
-    setAmountInput(
-      value
-    );
+  function handleAmountChange(value) {
+    setAmountInput(value);
 
     if (
       getTipoVenta(
@@ -644,43 +410,33 @@ export default function Vender({
       return;
     }
 
-    const amount =
-      toNumber(
-        value,
-        0
-      );
+    const amount = toNumber(
+      value,
+      0
+    );
 
-    const price =
-      toNumber(
-        saleProduct?.price,
-        0
-      );
+    const price = toNumber(
+      saleProduct?.price,
+      0
+    );
 
     if (
       !value ||
       amount <= 0 ||
       price <= 0
     ) {
-      setWeightInput(
-        ""
-      );
-
+      setWeightInput("");
       return;
     }
 
     setWeightInput(
       String(
         roundQuantity(
-          amount /
-            price
+          amount / price
         )
       )
     );
   }
-
-  /* =========================================================
-     CONFIRMAR PRODUCTO ESPECIAL
-  ========================================================= */
 
   function confirmarProductoEspecial() {
     if (!saleProduct) {
@@ -700,17 +456,15 @@ export default function Vender({
         )
       );
 
-    /* ---------------------------------------------------------
-       PRECIO LIBRE
-    --------------------------------------------------------- */
+    /* -----------------------------------------------------
+       IMPORTE LIBRE
+    ----------------------------------------------------- */
 
     if (
       tipo ===
       "precio-libre"
     ) {
-      if (
-        amount <= 0
-      ) {
+      if (amount <= 0) {
         showToast(
           "Ingresá un importe válido",
           true
@@ -720,8 +474,7 @@ export default function Vender({
       }
 
       if (
-        editingIndex !==
-        null
+        editingIndex !== null
       ) {
         const ok =
           updateCartAmount(
@@ -751,9 +504,9 @@ export default function Vender({
       return;
     }
 
-    /* ---------------------------------------------------------
+    /* -----------------------------------------------------
        PESO
-    --------------------------------------------------------- */
+    ----------------------------------------------------- */
 
     const weight =
       roundQuantity(
@@ -763,9 +516,7 @@ export default function Vender({
         )
       );
 
-    if (
-      weight <= 0
-    ) {
+    if (weight <= 0) {
       showToast(
         "Ingresá un peso válido",
         true
@@ -774,9 +525,7 @@ export default function Vender({
       return;
     }
 
-    if (
-      amount <= 0
-    ) {
+    if (amount <= 0) {
       showToast(
         "El importe debe ser mayor a cero",
         true
@@ -786,13 +535,8 @@ export default function Vender({
     }
 
     if (
-      editingIndex !==
-      null
+      editingIndex !== null
     ) {
-      /*
-       * Si el usuario trabajó con el importe,
-       * updateCartAmount recalcula el peso.
-       */
       const ok =
         updateCartAmount(
           editingIndex,
@@ -810,9 +554,7 @@ export default function Vender({
       addProductToCart(
         saleProduct,
         {
-          quantity:
-            weight,
-
+          quantity: weight,
           amount,
         }
       );
@@ -842,9 +584,7 @@ export default function Vender({
      * 1. Código exacto.
      */
     const exactBarcode =
-      catalog[
-        value
-      ];
+      catalog?.[value];
 
     if (exactBarcode) {
       agregarProducto(
@@ -861,12 +601,10 @@ export default function Vender({
       value.toLowerCase();
 
     const exactName =
-      Object.values(
-        catalog
-      ).find(
+      products.find(
         (product) =>
           String(
-            product.name ||
+            product?.name ||
               ""
           )
             .trim()
@@ -883,7 +621,7 @@ export default function Vender({
     }
 
     /*
-     * 3. Único resultado.
+     * 3. Un único resultado.
      */
     if (
       searchResults.length ===
@@ -897,7 +635,7 @@ export default function Vender({
     }
 
     /*
-     * 4. Sin coincidencias.
+     * 4. Ninguna coincidencia.
      */
     if (
       searchResults.length ===
@@ -920,22 +658,20 @@ export default function Vender({
      SCANNER
   ========================================================= */
 
-  function handleScannerResult(
-    value
-  ) {
-    setScanOpen(
-      false
-    );
+  function handleScannerResult(value) {
+    setScanOpen(false);
 
     const code =
       String(
         value || ""
       ).trim();
 
+    if (!code) {
+      return;
+    }
+
     const product =
-      catalog[
-        code
-      ];
+      catalog?.[code];
 
     if (!product) {
       showToast(
@@ -946,23 +682,52 @@ export default function Vender({
       return;
     }
 
-    agregarProducto(
-      product
-    );
+    agregarProducto(product);
   }
 
   /* =========================================================
-     BÚSQUEDA VISIBLE
+     CHECKOUT ASYNC
   ========================================================= */
 
-  const showSearchResults =
-    openSession &&
-    searchFocused &&
-    search.trim().length >
-      0;
+  async function handlePaymentConfirm(
+    payment
+  ) {
+    if (
+      checkoutInFlightRef.current
+    ) {
+      return;
+    }
+
+    checkoutInFlightRef.current =
+      true;
+
+    try {
+      const ok =
+        await Promise.resolve(
+          checkout(payment)
+        );
+
+      if (ok) {
+        setPayOpen(false);
+      }
+    } catch (error) {
+      console.error(
+        "Error registrando venta:",
+        error
+      );
+
+      showToast(
+        "No se pudo registrar la venta",
+        true
+      );
+    } finally {
+      checkoutInFlightRef.current =
+        false;
+    }
+  }
 
   /* =========================================================
-     MODAL DATA
+     MODAL
   ========================================================= */
 
   const modalTipo =
@@ -991,10 +756,8 @@ export default function Vender({
     );
 
   const exceedsStock =
-    modalTipo ===
-      "peso" &&
-    modalWeight >
-      modalStock;
+    modalTipo === "peso" &&
+    modalWeight > modalStock;
 
   /* =========================================================
      UI
@@ -1021,28 +784,24 @@ export default function Vender({
           VENCIMIENTOS
       ===================================================== */}
 
-      {expiring.length >
-        0 && (
+      {expiring.length > 0 && (
         <Banner
           tone="warning"
           icon={
             <ClockIcon className="h-4 w-4" />
           }
           onClick={() =>
-            goInventario(
+            goInventario?.(
               "expiring"
             )
           }
         >
-          {expiring.length}{" "}
-          producto
-          {expiring.length !==
-          1
+          {expiring.length} producto
+          {expiring.length !== 1
             ? "s"
             : ""}{" "}
           por vencer o vencido
-          {expiring.length !==
-          1
+          {expiring.length !== 1
             ? "s"
             : ""}
           .
@@ -1053,23 +812,20 @@ export default function Vender({
           STOCK BAJO
       ===================================================== */}
 
-      {lowStock.length >
-        0 && (
+      {lowStock.length > 0 && (
         <Banner
           tone="danger"
           icon={
             <StockAlertIcon className="h-4 w-4" />
           }
           onClick={() =>
-            goInventario(
+            goInventario?.(
               "low"
             )
           }
         >
-          {lowStock.length}{" "}
-          producto
-          {lowStock.length !==
-          1
+          {lowStock.length} producto
+          {lowStock.length !== 1
             ? "s"
             : ""}{" "}
           con stock bajo.
@@ -1080,21 +836,9 @@ export default function Vender({
           BUSCADOR
       ===================================================== */}
 
-      <div
-        className="
-          relative
-          z-20
-          mb-4
-        "
-      >
+      <div className="relative z-20 mb-4">
         <div className="flex gap-2.5">
-          <div
-            className="
-              relative
-              min-w-0
-              flex-1
-            "
-          >
+          <div className="relative min-w-0 flex-1">
             <SearchIcon
               className="
                 pointer-events-none
@@ -1109,6 +853,46 @@ export default function Vender({
             />
 
             <input
+              type="search"
+              autoComplete="off"
+              placeholder="Buscar por nombre o código..."
+              disabled={!openSession}
+              value={search}
+              onFocus={() =>
+                setSearchFocused(
+                  true
+                )
+              }
+              onChange={(event) => {
+                setSearch(
+                  event.target.value
+                );
+
+                setSearchFocused(
+                  true
+                );
+              }}
+              onKeyDown={(event) => {
+                if (
+                  event.key ===
+                  "Enter"
+                ) {
+                  event.preventDefault();
+
+                  handleSearchSubmit();
+                }
+
+                if (
+                  event.key ===
+                  "Escape"
+                ) {
+                  setSearch("");
+
+                  setSearchFocused(
+                    false
+                  );
+                }
+              }}
               className="
                 w-full
                 rounded-2xl
@@ -1130,71 +914,17 @@ export default function Vender({
                 disabled:cursor-not-allowed
                 disabled:opacity-40
               "
-              placeholder="Buscar por nombre o código..."
-              disabled={
-                !openSession
-              }
-              value={
-                search
-              }
-              autoComplete="off"
-              onFocus={() =>
-                setSearchFocused(
-                  true
-                )
-              }
-              onChange={(
-                event
-              ) => {
-                setSearch(
-                  event.target
-                    .value
-                );
-
-                setSearchFocused(
-                  true
-                );
-              }}
-              onKeyDown={(
-                event
-              ) => {
-                if (
-                  event.key ===
-                  "Enter"
-                ) {
-                  event.preventDefault();
-
-                  handleSearchSubmit();
-                }
-
-                if (
-                  event.key ===
-                  "Escape"
-                ) {
-                  setSearch(
-                    ""
-                  );
-
-                  setSearchFocused(
-                    false
-                  );
-                }
-              }}
             />
 
             {search && (
               <button
                 type="button"
                 aria-label="Limpiar búsqueda"
-                onMouseDown={(
-                  event
-                ) =>
+                onMouseDown={(event) =>
                   event.preventDefault()
                 }
                 onClick={() => {
-                  setSearch(
-                    ""
-                  );
+                  setSearch("");
 
                   setSearchFocused(
                     true
@@ -1223,9 +953,7 @@ export default function Vender({
 
           <button
             type="button"
-            disabled={
-              !openSession
-            }
+            disabled={!openSession}
             onClick={() =>
               setScanOpen(
                 true
@@ -1289,56 +1017,17 @@ export default function Vender({
                 border-white/10
                 bg-[#151A22]
                 shadow-[0_22px_55px_rgba(0,0,0,0.48)]
-                backdrop-blur-xl
               "
             >
-              {searchResults.length ===
-              0 ? (
-                <div
-                  className="
-                    flex
-                    items-center
-                    gap-3
-                    px-4
-                    py-4
-                  "
-                >
-                  <div
-                    className="
-                      grid
-                      h-9
-                      w-9
-                      shrink-0
-                      place-items-center
-                      rounded-xl
-                      bg-red-500/10
-                      text-red-400
-                    "
-                  >
-                    <SearchIcon className="h-4 w-4" />
-                  </div>
+              {searchResults.length === 0 ? (
+                <div className="px-4 py-4">
+                  <p className="text-xs font-extrabold text-white">
+                    Sin resultados
+                  </p>
 
-                  <div>
-                    <p
-                      className="
-                        text-xs
-                        font-extrabold
-                        text-white
-                      "
-                    >
-                      Sin resultados
-                    </p>
-
-                    <p
-                      className="
-                        mt-0.5
-                        text-[10px]
-                        text-white/35
-                      "
-                    >
-                      Probá con otro nombre o código.
-                    </p>
-                  </div>
+                  <p className="mt-1 text-[10px] text-white/35">
+                    Probá con otro nombre o código.
+                  </p>
                 </div>
               ) : (
                 <>
@@ -1365,25 +1054,14 @@ export default function Vender({
                       Productos encontrados
                     </span>
 
-                    <span
-                      className="
-                        text-[9px]
-                        font-bold
-                        text-[#FFC61A]
-                      "
-                    >
+                    <span className="text-[9px] font-bold text-[#FFC61A]">
                       {
                         searchResults.length
                       }
                     </span>
                   </div>
 
-                  <div
-                    className="
-                      max-h-[310px]
-                      overflow-y-auto
-                    "
-                  >
+                  <div className="max-h-[310px] overflow-y-auto">
                     {searchResults.map(
                       (
                         product,
@@ -1396,23 +1074,22 @@ export default function Vender({
 
                         const stock =
                           toNumber(
-                            product.stock
+                            product?.stock
                           );
 
                         return (
                           <motion.button
                             key={
-                              product.barcode
+                              product.barcode ||
+                              `${product.name}-${index}`
                             }
                             type="button"
                             initial={{
-                              opacity:
-                                0,
+                              opacity: 0,
                               y: 4,
                             }}
                             animate={{
-                              opacity:
-                                1,
+                              opacity: 1,
                               y: 0,
                             }}
                             transition={{
@@ -1420,9 +1097,7 @@ export default function Vender({
                                 index *
                                 0.02,
                             }}
-                            onMouseDown={(
-                              event
-                            ) =>
+                            onMouseDown={(event) =>
                               event.preventDefault()
                             }
                             onClick={() =>
@@ -1466,36 +1141,14 @@ export default function Vender({
                               />
                             </div>
 
-                            <div
-                              className="
-                                min-w-0
-                                flex-1
-                              "
-                            >
-                              <p
-                                className="
-                                  truncate
-                                  text-sm
-                                  font-extrabold
-                                  text-white
-                                "
-                              >
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-extrabold text-white">
                                 {
                                   product.name
                                 }
                               </p>
 
-                              <div
-                                className="
-                                  mt-1
-                                  flex
-                                  flex-wrap
-                                  items-center
-                                  gap-1.5
-                                  text-[10px]
-                                  text-white/35
-                                "
-                              >
+                              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-white/35">
                                 <span className="truncate">
                                   {displayBarcode(
                                     product.barcode
@@ -1515,8 +1168,7 @@ export default function Vender({
                                   "peso" ? (
                                   <span
                                     className={
-                                      stock <=
-                                      5
+                                      stock <= 5
                                         ? "text-red-400"
                                         : "text-emerald-400"
                                     }
@@ -1529,8 +1181,7 @@ export default function Vender({
                                 ) : (
                                   <span
                                     className={
-                                      stock <=
-                                      5
+                                      stock <= 5
                                         ? "text-red-400"
                                         : "text-emerald-400"
                                     }
@@ -1545,14 +1196,7 @@ export default function Vender({
                             </div>
 
                             <div className="shrink-0 text-right">
-                              <span
-                                className="
-                                  block
-                                  text-sm
-                                  font-black
-                                  text-[#FFC61A]
-                                "
-                              >
+                              <span className="block text-sm font-black text-[#FFC61A]">
                                 {tipo ===
                                 "precio-libre"
                                   ? "Libre"
@@ -1561,15 +1205,7 @@ export default function Vender({
                                     )}
                               </span>
 
-                              <span
-                                className="
-                                  mt-0.5
-                                  block
-                                  text-[9px]
-                                  font-bold
-                                  text-white/25
-                                "
-                              >
+                              <span className="mt-0.5 block text-[9px] font-bold text-white/25">
                                 {tipo ===
                                 "peso"
                                   ? "por kg"
@@ -1577,16 +1213,7 @@ export default function Vender({
                               </span>
                             </div>
 
-                            <PlusIcon
-                              className="
-                                h-4
-                                w-4
-                                shrink-0
-                                text-white/25
-                                transition
-                                group-hover:text-[#FFC61A]
-                              "
-                            />
+                            <PlusIcon className="h-4 w-4 shrink-0 text-white/25 transition group-hover:text-[#FFC61A]" />
                           </motion.button>
                         );
                       }
@@ -1613,147 +1240,44 @@ export default function Vender({
         "
       >
         <div className="p-4 sm:p-5">
-          {/* CABECERA */}
-
-          <div
-            className="
-              flex
-              items-center
-              justify-between
-              gap-3
-            "
-          >
-            <div
-              className="
-                flex
-                min-w-0
-                items-center
-                gap-3
-              "
-            >
-              <div
-                className="
-                  grid
-                  h-10
-                  w-10
-                  shrink-0
-                  place-items-center
-                  rounded-2xl
-                  bg-[#FFF5CC]
-                  text-[#9A7100]
-                "
-              >
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-[#FFF5CC] text-[#9A7100]">
                 <ReceiptIcon className="h-[18px] w-[18px]" />
               </div>
 
               <div className="min-w-0">
-                <p
-                  className="
-                    text-[10px]
-                    font-extrabold
-                    uppercase
-                    tracking-[0.16em]
-                    text-[#B98700]
-                  "
-                >
+                <p className="text-[10px] font-extrabold uppercase tracking-[0.16em] text-[#B98700]">
                   Venta actual
                 </p>
 
-                <h2
-                  className="
-                    mt-0.5
-                    text-lg
-                    font-black
-                    tracking-[-0.02em]
-                    text-[#111318]
-                  "
-                >
+                <h2 className="mt-0.5 text-lg font-black tracking-[-0.02em] text-[#111318]">
                   Ticket actual
                 </h2>
               </div>
             </div>
 
-            <span
-              className="
-                shrink-0
-                rounded-full
-                bg-[#F4F5F7]
-                px-3
-                py-1.5
-                text-[10px]
-                font-extrabold
-                text-black/45
-              "
-            >
+            <span className="shrink-0 rounded-full bg-[#F4F5F7] px-3 py-1.5 text-[10px] font-extrabold text-black/45">
               {itemCount}{" "}
-              {itemCount ===
-              1
+              {itemCount === 1
                 ? "ítem"
                 : "ítems"}
             </span>
           </div>
 
-          <div
-            className="
-              my-4
-              h-[3px]
-              rounded-full
-              bg-[#FFC61A]
-            "
-          />
+          <div className="my-4 h-[3px] rounded-full bg-[#FFC61A]" />
 
-          {/* =================================================
-              TICKET VACÍO
-          ================================================= */}
-
-          {cart.length ===
-          0 ? (
-            <div
-              className="
-                flex
-                min-h-[180px]
-                flex-col
-                items-center
-                justify-center
-                px-4
-                py-6
-                text-center
-              "
-            >
-              <div
-                className="
-                  mb-3
-                  grid
-                  h-12
-                  w-12
-                  place-items-center
-                  rounded-2xl
-                  bg-[#F4F5F7]
-                  text-black/30
-                "
-              >
+          {cart.length === 0 ? (
+            <div className="flex min-h-[180px] flex-col items-center justify-center px-4 py-6 text-center">
+              <div className="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-[#F4F5F7] text-black/30">
                 <BarcodeIcon className="h-5 w-5" />
               </div>
 
-              <h3
-                className="
-                  text-sm
-                  font-extrabold
-                  text-[#111318]
-                "
-              >
+              <h3 className="text-sm font-extrabold text-[#111318]">
                 El ticket está vacío
               </h3>
 
-              <p
-                className="
-                  mt-1
-                  max-w-[270px]
-                  text-xs
-                  leading-relaxed
-                  text-black/40
-                "
-              >
+              <p className="mt-1 max-w-[270px] text-xs leading-relaxed text-black/40">
                 Buscá por nombre, ingresá un código o escaneá el producto.
               </p>
             </div>
@@ -1787,61 +1311,29 @@ export default function Vender({
                         }
                         layout
                         initial={{
-                          opacity:
-                            0,
-                          height:
-                            0,
+                          opacity: 0,
+                          height: 0,
                           y: 5,
                         }}
                         animate={{
-                          opacity:
-                            1,
+                          opacity: 1,
                           height:
                             "auto",
                           y: 0,
                         }}
                         exit={{
-                          opacity:
-                            0,
-                          height:
-                            0,
+                          opacity: 0,
+                          height: 0,
                           y: -4,
                         }}
                         transition={{
                           duration:
                             0.18,
                         }}
-                        className="
-                          overflow-hidden
-                          border-b
-                          border-black/8
-                          py-3
-                          last:border-b-0
-                        "
+                        className="overflow-hidden border-b border-black/8 py-3 last:border-b-0"
                       >
-                        {/* ===========================================
-                            PRIMERA FILA
-                        =========================================== */}
-
-                        <div
-                          className="
-                            flex
-                            items-start
-                            gap-3
-                          "
-                        >
-                          <div
-                            className="
-                              grid
-                              h-9
-                              w-9
-                              shrink-0
-                              place-items-center
-                              rounded-xl
-                              bg-[#FFF5CC]
-                              text-[#9A7100]
-                            "
-                          >
+                        <div className="flex items-start gap-3">
+                          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#FFF5CC] text-[#9A7100]">
                             <ProductTypeIcon
                               tipo={
                                 tipo
@@ -1850,20 +1342,8 @@ export default function Vender({
                             />
                           </div>
 
-                          <div
-                            className="
-                              min-w-0
-                              flex-1
-                            "
-                          >
-                            <p
-                              className="
-                                truncate
-                                text-sm
-                                font-extrabold
-                                text-[#111318]
-                              "
-                            >
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-extrabold text-[#111318]">
                               {
                                 item.name
                               }
@@ -1871,14 +1351,7 @@ export default function Vender({
 
                             {tipo ===
                             "peso" ? (
-                              <p
-                                className="
-                                  mt-0.5
-                                  text-[10px]
-                                  font-semibold
-                                  text-black/40
-                                "
-                              >
+                              <p className="mt-0.5 text-[10px] font-semibold text-black/40">
                                 {formatQuantity(
                                   item.qty
                                 )}{" "}
@@ -1890,25 +1363,11 @@ export default function Vender({
                               </p>
                             ) : tipo ===
                               "precio-libre" ? (
-                              <p
-                                className="
-                                  mt-0.5
-                                  text-[10px]
-                                  font-semibold
-                                  text-black/40
-                                "
-                              >
+                              <p className="mt-0.5 text-[10px] font-semibold text-black/40">
                                 Importe manual
                               </p>
                             ) : (
-                              <p
-                                className="
-                                  mt-0.5
-                                  text-[10px]
-                                  font-semibold
-                                  text-black/40
-                                "
-                              >
+                              <p className="mt-0.5 text-[10px] font-semibold text-black/40">
                                 {money(
                                   item.price
                                 )}{" "}
@@ -1917,15 +1376,7 @@ export default function Vender({
                             )}
                           </div>
 
-                          <div
-                            className="
-                              shrink-0
-                              text-right
-                              text-sm
-                              font-black
-                              text-[#111318]
-                            "
-                          >
+                          <div className="shrink-0 text-right text-sm font-black text-[#111318]">
                             {money(
                               subtotal
                             )}
@@ -1939,38 +1390,15 @@ export default function Vender({
                                 index
                               )
                             }
-                            className="
-                              grid
-                              h-8
-                              w-8
-                              shrink-0
-                              place-items-center
-                              rounded-xl
-                              text-red-500
-                              transition
-                              hover:bg-red-50
-                              active:scale-[0.96]
-                            "
+                            className="grid h-8 w-8 shrink-0 place-items-center rounded-xl text-red-500 transition hover:bg-red-50 active:scale-[0.96]"
                           >
                             <TrashIcon className="h-4 w-4" />
                           </button>
                         </div>
 
-                        {/* ===========================================
-                            UNIDADES
-                        =========================================== */}
-
                         {tipo ===
-                          "unidad" && (
-                          <div
-                            className="
-                              mt-2.5
-                              flex
-                              items-center
-                              justify-end
-                              gap-1.5
-                            "
-                          >
+                        "unidad" ? (
+                          <div className="mt-2.5 flex items-center justify-end gap-1.5">
                             <button
                               type="button"
                               aria-label={`Restar una unidad de ${item.name}`}
@@ -1980,33 +1408,12 @@ export default function Vender({
                                   -1
                                 )
                               }
-                              className="
-                                grid
-                                h-8
-                                w-8
-                                place-items-center
-                                rounded-xl
-                                border
-                                border-black/10
-                                bg-[#F4F5F7]
-                                text-[#111318]
-                                transition
-                                hover:bg-[#EDEEF1]
-                                active:scale-[0.96]
-                              "
+                              className="grid h-8 w-8 place-items-center rounded-xl border border-black/10 bg-[#F4F5F7] text-[#111318] transition hover:bg-[#EDEEF1] active:scale-[0.96]"
                             >
                               <MinusIcon className="h-3.5 w-3.5" />
                             </button>
 
-                            <span
-                              className="
-                                min-w-[34px]
-                                text-center
-                                text-sm
-                                font-black
-                                text-[#111318]
-                              "
-                            >
+                            <span className="min-w-[34px] text-center text-sm font-black text-[#111318]">
                               {
                                 item.qty
                               }
@@ -2021,37 +1428,13 @@ export default function Vender({
                                   1
                                 )
                               }
-                              className="
-                                grid
-                                h-8
-                                w-8
-                                place-items-center
-                                rounded-xl
-                                bg-[#FFC61A]
-                                text-black
-                                transition
-                                hover:bg-[#FFD248]
-                                active:scale-[0.96]
-                              "
+                              className="grid h-8 w-8 place-items-center rounded-xl bg-[#FFC61A] text-black transition hover:bg-[#FFD248] active:scale-[0.96]"
                             >
                               <PlusIcon className="h-3.5 w-3.5" />
                             </button>
                           </div>
-                        )}
-
-                        {/* ===========================================
-                            PESO / PRECIO LIBRE
-                        =========================================== */}
-
-                        {tipo !==
-                          "unidad" && (
-                          <div
-                            className="
-                              mt-2.5
-                              flex
-                              justify-end
-                            "
-                          >
+                        ) : (
+                          <div className="mt-2.5 flex justify-end">
                             <button
                               type="button"
                               onClick={() =>
@@ -2060,24 +1443,7 @@ export default function Vender({
                                   index
                                 )
                               }
-                              className="
-                                inline-flex
-                                items-center
-                                gap-1.5
-                                rounded-xl
-                                border
-                                border-black/10
-                                bg-[#F4F5F7]
-                                px-3
-                                py-2
-                                text-[10px]
-                                font-extrabold
-                                text-black/55
-                                transition
-                                hover:bg-[#EDEEF1]
-                                hover:text-black
-                                active:scale-[0.98]
-                              "
+                              className="inline-flex items-center gap-1.5 rounded-xl border border-black/10 bg-[#F4F5F7] px-3 py-2 text-[10px] font-extrabold text-black/55 transition hover:bg-[#EDEEF1] hover:text-black active:scale-[0.98]"
                             >
                               <EditIcon className="h-3.5 w-3.5" />
 
@@ -2100,44 +1466,15 @@ export default function Vender({
               TOTAL
           ================================================= */}
 
-          <div
-            className="
-              mt-3
-              flex
-              items-center
-              justify-between
-              gap-3
-              border-t
-              border-black/10
-              pt-4
-            "
-          >
+          <div className="mt-3 flex items-center justify-between gap-3 border-t border-black/10 pt-4">
             <div>
-              <span
-                className="
-                  block
-                  text-[10px]
-                  font-extrabold
-                  uppercase
-                  tracking-[0.14em]
-                  text-black/35
-                "
-              >
+              <span className="block text-[10px] font-extrabold uppercase tracking-[0.14em] text-black/35">
                 Total
               </span>
 
-              <span
-                className="
-                  mt-0.5
-                  block
-                  text-xs
-                  font-semibold
-                  text-black/40
-                "
-              >
+              <span className="mt-0.5 block text-xs font-semibold text-black/40">
                 {itemCount}{" "}
-                {itemCount ===
-                1
+                {itemCount === 1
                   ? "producto"
                   : "productos"}
               </span>
@@ -2148,8 +1485,7 @@ export default function Vender({
                 total
               }
               initial={{
-                scale:
-                  1.06,
+                scale: 1.06,
               }}
               animate={{
                 scale: 1,
@@ -2162,17 +1498,7 @@ export default function Vender({
                 damping:
                   24,
               }}
-              className="
-                rounded-2xl
-                bg-[#FFC61A]
-                px-4
-                py-2.5
-                text-right
-                text-2xl
-                font-black
-                tracking-[-0.04em]
-                text-black
-              "
+              className="rounded-2xl bg-[#FFC61A] px-4 py-2.5 text-right text-2xl font-black tracking-[-0.04em] text-black"
             >
               {money(
                 total
@@ -2231,8 +1557,7 @@ export default function Vender({
           VACIAR
       ===================================================== */}
 
-      {cart.length >
-        0 && (
+      {cart.length > 0 && (
         <button
           type="button"
           onClick={
@@ -2295,41 +1620,37 @@ export default function Vender({
         total={
           total
         }
-        onClose={() =>
+        onClose={() => {
+          if (
+            checkoutInFlightRef.current
+          ) {
+            return;
+          }
+
           setPayOpen(
             false
-          )
-        }
-        onConfirm={(
-          payment
-        ) => {
-          const ok =
-            checkout(
-              payment
-            );
-
-          if (ok) {
-            setPayOpen(
-              false
-            );
-          }
+          );
         }}
+        onConfirm={
+          handlePaymentConfirm
+        }
       />
 
       {/* =====================================================
-          MODAL PESO / IMPORTE LIBRE
+          PESO / IMPORTE LIBRE
       ===================================================== */}
 
       <Modal
         open={
-          !!saleProduct
+          Boolean(
+            saleProduct
+          )
         }
         onClose={
           closeSaleModal
         }
         title={
-          modalTipo ===
-          "peso"
+          modalTipo === "peso"
             ? "Venta por peso"
             : "Importe de venta"
         }
@@ -2338,35 +1659,10 @@ export default function Vender({
           <div>
             {/* PRODUCTO */}
 
-            <div
-              className="
-                mb-4
-                overflow-hidden
-                rounded-[22px]
-                bg-white
-                text-[#111318]
-              "
-            >
+            <div className="mb-4 overflow-hidden rounded-[22px] bg-white text-[#111318]">
               <div className="p-4">
-                <div
-                  className="
-                    flex
-                    items-start
-                    gap-3
-                  "
-                >
-                  <div
-                    className="
-                      grid
-                      h-11
-                      w-11
-                      shrink-0
-                      place-items-center
-                      rounded-2xl
-                      bg-[#FFF5CC]
-                      text-[#9A7100]
-                    "
-                  >
+                <div className="flex items-start gap-3">
+                  <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#FFF5CC] text-[#9A7100]">
                     <ProductTypeIcon
                       tipo={
                         modalTipo
@@ -2375,49 +1671,21 @@ export default function Vender({
                     />
                   </div>
 
-                  <div
-                    className="
-                      min-w-0
-                      flex-1
-                    "
-                  >
-                    <p
-                      className="
-                        text-[10px]
-                        font-extrabold
-                        uppercase
-                        tracking-[0.16em]
-                        text-[#B98700]
-                      "
-                    >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] font-extrabold uppercase tracking-[0.16em] text-[#B98700]">
                       {editingIndex !==
                       null
                         ? "Editar producto"
                         : "Agregar al ticket"}
                     </p>
 
-                    <h3
-                      className="
-                        mt-1
-                        truncate
-                        text-lg
-                        font-black
-                        text-[#111318]
-                      "
-                    >
+                    <h3 className="mt-1 truncate text-lg font-black text-[#111318]">
                       {
                         saleProduct.name
                       }
                     </h3>
 
-                    <p
-                      className="
-                        mt-1
-                        text-xs
-                        font-semibold
-                        text-black/40
-                      "
-                    >
+                    <p className="mt-1 text-xs font-semibold text-black/40">
                       {modalTipo ===
                       "peso"
                         ? `${money(
@@ -2428,114 +1696,37 @@ export default function Vender({
                   </div>
                 </div>
 
-                <div
-                  className="
-                    mt-4
-                    h-[3px]
-                    rounded-full
-                    bg-[#FFC61A]
-                  "
-                />
+                <div className="mt-4 h-[3px] rounded-full bg-[#FFC61A]" />
               </div>
             </div>
 
-            {/* ===============================================
+            {/* =================================================
                 PESO
-            =============================================== */}
+            ================================================= */}
 
             {modalTipo ===
               "peso" && (
               <>
-                <div
-                  className="
-                    mb-3
-                    flex
-                    items-center
-                    justify-between
-                    gap-3
-                    rounded-2xl
-                    border
-                    border-white/10
-                    bg-[#151A22]
-                    px-3.5
-                    py-3
-                  "
-                >
-                  <div
-                    className="
-                      flex
-                      items-center
-                      gap-2.5
-                    "
-                  >
-                    <div
-                      className="
-                        grid
-                        h-9
-                        w-9
-                        place-items-center
-                        rounded-xl
-                        bg-white/5
-                        text-[#FFC61A]
-                      "
-                    >
-                      <ScaleIcon className="h-4 w-4" />
-                    </div>
+                <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-[#151A22] px-3.5 py-3">
+                  <div>
+                    <span className="block text-[9px] font-bold uppercase tracking-[0.1em] text-white/35">
+                      Disponible
+                    </span>
 
-                    <div>
-                      <span
-                        className="
-                          block
-                          text-[9px]
-                          font-bold
-                          uppercase
-                          tracking-[0.1em]
-                          text-white/35
-                        "
-                      >
-                        Disponible
-                      </span>
-
-                      <span
-                        className="
-                          mt-0.5
-                          block
-                          text-sm
-                          font-black
-                          text-white
-                        "
-                      >
-                        {formatQuantity(
-                          modalStock
-                        )}{" "}
-                        kg
-                      </span>
-                    </div>
+                    <span className="mt-0.5 block text-sm font-black text-white">
+                      {formatQuantity(
+                        modalStock
+                      )}{" "}
+                      kg
+                    </span>
                   </div>
 
                   <div className="text-right">
-                    <span
-                      className="
-                        block
-                        text-[9px]
-                        font-bold
-                        uppercase
-                        tracking-[0.1em]
-                        text-white/35
-                      "
-                    >
+                    <span className="block text-[9px] font-bold uppercase tracking-[0.1em] text-white/35">
                       Precio
                     </span>
 
-                    <span
-                      className="
-                        mt-0.5
-                        block
-                        text-sm
-                        font-black
-                        text-[#FFC61A]
-                      "
-                    >
+                    <span className="mt-0.5 block text-sm font-black text-[#FFC61A]">
                       {money(
                         modalPrice
                       )}
@@ -2544,35 +1735,12 @@ export default function Vender({
                   </div>
                 </div>
 
-                {/* PESO */}
-
-                <div className="mb-4">
-                  <label
-                    htmlFor="sale-weight"
-                    className="
-                      mb-1.5
-                      block
-                      text-xs
-                      font-bold
-                      text-white/55
-                    "
-                  >
-                    Peso
-                  </label>
-
+                <FieldLabel
+                  htmlFor="sale-weight"
+                  label="Peso"
+                >
                   <div className="relative">
-                    <ScaleIcon
-                      className="
-                        pointer-events-none
-                        absolute
-                        left-4
-                        top-1/2
-                        h-4
-                        w-4
-                        -translate-y-1/2
-                        text-white/30
-                      "
-                    />
+                    <ScaleIcon className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/30" />
 
                     <input
                       id="sale-weight"
@@ -2584,12 +1752,9 @@ export default function Vender({
                       value={
                         weightInput
                       }
-                      onChange={(
-                        event
-                      ) =>
+                      onChange={(event) =>
                         handleWeightChange(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       placeholder="Ej: 0.650"
@@ -2614,44 +1779,16 @@ export default function Vender({
                       "
                     />
 
-                    <span
-                      className="
-                        pointer-events-none
-                        absolute
-                        right-4
-                        top-1/2
-                        -translate-y-1/2
-                        text-xs
-                        font-extrabold
-                        text-white/35
-                      "
-                    >
+                    <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-xs font-extrabold text-white/35">
                       kg
                     </span>
                   </div>
-                </div>
+                </FieldLabel>
 
-                {/* SEPARADOR */}
-
-                <div
-                  className="
-                    mb-4
-                    flex
-                    items-center
-                    gap-3
-                  "
-                >
+                <div className="mb-4 flex items-center gap-3">
                   <div className="h-px flex-1 bg-white/10" />
 
-                  <span
-                    className="
-                      text-[9px]
-                      font-extrabold
-                      uppercase
-                      tracking-[0.14em]
-                      text-white/25
-                    "
-                  >
+                  <span className="text-[9px] font-extrabold uppercase tracking-[0.14em] text-white/25">
                     o ingresar importe
                   </span>
 
@@ -2660,40 +1797,21 @@ export default function Vender({
               </>
             )}
 
-            {/* ===============================================
+            {/* =================================================
                 IMPORTE
-            =============================================== */}
+            ================================================= */}
 
-            <div className="mb-4">
-              <label
-                htmlFor="sale-amount"
-                className="
-                  mb-1.5
-                  block
-                  text-xs
-                  font-bold
-                  text-white/55
-                "
-              >
-                {modalTipo ===
+            <FieldLabel
+              htmlFor="sale-amount"
+              label={
+                modalTipo ===
                 "peso"
                   ? "Importe"
-                  : "Importe a cobrar"}
-              </label>
-
+                  : "Importe a cobrar"
+              }
+            >
               <div className="relative">
-                <span
-                  className="
-                    pointer-events-none
-                    absolute
-                    left-4
-                    top-1/2
-                    -translate-y-1/2
-                    text-base
-                    font-black
-                    text-[#FFC61A]
-                  "
-                >
+                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-base font-black text-[#FFC61A]">
                   $
                 </span>
 
@@ -2710,17 +1828,12 @@ export default function Vender({
                   value={
                     amountInput
                   }
-                  onChange={(
-                    event
-                  ) =>
+                  onChange={(event) =>
                     handleAmountChange(
-                      event.target
-                        .value
+                      event.target.value
                     )
                   }
-                  onKeyDown={(
-                    event
-                  ) => {
+                  onKeyDown={(event) => {
                     if (
                       event.key ===
                       "Enter"
@@ -2750,36 +1863,19 @@ export default function Vender({
                   "
                 />
               </div>
-            </div>
+            </FieldLabel>
 
-            {/* ===============================================
+            {/* =================================================
                 RESULTADO PESO
-            =============================================== */}
+            ================================================= */}
 
             {modalTipo ===
               "peso" && (
               <div
                 className={
-                  `
-                    mb-4
-                    grid
-                    grid-cols-2
-                    gap-2.5
-                    rounded-[22px]
-                    border
-                    p-3.5
-                  ` +
-                  (
-                    exceedsStock
-                      ? `
-                        border-red-400/25
-                        bg-red-500/10
-                      `
-                      : `
-                        border-white/10
-                        bg-[#151A22]
-                      `
-                  )
+                  exceedsStock
+                    ? "mb-4 grid grid-cols-2 gap-2.5 rounded-[22px] border border-red-400/25 bg-red-500/10 p-3.5"
+                    : "mb-4 grid grid-cols-2 gap-2.5 rounded-[22px] border border-white/10 bg-[#151A22] p-3.5"
                 }
               >
                 <SaleStat
@@ -2808,33 +1904,19 @@ export default function Vender({
             )}
 
             {exceedsStock && (
-              <div
-                className="
-                  mb-4
-                  rounded-2xl
-                  border
-                  border-red-400/20
-                  bg-red-500/10
-                  px-3.5
-                  py-3
-                  text-xs
-                  font-semibold
-                  text-red-200
-                "
-              >
+              <div className="mb-4 rounded-2xl border border-red-400/20 bg-red-500/10 px-3.5 py-3 text-xs font-semibold text-red-200">
                 El peso ingresado supera el stock disponible.
               </div>
             )}
 
-            {/* ===============================================
+            {/* =================================================
                 CONFIRMAR
-            =============================================== */}
+            ================================================= */}
 
             <button
               type="button"
               disabled={
-                modalAmount <=
-                  0 ||
+                modalAmount <= 0 ||
                 (
                   modalTipo ===
                     "peso" &&
@@ -2889,8 +1971,29 @@ export default function Vender({
 }
 
 /* =========================================================
-   SALE STAT
+   COMPONENTES AUXILIARES
 ========================================================= */
+
+function FieldLabel({
+  htmlFor,
+  label,
+  children,
+}) {
+  return (
+    <div className="mb-4">
+      <label
+        htmlFor={
+          htmlFor
+        }
+        className="mb-1.5 block text-xs font-bold text-white/55"
+      >
+        {label}
+      </label>
+
+      {children}
+    </div>
+  );
+}
 
 function SaleStat({
   label,
@@ -2900,35 +2003,17 @@ function SaleStat({
 }) {
   return (
     <div className="text-center">
-      <span
-        className="
-          block
-          text-[9px]
-          font-bold
-          uppercase
-          tracking-[0.1em]
-          text-white/35
-        "
-      >
+      <span className="block text-[9px] font-bold uppercase tracking-[0.1em] text-white/35">
         {label}
       </span>
 
       <span
         className={
-          `
-            mt-1
-            block
-            truncate
-            text-base
-            font-black
-          ` +
-          (
-            danger
-              ? " text-red-400"
-              : highlight
-                ? " text-[#FFC61A]"
-                : " text-white"
-          )
+          danger
+            ? "mt-1 block truncate text-base font-black text-red-400"
+            : highlight
+              ? "mt-1 block truncate text-base font-black text-[#FFC61A]"
+              : "mt-1 block truncate text-base font-black text-white"
         }
       >
         {value}
@@ -2936,10 +2021,6 @@ function SaleStat({
     </div>
   );
 }
-
-/* =========================================================
-   PRODUCT TYPE ICON
-========================================================= */
 
 function ProductTypeIcon({
   tipo,
@@ -2979,37 +2060,22 @@ function ProductTypeIcon({
   );
 }
 
-/* =========================================================
-   BANNER
-========================================================= */
-
 function Banner({
   tone,
   children,
   onClick,
   icon,
 }) {
-  const styles = {
-    warning: {
-      container:
-        "border-[#FFC61A]/25 bg-[#FFC61A]/10 text-[#F3CD62]",
+  const warning =
+    "border-[#FFC61A]/25 bg-[#FFC61A]/10 text-[#F3CD62]";
 
-      icon:
-        "bg-[#FFC61A]/15 text-[#FFC61A]",
-    },
-
-    danger: {
-      container:
-        "border-red-400/20 bg-red-500/10 text-red-200",
-
-      icon:
-        "bg-red-500/15 text-red-400",
-    },
-  };
+  const danger =
+    "border-red-400/20 bg-red-500/10 text-red-200";
 
   const style =
-    styles[tone] ||
-    styles.warning;
+    tone === "danger"
+      ? danger
+      : warning;
 
   return (
     <motion.div
@@ -3034,9 +2100,7 @@ function Banner({
           ? 0
           : undefined
       }
-      onKeyDown={(
-        event
-      ) => {
+      onKeyDown={(event) => {
         if (
           onClick &&
           (
@@ -3060,7 +2124,7 @@ function Banner({
         py-3
         text-sm
         font-semibold
-        ${style.container}
+        ${style}
         ${
           onClick
             ? "cursor-pointer transition hover:brightness-110 active:scale-[0.995]"
@@ -3068,27 +2132,11 @@ function Banner({
         }
       `}
     >
-      <span
-        className={`
-          grid
-          h-8
-          w-8
-          shrink-0
-          place-items-center
-          rounded-xl
-          ${style.icon}
-        `}
-      >
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-white/[0.06]">
         {icon}
       </span>
 
-      <span
-        className="
-          min-w-0
-          flex-1
-          leading-snug
-        "
-      >
+      <span className="min-w-0 flex-1 leading-snug">
         {children}
       </span>
 
@@ -3103,27 +2151,48 @@ function Banner({
    ICONOS
 ========================================================= */
 
+function IconBase({
+  className,
+  children,
+  strokeWidth = 2,
+}) {
+  return (
+    <svg
+      className={
+        className
+      }
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={
+        strokeWidth
+      }
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  );
+}
+
 function SearchIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <circle
         cx="11"
         cy="11"
         r="7"
       />
+
       <path d="m20 20-3.5-3.5" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3131,18 +2200,17 @@ function CloseIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
+      strokeWidth={
+        2.2
+      }
     >
       <path d="M6 6l12 12" />
       <path d="M18 6 6 18" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3150,20 +2218,15 @@ function BoxIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <path d="m4 7 8-4 8 4-8 4-8-4Z" />
       <path d="M4 7v10l8 4 8-4V7" />
       <path d="M12 11v10" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3171,15 +2234,10 @@ function ScaleIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <path d="M12 3v4" />
       <path d="M5 7h14" />
@@ -3187,7 +2245,7 @@ function ScaleIcon({
       <path d="m17 7-4 7h8l-4-7Z" />
       <path d="M12 7v13" />
       <path d="M8 20h8" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3195,15 +2253,10 @@ function MoneyIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <rect
         x="3"
@@ -3212,14 +2265,16 @@ function MoneyIcon({
         height="14"
         rx="2"
       />
+
       <circle
         cx="12"
         cy="12"
         r="2.5"
       />
+
       <path d="M7 9h.01" />
       <path d="M17 15h.01" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3227,14 +2282,10 @@ function BarcodeIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <path d="M3 5v14" />
       <path d="M7 5v14" />
@@ -3242,7 +2293,7 @@ function BarcodeIcon({
       <path d="M14 5v14" />
       <path d="M17 5v14" />
       <path d="M21 5v14" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3250,15 +2301,10 @@ function CameraIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <path d="M5 7h3l1.5-2h5L16 7h3a2 2 0 0 1 2 2v9H3V9a2 2 0 0 1 2-2Z" />
 
@@ -3267,7 +2313,7 @@ function CameraIcon({
         cy="13"
         r="3"
       />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3275,21 +2321,16 @@ function ReceiptIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <path d="M6 3h12v18l-2.5-1.5L13 21l-2.5-1.5L8 21l-2-1.2V3Z" />
       <path d="M9 8h6" />
       <path d="M9 12h6" />
       <path d="M9 16h4" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3297,17 +2338,16 @@ function MinusIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.4"
-      strokeLinecap="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
+      strokeWidth={
+        2.4
+      }
     >
       <path d="M5 12h14" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3315,18 +2355,17 @@ function PlusIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.4"
-      strokeLinecap="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
+      strokeWidth={
+        2.4
+      }
     >
       <path d="M12 5v14" />
       <path d="M5 12h14" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3334,19 +2373,15 @@ function EditIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <path d="M12 20h9" />
+
       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5Z" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3354,22 +2389,17 @@ function TrashIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <path d="M4 7h16" />
       <path d="M10 11v6" />
       <path d="M14 11v6" />
       <path d="M9 7V4h6v3" />
       <path d="M6 7l1 14h10l1-14" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3377,15 +2407,10 @@ function PaymentIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <rect
         x="3"
@@ -3394,9 +2419,10 @@ function PaymentIcon({
         height="14"
         rx="2"
       />
+
       <path d="M3 10h18" />
       <path d="M7 15h4" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3404,20 +2430,15 @@ function ClearIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <path d="M3 6h18" />
       <path d="M8 6V4h8v2" />
       <path d="M6 6l1 14h10l1-14" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3425,15 +2446,10 @@ function RegisterIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <path d="M4 10h16v10H4z" />
       <path d="M7 10V5h10v5" />
@@ -3441,7 +2457,7 @@ function RegisterIcon({
       <path d="M15 14h1" />
       <path d="M15 17h1" />
       <path d="M8 17h3" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3449,15 +2465,10 @@ function ClockIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <circle
         cx="12"
@@ -3466,7 +2477,7 @@ function ClockIcon({
       />
 
       <path d="M12 7v5l3 2" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3474,21 +2485,16 @@ function StockAlertIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
     >
       <path d="M4 7h16v13H4z" />
       <path d="M8 7V4h8v3" />
       <path d="M12 11v4" />
       <path d="M12 18h.01" />
-    </svg>
+    </IconBase>
   );
 }
 
@@ -3496,17 +2502,15 @@ function ChevronIcon({
   className = "",
 }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <IconBase
+      className={
+        className
+      }
+      strokeWidth={
+        2.2
+      }
     >
       <path d="m9 18 6-6-6-6" />
-    </svg>
+    </IconBase>
   );
 }

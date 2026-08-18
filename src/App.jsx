@@ -47,13 +47,13 @@ function PosRoute() {
    * LicenseGate usa este objeto para decidir
    * si permite el acceso.
    *
-   * PosApp reutiliza cerrarSesion del mismo hook.
+   * PosApp reutiliza los datos de la misma licencia.
    */
   const license = useLicenseCheck();
 
   return (
     <LicenseGate license={license}>
-      <PosApp cerrarSesion={license.cerrarSesion} />
+      <PosApp license={license} />
     </LicenseGate>
   );
 }
@@ -62,8 +62,21 @@ function PosRoute() {
    POS
 ========================================================= */
 
-function PosApp({ cerrarSesion }) {
-  const pos = usePosData();
+function PosApp({ license }) {
+  /*
+   * Pasamos clienteId al POS para que todos los datos
+   * operativos queden aislados por cliente en Firestore.
+   *
+   * deviceId queda disponible para migraciones, auditoría
+   * y futuras funciones multidispositivo.
+   *
+   * usePosData actualmente puede ignorar este objeto sin
+   * romper compatibilidad. Lo utilizaremos en el siguiente paso.
+   */
+  const pos = usePosData({
+    clienteId: license.clienteId,
+    deviceId: license.deviceId,
+  });
 
   const [tab, setTab] = useState("vender");
   const [invFilter, setInvFilter] = useState("all");
@@ -91,7 +104,7 @@ function PosApp({ cerrarSesion }) {
     }
 
     try {
-      await cerrarSesion();
+      await license.cerrarSesion();
     } catch (error) {
       console.error(
         "Error cerrando sesión:",

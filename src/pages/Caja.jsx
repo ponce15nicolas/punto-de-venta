@@ -154,6 +154,16 @@ export default function Caja({
     setCounted,
   ] = useState("");
 
+  const [
+    openingCash,
+    setOpeningCash,
+  ] = useState(false);
+
+  const [
+    closingCash,
+    setClosingCash,
+  ] = useState(false);
+
   /* =========================================================
      CAJA CERRADA
   ========================================================= */
@@ -171,20 +181,45 @@ export default function Caja({
       ) &&
       montoInicial >= 0;
 
-    function abrirCaja() {
-      if (!puedeAbrir) {
+    async function abrirCaja() {
+      if (
+        !puedeAbrir ||
+        openingCash
+      ) {
         return;
       }
 
-      const ok =
-        openCashSession(
-          montoInicial
+      setOpeningCash(true);
+
+      try {
+        /*
+         * Compatible tanto con el usePosData local actual
+         * como con la próxima versión asincrónica de Firestore.
+         */
+        const ok =
+          await Promise.resolve(
+            openCashSession(
+              montoInicial
+            )
+          );
+
+        if (ok) {
+          setOpenAmount(
+            ""
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Error abriendo caja:",
+          error
         );
 
-      if (ok) {
-        setOpenAmount(
-          ""
+        pos?.showToast?.(
+          "No se pudo abrir la caja",
+          true
         );
+      } finally {
+        setOpeningCash(false);
       }
     }
 
@@ -341,6 +376,9 @@ export default function Caja({
                 value={
                   openAmount
                 }
+                disabled={
+                  openingCash
+                }
                 onChange={(
                   event
                 ) =>
@@ -408,7 +446,8 @@ export default function Caja({
             <button
               type="button"
               disabled={
-                !puedeAbrir
+                !puedeAbrir ||
+                openingCash
               }
               onClick={
                 abrirCaja
@@ -435,9 +474,15 @@ export default function Caja({
                 disabled:opacity-40
               "
             >
-              <UnlockIcon className="h-4 w-4" />
+              {openingCash ? (
+                <LoadingIcon className="h-4 w-4" />
+              ) : (
+                <UnlockIcon className="h-4 w-4" />
+              )}
 
-              Abrir caja
+              {openingCash
+                ? "Abriendo caja..."
+                : "Abrir caja"}
             </button>
           </div>
         </section>
@@ -534,6 +579,10 @@ export default function Caja({
   ========================================================= */
 
   function cerrarModalCaja() {
+    if (closingCash) {
+      return;
+    }
+
     setCloseModal(
       false
     );
@@ -547,28 +596,50 @@ export default function Caja({
      CONFIRMAR CIERRE
   ========================================================= */
 
-  function confirmarCierre() {
-    if (!puedeCerrar) {
+  async function confirmarCierre() {
+    if (
+      !puedeCerrar ||
+      closingCash
+    ) {
       return;
     }
 
-    const ok =
-      closeCashSession(
-        countedNum
+    setClosingCash(true);
+
+    try {
+      /*
+       * Esperamos la confirmación real de la operación antes
+       * de cerrar el modal. Esto evita falsos positivos cuando
+       * usePosData pase a trabajar con Firestore.
+       */
+      const ok =
+        await Promise.resolve(
+          closeCashSession(
+            countedNum
+          )
+        );
+
+      if (ok) {
+        setCounted(
+          ""
+        );
+
+        setCloseModal(
+          false
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Error cerrando caja:",
+        error
       );
 
-    /*
-     * Sólo cerramos visualmente
-     * si usePosData confirmó la operación.
-     */
-    if (ok) {
-      setCounted(
-        ""
+      pos?.showToast?.(
+        "No se pudo cerrar la caja",
+        true
       );
-
-      setCloseModal(
-        false
-      );
+    } finally {
+      setClosingCash(false);
     }
   }
 
@@ -1337,6 +1408,9 @@ export default function Caja({
                 value={
                   counted
                 }
+                disabled={
+                  closingCash
+                }
                 onChange={(
                   event
                 ) =>
@@ -1464,7 +1538,8 @@ export default function Caja({
           <button
             type="button"
             disabled={
-              !puedeCerrar
+              !puedeCerrar ||
+              closingCash
             }
             onClick={
               confirmarCierre
@@ -1490,9 +1565,15 @@ export default function Caja({
               disabled:opacity-40
             "
           >
-            <CheckIcon className="h-4 w-4" />
+            {closingCash ? (
+              <LoadingIcon className="h-4 w-4" />
+            ) : (
+              <CheckIcon className="h-4 w-4" />
+            )}
 
-            Confirmar cierre
+            {closingCash
+              ? "Cerrando caja..."
+              : "Confirmar cierre"}
           </button>
         </div>
       </Modal>
@@ -1623,6 +1704,24 @@ function DarkStat({
 /* =========================================================
    ICONOS
 ========================================================= */
+
+function LoadingIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={`${className} animate-spin`}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M21 12a9 9 0 1 1-6.22-8.56" />
+    </svg>
+  );
+}
 
 function RegisterIcon({
   className = "",

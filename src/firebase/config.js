@@ -6,11 +6,6 @@
 // - Cloud Firestore
 // - Cloud Functions
 // - Cloud Storage
-//
-// IMPORTANTE:
-// La configuración de Firebase Web identifica el proyecto,
-// pero NO reemplaza las Security Rules ni la autorización
-// del lado del servidor.
 
 import {
     getApp,
@@ -68,13 +63,6 @@ const firebaseConfig = {
    INICIALIZACIÓN
 ========================================================= */
 
-/*
- * Evita inicializar Firebase más de una vez.
- *
- * Es especialmente útil durante desarrollo con Vite/HMR,
- * tests o si en el futuro este módulo termina importándose
- * desde diferentes puntos de entrada.
- */
 const app =
     getApps().length > 0
         ? getApp()
@@ -101,25 +89,19 @@ export const db =
 ========================================================= */
 
 /*
- * Tus callable functions siguen usando us-central1.
- *
- * getFunctions() usa esa región por defecto, pero la dejamos
- * explícita para evitar confusiones si más adelante desplegás
- * funciones en otra región.
+ * Las callable functions del frontend
+ * utilizan southamerica-east1.
  */
 export const functions =
     getFunctions(
         app,
         "southamerica-east1"
     );
+
 /* =========================================================
    CLOUD STORAGE
 ========================================================= */
 
-/*
- * Queda preparado para subir imágenes y archivos desde
- * el panel sin tener que volver a modificar firebase/config.
- */
 export const storage =
     getStorage(app);
 

@@ -33,25 +33,101 @@ service cloud.firestore {
     }
 
     /*
-     * Permite comprobar si el usuario autenticado
-     * corresponde a un cliente específico.
+     * Comprueba que el usuario autenticado
+     * pertenece al cliente indicado.
      *
-     * Se usa, por ejemplo, para el historial de pagos.
+     * Soporta:
+     * - documento clientes/{uid}
+     * - cliente asociado por email
      */
     function perteneceAlCliente(clienteId) {
-      let cliente = get(
-        /databases/$(database)/documents/clientes/$(clienteId)
-      );
+  return estaAutenticado()
+    && (
+      request.auth.uid == clienteId
+      || (
+        emailAutenticado() != null
+        && exists(
+          /databases/$(database)/documents/clientes/$(clienteId)
+        )
+        && get(
+          /databases/$(database)/documents/clientes/$(clienteId)
+        ).data.get("email", null) == emailAutenticado()
+      )
+    );
+}
 
-      return estaAutenticado()
-        && cliente.exists()
-        && (
-          request.auth.uid == clienteId
-          || (
-            emailAutenticado() != null
-            && cliente.data.get("email", null) == emailAutenticado()
-          )
-        );
+    /* =====================================================
+       VALIDACIONES POS
+    ===================================================== */
+
+    function tipoProductoValido(tipoVenta) {
+      return tipoVenta == "unidad"
+        || tipoVenta == "peso"
+        || tipoVenta == "precio-libre";
+    }
+
+    function productoValido(data) {
+      return data.keys().hasAll([
+          "barcode",
+          "name",
+          "tipoVenta",
+          "price",
+          "stock"
+        ])
+        && data.barcode is string
+        && data.barcode.size() > 0
+        && data.name is string
+        && data.name.size() > 0
+        && data.tipoVenta is string
+        && tipoProductoValido(data.tipoVenta)
+        && data.price is number
+        && data.price >= 0
+        && data.stock is number
+        && data.stock >= 0;
+    }
+
+    function ventaValida(data) {
+      return data.keys().hasAll([
+          "id",
+          "timestamp",
+          "items",
+          "total",
+          "payment"
+        ])
+        && data.id is string
+        && data.id.size() > 0
+        && data.timestamp is string
+        && data.items is list
+        && data.items.size() > 0
+        && data.total is number
+        && data.total > 0
+        && data.payment is map;
+    }
+
+    function estadoCajaValido(status) {
+      return status == "open"
+        || status == "closed";
+    }
+
+    function cajaValida(data) {
+      return data.keys().hasAll([
+          "id",
+          "openTime",
+          "openAmount",
+          "status"
+        ])
+        && data.id is string
+        && data.id.size() > 0
+        && data.openTime is string
+        && data.openAmount is number
+        && data.openAmount >= 0
+        && data.status is string
+        && estadoCajaValido(data.status);
+    }
+
+    function configuracionPosPermitida(configId) {
+      return configId == "pos"
+        || configId == "migracion-pos-v1";
     }
 
     /* =====================================================
@@ -61,14 +137,7 @@ service cloud.firestore {
     match /clientes/{clienteId} {
 
       /*
-       * Lectura individual.
-       *
-       * Caso 1:
-       * clientes/{uid}
-       *
-       * Caso 2:
-       * login con Google y mismo email,
-       * aunque el UID sea diferente.
+       * Lectura individual del cliente.
        */
       allow get: if esCliente(
         clienteId,
@@ -76,30 +145,207 @@ service cloud.firestore {
       );
 
       /*
-       * Necesario porque useLicenseCheck puede hacer:
+       * Necesario para:
        *
        * where("email", "==", user.email)
        *
-       * Firestore Rules no funciona como filtro:
-       * la consulta debe estar construida de forma que
-       * solamente pueda devolver documentos autorizados.
+       * utilizado por useLicenseCheck.
        */
       allow list: if estaAutenticado()
         && mismoEmail(resource.data);
 
       /*
-       * El frontend nunca puede:
+       * El frontend no puede modificar:
        *
-       * - activarse
-       * - cambiar vencimiento
-       * - cambiar plan
-       * - aumentar maxDispositivos
-       * - cambiar dispositivosActivos
-       * - modificar authUids
+       * - licencia
+       * - vencimiento
+       * - plan
+       * - maxDispositivos
+       * - dispositivosActivos
+       * - authUids
        *
-       * Todo eso pasa por Cloud Functions.
+       * Eso continúa protegido por Cloud Functions.
        */
       allow create, update, delete: if false;
+
+      /* ===================================================
+         PRODUCTOS POS
+      =================================================== */
+
+      match /productos/{productoId} {
+
+        /*
+         * El cliente puede leer únicamente
+         * los productos de su propia cuenta.
+         *
+         * El listener en tiempo real necesita
+         * tanto get como list.
+         */
+        allow get, list: if perteneceAlCliente(
+          clienteId
+        );
+
+        /*
+         * Crear productos.
+         *
+         * También se utiliza durante la
+         * migración desde localStorage.
+         */
+        allow create: if perteneceAlCliente(
+            clienteId
+          )
+          && productoValido(
+            request.resource.data
+          );
+
+        /*
+         * Editar producto, reponer stock
+         * y descontar stock durante ventas.
+         */
+        allow update: if perteneceAlCliente(
+            clienteId
+          )
+          && productoValido(
+            request.resource.data
+          );
+
+        /*
+         * Necesario para eliminar productos
+         * y para cambiar un código de barras,
+         * donde se crea el nuevo documento
+         * y se elimina el anterior.
+         */
+        allow delete: if perteneceAlCliente(
+          clienteId
+        );
+      }
+
+      /* ===================================================
+         VENTAS POS
+      =================================================== */
+
+      match /ventas/{ventaId} {
+
+        /*
+         * Historial y sincronización
+         * entre dispositivos.
+         */
+        allow get, list: if perteneceAlCliente(
+          clienteId
+        );
+
+        /*
+         * Una venta puede crearse desde
+         * checkoutCloud o desde la migración.
+         */
+        allow create: if perteneceAlCliente(
+            clienteId
+          )
+          && ventaValida(
+            request.resource.data
+          );
+
+        /*
+         * Las ventas quedan inmutables.
+         *
+         * Evitamos que un navegador pueda
+         * alterar importes o tickets ya registrados.
+         */
+        allow update, delete: if false;
+      }
+
+      /* ===================================================
+         CAJAS POS
+      =================================================== */
+
+      match /cajas/{cajaId} {
+
+        /*
+         * Caja actual + historial.
+         */
+        allow get, list: if perteneceAlCliente(
+          clienteId
+        );
+
+        /*
+         * Apertura de caja y migración.
+         */
+        allow create: if perteneceAlCliente(
+            clienteId
+          )
+          && cajaValida(
+            request.resource.data
+          );
+
+        /*
+         * Se necesita actualizar la caja para:
+         *
+         * - acumular ventas
+         * - métodos de pago
+         * - cerrar turno
+         */
+        allow update: if perteneceAlCliente(
+            clienteId
+          )
+          && cajaValida(
+            request.resource.data
+          );
+
+        /*
+         * Por ahora no permitimos borrar
+         * cierres desde el navegador.
+         *
+         * Lo habilitaremos de forma controlada
+         * cuando implementemos "eliminar historial".
+         */
+        allow delete: if false;
+      }
+
+      /* ===================================================
+         CONFIGURACIÓN DEL POS
+      =================================================== */
+
+      match /configuracion/{configId} {
+
+        /*
+         * Únicamente existen dos documentos
+         * permitidos desde el frontend:
+         *
+         * configuracion/pos
+         * configuracion/migracion-pos-v1
+         */
+        allow get: if perteneceAlCliente(
+            clienteId
+          )
+          && configuracionPosPermitida(
+            configId
+          );
+
+        /*
+         * No necesitamos consultas completas
+         * sobre la colección configuración.
+         */
+        allow list: if false;
+
+        /*
+         * Permite:
+         *
+         * - nombre del negocio
+         * - openCashSessionId
+         * - estado de migración
+         *
+         * Esta colección está aislada de los
+         * datos sensibles de licencia.
+         */
+        allow create, update: if perteneceAlCliente(
+            clienteId
+          )
+          && configuracionPosPermitida(
+            configId
+          );
+
+        allow delete: if false;
+      }
 
       /* ===================================================
          DISPOSITIVOS
@@ -108,14 +354,10 @@ service cloud.firestore {
       match /dispositivos/{deviceId} {
 
         /*
-         * Aunque sean dispositivos del mismo cliente,
-         * el navegador NO puede leerlos directamente.
+         * Continúa completamente bloqueado
+         * para acceso directo desde frontend.
          *
-         * Para consultar dispositivos:
-         * Cloud Function listarDispositivos.
-         *
-         * Para cerrar uno:
-         * Cloud Function cerrarSesionDispositivo.
+         * Se administra mediante Cloud Functions.
          */
         allow read, write: if false;
       }
@@ -127,15 +369,14 @@ service cloud.firestore {
       match /seguridad/{seguridadId} {
 
         /*
-         * Esta colección contiene el estado interno:
+         * Contiene información interna de:
          *
-         * sessions
-         * sessionId
-         * deviceId
-         * lastSeen
+         * - sesiones
+         * - deviceId
+         * - sessionId
+         * - lastSeen
          *
-         * Es especialmente importante impedir que el cliente
-         * la modifique manualmente.
+         * Sólo Cloud Functions puede gestionarlo.
          */
         allow read, write: if false;
       }
@@ -148,10 +389,8 @@ service cloud.firestore {
     match /admins/{adminId} {
 
       /*
-       * AdminRoute necesita comprobar su propio documento.
-       *
-       * Un administrador no puede consultar desde el navegador
-       * la lista completa de administradores.
+       * AdminRoute puede comprobar solamente
+       * el documento del usuario autenticado.
        */
       allow get: if estaAutenticado()
         && request.auth.uid == adminId;
@@ -159,8 +398,8 @@ service cloud.firestore {
       allow list: if false;
 
       /*
-       * Los admins se administran manualmente o mediante
-       * backend autorizado.
+       * Administración únicamente desde backend
+       * o Firebase Console.
        */
       allow create, update, delete: if false;
     }
@@ -172,19 +411,15 @@ service cloud.firestore {
     match /pagos/{pagoId} {
 
       /*
-       * Conservamos compatibilidad con tu regla anterior.
-       *
-       * Permite leer solamente pagos cuyo clienteId
-       * pertenezca al usuario autenticado.
-       *
-       * También funciona para el caso Google/email.
+       * El cliente solamente puede leer
+       * pagos pertenecientes a su cuenta.
        */
       allow get, list: if perteneceAlCliente(
         resource.data.clienteId
       );
 
       /*
-       * Los pagos solamente pueden registrarse
+       * Los pagos se registran exclusivamente
        * mediante registrarPago Cloud Function.
        */
       allow create, update, delete: if false;
@@ -197,11 +432,8 @@ service cloud.firestore {
     /*
      * Fail closed.
      *
-     * Cualquier colección futura que no tenga una regla
-     * explícita queda denegada.
-     *
-     * Un "allow false" general no anula las reglas
-     * específicas anteriores cuando una de ellas devuelve true.
+     * Toda colección o documento que no haya
+     * sido autorizado explícitamente queda bloqueado.
      */
     match /{document=**} {
       allow read, write: if false;
