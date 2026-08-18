@@ -610,6 +610,44 @@ export default function AdminPanel() {
 
   useEffect(() => {
     cargarClientes();
+
+    const refrescar =
+      () => {
+        if (
+          typeof document !==
+            "undefined" &&
+          document.visibilityState ===
+            "hidden"
+        ) {
+          return;
+        }
+
+        cargarClientes({
+          silent: true,
+        });
+      };
+
+    const intervalId =
+      window.setInterval(
+        refrescar,
+        5000
+      );
+
+    window.addEventListener(
+      "focus",
+      refrescar
+    );
+
+    return () => {
+      window.clearInterval(
+        intervalId
+      );
+
+      window.removeEventListener(
+        "focus",
+        refrescar
+      );
+    };
   }, [
     cargarClientes,
   ]);
@@ -1933,6 +1971,44 @@ function PanelDispositivos({
 
   useEffect(() => {
     cargar();
+
+    const refrescar =
+      () => {
+        if (
+          typeof document !==
+            "undefined" &&
+          document.visibilityState ===
+            "hidden"
+        ) {
+          return;
+        }
+
+        cargar(
+          true
+        );
+      };
+
+    const intervalId =
+      window.setInterval(
+        refrescar,
+        3000
+      );
+
+    window.addEventListener(
+      "focus",
+      refrescar
+    );
+
+    return () => {
+      window.clearInterval(
+        intervalId
+      );
+
+      window.removeEventListener(
+        "focus",
+        refrescar
+      );
+    };
   }, [
     cargar,
   ]);

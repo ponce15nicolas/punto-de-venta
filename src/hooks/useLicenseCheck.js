@@ -1340,6 +1340,79 @@ export function useLicenseCheck() {
         );
 
     /* =======================================================
+       CIERRE REMOTO EN TIEMPO REAL
+    ======================================================= */
+
+    useEffect(() => {
+        if (
+            !usuario ||
+            !clienteId ||
+            !datosCliente ||
+            estadoLicencia !==
+            "activo" ||
+            avisoSesion
+        ) {
+            return;
+        }
+
+        const sessionId =
+            storeGet(
+                getSessionKey(
+                    usuario
+                ),
+                null
+            );
+
+        if (
+            !sessionId
+        ) {
+            return;
+        }
+
+        const cierre =
+            datosCliente
+                ?.cierresDispositivos
+                ?.[deviceId];
+
+        if (
+            !cierre ||
+            typeof cierre !==
+            "object" ||
+            cierre.sessionId !==
+            sessionId
+        ) {
+            return;
+        }
+
+        const motivo =
+            String(
+                cierre.motivo ||
+                ""
+            );
+
+        const mensaje =
+            motivo ===
+            "limite-reducido"
+                ? "Este dispositivo fue desconectado porque cambió el límite permitido de la licencia."
+                : motivo ===
+                  "cerrar-todas"
+                    ? "Todas las sesiones fueron cerradas desde el panel administrativo."
+                    : "Esta sesión fue cerrada desde el panel administrativo.";
+
+        forzarCierreRemoto(
+            mensaje
+        );
+    }, [
+        usuario,
+        clienteId,
+        datosCliente,
+        estadoLicencia,
+        avisoSesion,
+        deviceId,
+        forzarCierreRemoto,
+    ]);
+
+    /* =======================================================
        REGISTRAR DISPOSITIVO
     ======================================================= */
 

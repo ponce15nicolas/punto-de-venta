@@ -201,6 +201,125 @@ function normalizarDispositivo(
         : "Dispositivo desconocido";
 }
 
+
+const MAX_CIERRES_DISPOSITIVOS = 50;
+
+/*
+ * Guarda marcadores de cierre remoto por deviceId.
+ *
+ * El cliente ya escucha clientes/{clienteId} en tiempo real,
+ * así que este mapa permite avisarle inmediatamente que su
+ * sessionId fue cerrado desde Admin, sin esperar al heartbeat.
+ */
+function normalizarCierresDispositivos(
+    value
+) {
+    if (!esObjetoPlano(value)) {
+        return {};
+    }
+
+    const entries =
+        Object.entries(value)
+            .filter(
+                ([
+                    deviceId,
+                    info,
+                ]) =>
+                    Boolean(
+                        textoSeguro(
+                            deviceId,
+                            180
+                        )
+                    ) &&
+                    esObjetoPlano(
+                        info
+                    ) &&
+                    Boolean(
+                        textoSeguro(
+                            info.sessionId,
+                            180
+                        )
+                    )
+            )
+            .sort(
+                (
+                    [, a],
+                    [, b]
+                ) =>
+                    numeroSeguro(
+                        b.cerradoEnMs,
+                        0
+                    ) -
+                    numeroSeguro(
+                        a.cerradoEnMs,
+                        0
+                    )
+            )
+            .slice(
+                0,
+                MAX_CIERRES_DISPOSITIVOS
+            );
+
+    return Object.fromEntries(
+        entries
+    );
+}
+
+function marcarCierreDispositivo(
+    current,
+    deviceId,
+    session,
+    nowMs,
+    motivo = "cerrado-admin"
+) {
+    const cleanDeviceId =
+        textoSeguro(
+            deviceId,
+            180
+        );
+
+    const sessionId =
+        textoSeguro(
+            session?.sessionId,
+            180
+        );
+
+    const next =
+        normalizarCierresDispositivos(
+            current
+        );
+
+    if (
+        !cleanDeviceId ||
+        !sessionId
+    ) {
+        return next;
+    }
+
+    next[
+        cleanDeviceId
+    ] = {
+        sessionId,
+
+        cerradoEnMs:
+            numeroSeguro(
+                nowMs,
+                Date.now()
+            ),
+
+        motivo:
+            textoSeguro(
+                motivo,
+                80
+            ) ||
+            "cerrado-admin",
+    };
+
+    return normalizarCierresDispositivos(
+        next
+    );
+}
+
 function numeroSeguro(
     value,
     fallback = 0
@@ -1492,6 +1611,27 @@ exports.registrarSesion =
                                 clienteData
                             );
 
+                        const cierresDispositivos =
+                            normalizarCierresDispositivos(
+                                clienteData
+                                    .cierresDispositivos
+                            );
+
+                        /*
+                         * Un nuevo login usa un sessionId nuevo.
+                         * Eliminamos el marcador viejo de este deviceId
+                         * para mantener el documento acotado y limpio.
+                         */
+                        if (
+                            cierresDispositivos[
+                                deviceId
+                            ]
+                        ) {
+                            delete cierresDispositivos[
+                                deviceId
+                            ];
+                        }
+
                         const currentControl =
                             controlSnap.exists
                                 ? controlSnap.data()
@@ -1593,6 +1733,8 @@ exports.registrarSesion =
                                     admin.firestore.FieldValue.arrayUnion(
                                         request.auth.uid
                                     ),
+
+                                cierresDispositivos,
                             }
                         );
 
@@ -2294,6 +2436,9 @@ exports.actualizarLimiteDispositivos =
                             );
                         }
 
+                        const clienteData =
+                            clienteSnap.data();
+
                         let sessions =
                             limpiarSesionesActivas(
                                 controlSnap.exists
@@ -2301,6 +2446,12 @@ exports.actualizarLimiteDispositivos =
                                         .sessions
                                     : {},
                                 nowMs
+                            );
+
+                        let cierresDispositivos =
+                            normalizarCierresDispositivos(
+                                clienteData
+                                    .cierresDispositivos
                             );
 
                         /*
@@ -2339,6 +2490,22 @@ exports.actualizarLimiteDispositivos =
                                 keep
                             );
 
+                        for (
+                            const [
+                                removedDeviceId,
+                                removedSession,
+                            ] of removed
+                        ) {
+                            cierresDispositivos =
+                                marcarCierreDispositivo(
+                                    cierresDispositivos,
+                                    removedDeviceId,
+                                    removedSession,
+                                    nowMs,
+                                    "limite-reducido"
+                                );
+                        }
+
                         transaction.update(
                             clienteRef,
                             {
@@ -2355,6 +2522,8 @@ exports.actualizarLimiteDispositivos =
 
                                 actualizadoEn:
                                     admin.firestore.FieldValue.serverTimestamp(),
+
+                                cierresDispositivos,
                             }
                         );
 
@@ -2506,6 +2675,9 @@ exports.cerrarSesionDispositivo =
                         );
                     }
 
+                    const clienteData =
+                        clienteSnap.data();
+
                     const sessions =
                         limpiarSesionesActivas(
                             controlSnap.exists
@@ -2513,6 +2685,21 @@ exports.cerrarSesionDispositivo =
                                     .sessions
                                 : {},
                             nowMs
+                        );
+
+                    const currentSession =
+                        sessions[
+                            deviceId
+                        ];
+
+                    const cierresDispositivos =
+                        marcarCierreDispositivo(
+                            clienteData
+                                .cierresDispositivos,
+                            deviceId,
+                            currentSession,
+                            nowMs,
+                            "cerrado-admin"
                         );
 
                     delete sessions[
@@ -2545,6 +2732,8 @@ exports.cerrarSesionDispositivo =
 
                             actualizadoEn:
                                 admin.firestore.FieldValue.serverTimestamp(),
+
+                            cierresDispositivos,
                         }
                     );
 
@@ -2606,8 +2795,19 @@ exports.cerrarTodasLasSesiones =
                     )
                     .doc(clienteId);
 
-            const clienteSnap =
-                await clienteRef.get();
+            const controlRef =
+                getControlRef(
+                    clienteRef
+                );
+
+            const [
+                clienteSnap,
+                controlSnap,
+            ] =
+                await Promise.all([
+                    clienteRef.get(),
+                    controlRef.get(),
+                ]);
 
             if (
                 !clienteSnap.exists
@@ -2621,15 +2821,46 @@ exports.cerrarTodasLasSesiones =
             const clienteData =
                 clienteSnap.data();
 
-            const controlRef =
-                getControlRef(
-                    clienteRef
-                );
+            const nowMs =
+                Date.now();
 
             const nowSec =
                 Math.floor(
-                    Date.now() / 1000
+                    nowMs / 1000
                 );
+
+            const sessions =
+                limpiarSesionesActivas(
+                    controlSnap.exists
+                        ? controlSnap.data()
+                            .sessions
+                        : {},
+                    nowMs
+                );
+
+            let cierresDispositivos =
+                normalizarCierresDispositivos(
+                    clienteData
+                        .cierresDispositivos
+                );
+
+            for (
+                const [
+                    deviceId,
+                    session,
+                ] of Object.entries(
+                    sessions
+                )
+            ) {
+                cierresDispositivos =
+                    marcarCierreDispositivo(
+                        cierresDispositivos,
+                        deviceId,
+                        session,
+                        nowMs,
+                        "cerrar-todas"
+                    );
+            }
 
             const batch =
                 db.batch();
@@ -2656,6 +2887,8 @@ exports.cerrarTodasLasSesiones =
                     sesionesRevocadasEnSec:
                         nowSec,
 
+                    cierresDispositivos,
+
                     actualizadoPor:
                         request.auth.uid,
 
@@ -2663,6 +2896,33 @@ exports.cerrarTodasLasSesiones =
                         admin.firestore.FieldValue.serverTimestamp(),
                 }
             );
+
+            for (
+                const deviceId of
+                Object.keys(
+                    sessions
+                )
+            ) {
+                batch.set(
+                    getDeviceRef(
+                        clienteRef,
+                        deviceId
+                    ),
+                    {
+                        estado:
+                            "cerrado-admin",
+
+                        cerradoPor:
+                            request.auth.uid,
+
+                        cerradoPorAdminEn:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                    },
+                    {
+                        merge: true,
+                    }
+                );
+            }
 
             await batch.commit();
 
