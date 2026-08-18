@@ -3398,7 +3398,10 @@ exports.restablecerPassword =
 
 exports.revisarVencimientos =
     onSchedule(
-        "every 24 hours",
+        {
+            schedule: "every 24 hours",
+            region: REGION,
+        },
         async () => {
             const ahora =
                 admin.firestore.Timestamp.now();
@@ -3434,7 +3437,6 @@ exports.revisarVencimientos =
                 Math.floor(
                     Date.now() / 1000
                 );
-
             /*
              * Dos escrituras por cliente:
              * cliente + control de sesiones.
