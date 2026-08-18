@@ -4,7 +4,7 @@
 // Solo Google Sign-In. El Gmail debe coincidir con el email cargado
 // al crear el cliente desde el panel admin.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { GoogleAuthProvider, signInWithPopup } from "firebase/auth";
 import { auth } from "../firebase/config";
 
@@ -12,21 +12,52 @@ export default function Login() {
   const [error, setError] = useState(null);
   const [cargando, setCargando] = useState(false);
 
+  // Evita dobles intentos si el usuario toca el botón varias veces
+  // antes de que React alcance a deshabilitarlo visualmente.
+  const loginEnCursoRef = useRef(false);
+
   const handleGoogleLogin = async () => {
+    if (loginEnCursoRef.current) {
+      return;
+    }
+
     setError(null);
+
+    if (esNavegadorIntegrado()) {
+      setError(
+        "Abrí esta página directamente en Chrome, Safari, Firefox o Edge para iniciar sesión con Google."
+      );
+      return;
+    }
+
+    loginEnCursoRef.current = true;
     setCargando(true);
 
     try {
       const provider = new GoogleAuthProvider();
 
+      // Fuerza la selección explícita de cuenta y evita reutilizar
+      // silenciosamente una cuenta de Google equivocada.
+      provider.setCustomParameters({
+        prompt: "select_account",
+      });
+
       await signInWithPopup(auth, provider);
 
-      // useLicenseCheck se encarga de buscar el cliente por email y validar.
+      // useLicenseCheck se encarga de buscar el cliente por email,
+      // validar la licencia y registrar el dispositivo.
     } catch (err) {
-      if (err.code !== "auth/popup-closed-by-user") {
-        setError("No se pudo iniciar sesión con Google.");
+      console.error("Error iniciando sesión con Google:", err);
+
+      const mensaje = obtenerMensajeLoginGoogle(err);
+
+      // Si el usuario simplemente cerró el selector no mostramos
+      // un error rojo innecesario.
+      if (mensaje) {
+        setError(mensaje);
       }
     } finally {
+      loginEnCursoRef.current = false;
       setCargando(false);
     }
   };
@@ -390,6 +421,74 @@ export default function Login() {
       </div>
     </div>
   );
+}
+
+
+/* =========================================================
+   AYUDAS DE LOGIN GOOGLE
+========================================================= */
+
+function obtenerCodigoError(error) {
+  return String(error?.code || "")
+    .trim()
+    .toLowerCase();
+}
+
+function esNavegadorIntegrado() {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const ua = navigator.userAgent || "";
+
+  return /FBAN|FBAV|Instagram|Line\/|WhatsApp|; wv\)|\bwv\b/i.test(ua);
+}
+
+function obtenerMensajeLoginGoogle(error) {
+  const code = obtenerCodigoError(error);
+
+  switch (code) {
+    case "auth/popup-closed-by-user":
+    case "auth/cancelled-popup-request":
+      return null;
+
+    case "auth/popup-blocked":
+      return "El navegador bloqueó la ventana de Google. Permití las ventanas emergentes para este sitio e intentá nuevamente.";
+
+    case "auth/operation-not-supported-in-this-environment":
+    case "auth/web-storage-unsupported":
+      return "Este navegador no permite completar el inicio de sesión. Abrí el sistema directamente en Chrome, Safari, Firefox o Edge e intentá nuevamente.";
+
+    case "auth/unauthorized-domain":
+      return "Este dominio todavía no está autorizado en Firebase Authentication. Revisá Authentication > Settings > Authorized domains.";
+
+    case "auth/network-request-failed":
+      return "No pudimos conectarnos con Google. Revisá tu conexión a internet e intentá nuevamente.";
+
+    case "auth/account-exists-with-different-credential":
+      return "Ya existe una cuenta asociada a este correo con otro método de acceso.";
+
+    case "auth/user-disabled":
+      return "Esta cuenta fue deshabilitada.";
+
+    case "auth/too-many-requests":
+      return "Se realizaron demasiados intentos. Esperá unos minutos e intentá nuevamente.";
+
+    default:
+      break;
+  }
+
+  const message = String(error?.message || "");
+
+  if (
+    /missing initial state/i.test(message) ||
+    /sessionstorage/i.test(message) ||
+    /storage-partitioned/i.test(message)
+  ) {
+    return "El navegador perdió el estado temporal del inicio de sesión. Cerrá esta pestaña y abrí el sistema directamente en Chrome, Safari, Firefox o Edge.";
+  }
+
+  return "No se pudo iniciar sesión con Google. Intentá nuevamente.";
 }
 
 /* =========================================================
