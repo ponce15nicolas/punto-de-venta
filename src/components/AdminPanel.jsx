@@ -290,6 +290,179 @@ function numeroSeguro(
     : fallback;
 }
 
+function textoDispositivo(
+  value
+) {
+  return typeof value ===
+    "string"
+    ? value.trim()
+    : "";
+}
+
+function obtenerNombreDispositivo(
+  device
+) {
+  const raw =
+    device?.dispositivo;
+
+  /*
+   * Versiones anteriores podían guardar
+   * "dispositivo" directamente como texto.
+   */
+  if (
+    typeof raw ===
+    "string"
+  ) {
+    return (
+      raw.trim() ||
+      "Dispositivo desconocido"
+    );
+  }
+
+  /*
+   * La versión actual guarda metadata:
+   *
+   * {
+   *   navegador,
+   *   plataforma,
+   *   tipo,
+   *   userAgent
+   * }
+   *
+   * También aceptamos los campos en el nivel
+   * superior por compatibilidad con registros
+   * históricos.
+   */
+  const info =
+    raw &&
+    typeof raw ===
+      "object" &&
+    !Array.isArray(raw)
+      ? raw
+      : device || {};
+
+  const navegador =
+    textoDispositivo(
+      info.navegador
+    );
+
+  const plataforma =
+    textoDispositivo(
+      info.plataforma
+    );
+
+  const tipo =
+    textoDispositivo(
+      info.tipo
+    ).toLowerCase();
+
+  const userAgent =
+    textoDispositivo(
+      info.userAgent
+    );
+
+  let equipo = "";
+
+  if (
+    /iPhone/i.test(
+      userAgent
+    ) ||
+    (
+      plataforma === "iOS" &&
+      tipo === "movil"
+    )
+  ) {
+    equipo = "iPhone";
+  } else if (
+    /iPad/i.test(
+      userAgent
+    ) ||
+    (
+      plataforma === "iOS" &&
+      tipo === "tablet"
+    )
+  ) {
+    equipo = "iPad";
+  } else if (
+    /Samsung|SM-[A-Z0-9-]+/i.test(
+      userAgent
+    )
+  ) {
+    equipo =
+      "Samsung / Android";
+  } else if (
+    plataforma === "Android" ||
+    /Android/i.test(
+      userAgent
+    )
+  ) {
+    equipo = "Android";
+  } else if (
+    plataforma === "Windows" ||
+    /Windows/i.test(
+      userAgent
+    )
+  ) {
+    equipo = "Windows PC";
+  } else if (
+    plataforma === "macOS" ||
+    /Macintosh|Mac OS/i.test(
+      userAgent
+    )
+  ) {
+    equipo = "Mac";
+  } else if (
+    plataforma === "Linux" ||
+    /Linux/i.test(
+      userAgent
+    )
+  ) {
+    equipo = "Linux PC";
+  } else if (
+    tipo === "tablet"
+  ) {
+    equipo = "Tablet";
+  } else if (
+    tipo === "movil"
+  ) {
+    equipo = "Móvil";
+  } else if (
+    tipo === "escritorio"
+  ) {
+    equipo = "PC";
+  } else if (
+    plataforma &&
+    plataforma !==
+      "Desconocida"
+  ) {
+    equipo = plataforma;
+  }
+
+  const navegadorValido =
+    navegador &&
+    navegador !==
+      "Navegador" &&
+    navegador !==
+      "Desconocido";
+
+  if (
+    equipo &&
+    navegadorValido
+  ) {
+    return `${equipo} · ${navegador}`;
+  }
+
+  if (equipo) {
+    return equipo;
+  }
+
+  if (navegadorValido) {
+    return navegador;
+  }
+
+  return "Dispositivo desconocido";
+}
+
 function mensajeError(
   error,
   fallback
@@ -1889,7 +2062,9 @@ function PanelDispositivos({
 
     const confirmar =
       window.confirm(
-        `¿Cerrar la sesión de "${device.dispositivo || "este dispositivo"}"?`
+        `¿Cerrar la sesión de "${obtenerNombreDispositivo(
+          device
+        )}"?`
       );
 
     if (!confirmar) {
@@ -2601,8 +2776,9 @@ function DeviceCard({
                   text-white
                 "
               >
-                {device.dispositivo ||
-                  "Dispositivo desconocido"}
+                {obtenerNombreDispositivo(
+                  device
+                )}
               </p>
 
               <div

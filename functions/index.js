@@ -86,6 +86,121 @@ function textoSeguro(
         .slice(0, maxLength);
 }
 
+function esObjetoPlano(value) {
+    return Boolean(
+        value &&
+        typeof value ===
+            "object" &&
+        !Array.isArray(value)
+    );
+}
+
+/*
+ * Normaliza la información del dispositivo sin convertir
+ * objetos a texto. De esta forma evitamos guardar
+ * literalmente "[object Object]" en Firestore.
+ *
+ * Acepta:
+ * - metadata estructurada del frontend actual
+ * - nombres legacy guardados como texto
+ */
+function normalizarDispositivo(
+    value,
+    {
+        allowEmpty = false,
+    } = {}
+) {
+    if (esObjetoPlano(value)) {
+        const navegador =
+            textoSeguro(
+                value.navegador,
+                80
+            );
+
+        const plataforma =
+            textoSeguro(
+                value.plataforma,
+                80
+            );
+
+        const tipo =
+            textoSeguro(
+                value.tipo,
+                40
+            );
+
+        const userAgent =
+            textoSeguro(
+                value.userAgent,
+                300
+            );
+
+        const info = {};
+
+        if (navegador) {
+            info.navegador =
+                navegador;
+        }
+
+        if (plataforma) {
+            info.plataforma =
+                plataforma;
+        }
+
+        if (tipo) {
+            info.tipo = tipo;
+        }
+
+        if (userAgent) {
+            info.userAgent =
+                userAgent;
+        }
+
+        if (
+            Object.keys(info)
+                .length > 0
+        ) {
+            return info;
+        }
+
+        return allowEmpty
+            ? null
+            : "Dispositivo desconocido";
+    }
+
+    if (
+        typeof value ===
+        "string"
+    ) {
+        const clean =
+            textoSeguro(
+                value,
+                180
+            );
+
+        /*
+         * Compatibilidad con registros creados por la
+         * versión anterior del backend.
+         */
+        if (
+            !clean ||
+            /^\[object [^\]]+\]$/i.test(
+                clean
+            )
+        ) {
+            return allowEmpty
+                ? null
+                : "Dispositivo desconocido";
+        }
+
+        return clean;
+    }
+
+    return allowEmpty
+        ? null
+        : "Dispositivo desconocido";
+}
+
 function numeroSeguro(
     value,
     fallback = 0
@@ -1307,12 +1422,10 @@ exports.registrarSesion =
                 );
 
             const dispositivo =
-                textoSeguro(
+                normalizarDispositivo(
                     request.data
-                        ?.dispositivo,
-                    180
-                ) ||
-                "Dispositivo desconocido";
+                        ?.dispositivo
+                );
 
             const {
                 ref: clienteRef,
@@ -1587,10 +1700,13 @@ exports.actualizarSesion =
                 );
 
             const dispositivo =
-                textoSeguro(
+                normalizarDispositivo(
                     request.data
                         ?.dispositivo,
-                    180
+                    {
+                        allowEmpty:
+                            true,
+                    }
                 );
 
             const {
@@ -2001,6 +2117,25 @@ exports.listarDispositivos =
                             activeSession.sessionId ===
                             data.sessionId;
 
+                        const dispositivoGuardado =
+                            normalizarDispositivo(
+                                data.dispositivo,
+                                {
+                                    allowEmpty:
+                                        true,
+                                }
+                            );
+
+                        const dispositivoSesion =
+                            normalizarDispositivo(
+                                activeSession
+                                    ?.dispositivo,
+                                {
+                                    allowEmpty:
+                                        true,
+                                }
+                            );
+
                         return {
                             id: doc.id,
 
@@ -2008,7 +2143,8 @@ exports.listarDispositivos =
                                 doc.id,
 
                             dispositivo:
-                                data.dispositivo ||
+                                dispositivoGuardado ||
+                                dispositivoSesion ||
                                 "Dispositivo desconocido",
 
                             email:
