@@ -225,6 +225,16 @@ export default function Historial({
     setSelectedSession,
   ] = useState(null);
 
+  const [
+    deleteCandidate,
+    setDeleteCandidate,
+  ] = useState(null);
+
+  const [
+    deletingSessionId,
+    setDeletingSessionId,
+  ] = useState(null);
+
   /* =========================================================
      DATOS SEGUROS
   ========================================================= */
@@ -394,6 +404,87 @@ export default function Historial({
       pos?.showToast?.(
         "No se pudo generar el PDF",
         true
+      );
+    }
+  }
+
+  /* =========================================================
+     ELIMINAR CIERRE
+  ========================================================= */
+
+  function handleRequestDelete(
+    session
+  ) {
+    if (
+      !session ||
+      session.status !==
+        "closed"
+    ) {
+      pos?.showToast?.(
+        "Sólo podés eliminar cajas cerradas",
+        true
+      );
+
+      return;
+    }
+
+    setDeleteCandidate(
+      session
+    );
+  }
+
+  async function handleConfirmDelete() {
+    const session =
+      deleteCandidate;
+
+    if (
+      !session ||
+      deletingSessionId
+    ) {
+      return;
+    }
+
+    if (
+      typeof pos?.deleteCashSession !==
+        "function"
+    ) {
+      pos?.showToast?.(
+        "La eliminación de historial no está disponible",
+        true
+      );
+
+      return;
+    }
+
+    setDeletingSessionId(
+      session.id
+    );
+
+    try {
+      const ok =
+        await pos.deleteCashSession(
+          session.id
+        );
+
+      if (!ok) {
+        return;
+      }
+
+      setDeleteCandidate(
+        null
+      );
+
+      if (
+        selectedSession?.id ===
+        session.id
+      ) {
+        setSelectedSession(
+          null
+        );
+      }
+    } finally {
+      setDeletingSessionId(
+        null
       );
     }
   }
@@ -778,6 +869,66 @@ export default function Historial({
                 selectedSession
               )
             }
+            onDelete={() =>
+              handleRequestDelete(
+                selectedSession
+              )
+            }
+            deleting={
+              deletingSessionId ===
+              selectedSession.id
+            }
+          />
+        )}
+      </Modal>
+
+      {/* =====================================================
+          CONFIRMAR ELIMINACIÓN
+      ===================================================== */}
+
+      <Modal
+        open={
+          Boolean(
+            deleteCandidate
+          )
+        }
+        onClose={() => {
+          if (
+            deletingSessionId
+          ) {
+            return;
+          }
+
+          setDeleteCandidate(
+            null
+          );
+        }}
+        title="Eliminar cierre"
+      >
+        {deleteCandidate && (
+          <DeleteCashSessionConfirm
+            session={
+              deleteCandidate
+            }
+            sales={
+              allSales.filter(
+                (sale) =>
+                  sale?.sessionId ===
+                  deleteCandidate.id
+              )
+            }
+            deleting={
+              deletingSessionId ===
+              deleteCandidate.id
+            }
+            onCancel={() =>
+              setDeleteCandidate(
+                null
+              )
+            }
+            onConfirm={
+              handleConfirmDelete
+            }
           />
         )}
       </Modal>
@@ -1003,6 +1154,8 @@ function SessionDetail({
   session,
   sales,
   onDownload,
+  onDelete,
+  deleting = false,
 }) {
   const diff =
     roundMoney(
@@ -1458,9 +1611,309 @@ function SessionDetail({
 
         Descargar reporte PDF
       </button>
+
+      {/* =====================================================
+          ELIMINAR CIERRE
+      ===================================================== */}
+
+      <div
+        className="
+          mt-4
+          border-t
+          border-white/10
+          pt-4
+        "
+      >
+        <div
+          className="
+            mb-3
+            flex
+            items-start
+            gap-3
+            rounded-[20px]
+            border
+            border-red-400/15
+            bg-red-500/[0.06]
+            p-3.5
+          "
+        >
+          <div
+            className="
+              grid
+              h-9
+              w-9
+              shrink-0
+              place-items-center
+              rounded-xl
+              bg-red-500/10
+              text-red-400
+            "
+          >
+            <TrashIcon className="h-4 w-4" />
+          </div>
+
+          <div className="min-w-0">
+            <p
+              className="
+                text-sm
+                font-extrabold
+                text-white
+              "
+            >
+              Eliminar este cierre
+            </p>
+
+            <p
+              className="
+                mt-1
+                text-xs
+                leading-relaxed
+                text-white/40
+              "
+            >
+              También se eliminarán las ventas asociadas a este turno. Esta acción no se puede deshacer.
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={
+            onDelete
+          }
+          disabled={
+            deleting
+          }
+          className="
+            inline-flex
+            w-full
+            items-center
+            justify-center
+            gap-2
+            rounded-2xl
+            border
+            border-red-400/20
+            bg-red-500/10
+            px-4
+            py-3.5
+            text-sm
+            font-extrabold
+            text-red-300
+            transition
+            hover:bg-red-500/15
+            active:scale-[0.99]
+            disabled:cursor-not-allowed
+            disabled:opacity-50
+          "
+        >
+          <TrashIcon className="h-[17px] w-[17px]" />
+
+          {deleting
+            ? "Eliminando..."
+            : "Eliminar cierre"}
+        </button>
+      </div>
     </div>
   );
 }
+
+/* =========================================================
+   CONFIRMAR ELIMINACIÓN DE CIERRE
+========================================================= */
+
+function DeleteCashSessionConfirm({
+  session,
+  sales,
+  deleting,
+  onCancel,
+  onConfirm,
+}) {
+  const salesCount =
+    Array.isArray(
+      sales
+    )
+      ? sales.length
+      : 0;
+
+  return (
+    <div>
+      <div
+        className="
+          overflow-hidden
+          rounded-[22px]
+          border
+          border-red-400/15
+          bg-red-500/[0.06]
+        "
+      >
+        <div className="p-4">
+          <div
+            className="
+              flex
+              items-start
+              gap-3
+            "
+          >
+            <div
+              className="
+                grid
+                h-11
+                w-11
+                shrink-0
+                place-items-center
+                rounded-2xl
+                bg-red-500/10
+                text-red-400
+              "
+            >
+              <TrashIcon className="h-5 w-5" />
+            </div>
+
+            <div className="min-w-0">
+              <p
+                className="
+                  text-sm
+                  font-black
+                  text-white
+                "
+              >
+                Esta acción es permanente
+              </p>
+
+              <p
+                className="
+                  mt-1
+                  text-xs
+                  leading-relaxed
+                  text-white/45
+                "
+              >
+                Vas a eliminar el cierre del {fmtDate(
+                  session?.openTime
+                )} y todas las ventas registradas dentro de ese turno.
+              </p>
+            </div>
+          </div>
+
+          <div
+            className="
+              mt-4
+              grid
+              grid-cols-2
+              gap-2
+            "
+          >
+            <DarkStat
+              label="Ventas"
+              value={money(
+                session?.totalSales
+              )}
+            />
+
+            <DarkStat
+              label="Tickets"
+              value={
+                salesCount
+              }
+            />
+          </div>
+
+          <p
+            className="
+              mt-4
+              rounded-2xl
+              border
+              border-white/10
+              bg-white/5
+              px-3.5
+              py-3
+              text-xs
+              font-semibold
+              leading-relaxed
+              text-white/45
+            "
+          >
+            El cierre y sus {salesCount}{" "}
+            {salesCount === 1
+              ? "venta asociada"
+              : "ventas asociadas"} se eliminarán del historial en todos los dispositivos.
+          </p>
+        </div>
+      </div>
+
+      <div
+        className="
+          mt-4
+          grid
+          grid-cols-2
+          gap-2.5
+        "
+      >
+        <button
+          type="button"
+          onClick={
+            onCancel
+          }
+          disabled={
+            deleting
+          }
+          className="
+            rounded-2xl
+            border
+            border-white/10
+            bg-white/5
+            px-4
+            py-3.5
+            text-sm
+            font-extrabold
+            text-white/70
+            transition
+            hover:bg-white/10
+            disabled:cursor-not-allowed
+            disabled:opacity-50
+          "
+        >
+          Cancelar
+        </button>
+
+        <button
+          type="button"
+          onClick={
+            onConfirm
+          }
+          disabled={
+            deleting
+          }
+          className="
+            inline-flex
+            items-center
+            justify-center
+            gap-2
+            rounded-2xl
+            bg-red-500
+            px-4
+            py-3.5
+            text-sm
+            font-extrabold
+            text-white
+            transition
+            hover:bg-red-400
+            active:scale-[0.99]
+            disabled:cursor-not-allowed
+            disabled:opacity-50
+          "
+        >
+          <TrashIcon className="h-4 w-4" />
+
+          {deleting
+            ? "Eliminando..."
+            : "Eliminar"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 
 /* =========================================================
    DETALLE DE UNA VENTA
@@ -2580,6 +3033,30 @@ function DownloadIcon({
     </svg>
   );
 }
+
+function TrashIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 7h16" />
+      <path d="M9 7V4h6v3" />
+      <path d="M7 7l1 13h8l1-13" />
+      <path d="M10 11v5" />
+      <path d="M14 11v5" />
+    </svg>
+  );
+}
+
 
 function DocumentIcon({
   className = "",

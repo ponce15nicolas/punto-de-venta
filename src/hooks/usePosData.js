@@ -25,6 +25,7 @@ import { uid } from "../lib/format";
 import {
   checkoutCloud,
   closeCashSessionCloud,
+  deleteCashSessionCloud,
   deleteProductCloud,
   openCashSessionCloud,
   restockProductCloud,
@@ -484,6 +485,14 @@ export function usePosData({
 
   const closingCashRef =
     useRef(false);
+
+  /*
+   * Evita ejecutar dos veces la eliminación del mismo cierre.
+   * Usamos Set porque distintos cierres podrían gestionarse
+   * independientemente sin bloquear toda la pantalla.
+   */
+  const deletingCashSessionsRef =
+    useRef(new Set());
 
   useEffect(() => {
     catalogRef.current =
@@ -3634,6 +3643,171 @@ export function usePosData({
     );
 
   /* =========================================================
+     ELIMINAR CIERRE HISTÓRICO
+  ========================================================= */
+
+  const deleteCashSession =
+    useCallback(
+      async (sessionId) => {
+        const cleanSessionId =
+          String(
+            sessionId ||
+            ""
+          ).trim();
+
+        if (!cleanSessionId) {
+          showToast(
+            "Cierre de caja inválido",
+            true
+          );
+
+          return false;
+        }
+
+        if (
+          deletingCashSessionsRef
+            .current.has(
+              cleanSessionId
+            )
+        ) {
+          return false;
+        }
+
+        const session =
+          cashSessionsRef.current
+            .find(
+              (item) =>
+                item?.id ===
+                cleanSessionId
+            ) ||
+          null;
+
+        if (!session) {
+          showToast(
+            "No encontramos ese cierre de caja",
+            true
+          );
+
+          return false;
+        }
+
+        /*
+         * Nunca permitimos eliminar una caja abierta,
+         * incluso antes de consultar al backend.
+         * La Cloud Function vuelve a validarlo.
+         */
+        if (
+          session.status !==
+          "closed"
+        ) {
+          showToast(
+            "Sólo podés eliminar cajas cerradas",
+            true
+          );
+
+          return false;
+        }
+
+        /*
+         * Esta operación destructiva sólo se permite con
+         * Cloud activo. No hacemos fallback local porque
+         * podría dejar datos divergentes entre dispositivos.
+         */
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para eliminar un cierre",
+            true
+          );
+
+          return false;
+        }
+
+        deletingCashSessionsRef
+          .current.add(
+            cleanSessionId
+          );
+
+        try {
+          const result =
+            await deleteCashSessionCloud(
+              cleanClienteId,
+              cleanSessionId
+            );
+
+          /*
+           * Reflejo local inmediato.
+           * Los listeners de Firestore confirmarán después
+           * el estado definitivo en todos los dispositivos.
+           */
+          persistSales(
+            salesRef.current.filter(
+              (sale) =>
+                sale?.sessionId !==
+                cleanSessionId
+            )
+          );
+
+          persistCashSessions(
+            cashSessionsRef.current.filter(
+              (item) =>
+                item?.id !==
+                cleanSessionId
+            )
+          );
+
+          const ventasEliminadas =
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  result
+                    ?.ventasEliminadas,
+                  0
+                )
+              )
+            );
+
+          showToast(
+            ventasEliminadas === 1
+              ? "Cierre eliminado · 1 venta eliminada"
+              : `Cierre eliminado · ${ventasEliminadas} ventas eliminadas`
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error eliminando cierre de caja:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        } finally {
+          deletingCashSessionsRef
+            .current.delete(
+              cleanSessionId
+            );
+        }
+      },
+      [
+        cleanClienteId,
+        persistSales,
+        persistCashSessions,
+        showToast,
+      ]
+    );
+
+
+  /* =========================================================
      RETURN
   ========================================================= */
 
@@ -3682,6 +3856,7 @@ export function usePosData({
 
     openCashSession,
     closeCashSession,
+    deleteCashSession,
     paymentBreakdown,
   };
 }

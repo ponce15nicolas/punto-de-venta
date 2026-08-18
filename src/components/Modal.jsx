@@ -4,6 +4,88 @@ import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 
+/* =========================================================
+   CONTROL GLOBAL DEL SCROLL
+========================================================= */
+
+/*
+ * Puede haber más de un Modal abierto al mismo tiempo
+ * (por ejemplo: detalle de cierre + confirmación de borrado).
+ *
+ * Cada Modal NO debe guardar/restaurar overflow por separado,
+ * porque el orden de desmontaje puede dejar body en "hidden".
+ *
+ * En su lugar mantenemos un contador global:
+ * - primer modal abierto: bloquea el scroll;
+ * - modales adicionales: incrementan el contador;
+ * - último modal cerrado: restaura el estado original.
+ */
+
+let modalScrollLocks = 0;
+
+let previousBodyOverflow = "";
+let previousBodyPaddingRight = "";
+
+function lockBodyScroll() {
+  if (
+    typeof document === "undefined" ||
+    typeof window === "undefined"
+  ) {
+    return;
+  }
+
+  if (modalScrollLocks === 0) {
+    previousBodyOverflow =
+      document.body.style.overflow;
+
+    previousBodyPaddingRight =
+      document.body.style.paddingRight;
+
+    /*
+     * En escritorio, ocultar la barra vertical puede mover
+     * ligeramente el contenido. Compensamos ese ancho.
+     */
+    const scrollbarWidth =
+      window.innerWidth -
+      document.documentElement.clientWidth;
+
+    document.body.style.overflow =
+      "hidden";
+
+    if (scrollbarWidth > 0) {
+      document.body.style.paddingRight =
+        `${scrollbarWidth}px`;
+    }
+  }
+
+  modalScrollLocks += 1;
+}
+
+function unlockBodyScroll() {
+  if (
+    typeof document === "undefined"
+  ) {
+    return;
+  }
+
+  modalScrollLocks =
+    Math.max(
+      0,
+      modalScrollLocks - 1
+    );
+
+  if (modalScrollLocks === 0) {
+    document.body.style.overflow =
+      previousBodyOverflow;
+
+    document.body.style.paddingRight =
+      previousBodyPaddingRight;
+
+    previousBodyOverflow = "";
+    previousBodyPaddingRight = "";
+  }
+}
+
 export default function Modal({
   open,
   onClose,
@@ -15,17 +97,14 @@ export default function Modal({
   ========================================================= */
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (!open) {
+      return undefined;
+    }
 
-    const previousOverflow =
-      document.body.style.overflow;
-
-    document.body.style.overflow =
-      "hidden";
+    lockBodyScroll();
 
     return () => {
-      document.body.style.overflow =
-        previousOverflow;
+      unlockBodyScroll();
     };
   }, [open]);
 
@@ -34,11 +113,13 @@ export default function Modal({
   ========================================================= */
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (!open) {
+      return undefined;
+    }
 
     function handleKeyDown(event) {
       if (event.key === "Escape") {
-        onClose();
+        onClose?.();
       }
     }
 
@@ -99,7 +180,7 @@ export default function Modal({
               event.target ===
               event.currentTarget
             ) {
-              onClose();
+              onClose?.();
             }
           }}
         >
@@ -217,7 +298,9 @@ export default function Modal({
 
               <button
                 type="button"
-                onClick={onClose}
+                onClick={() =>
+                  onClose?.()
+                }
                 aria-label="Cerrar"
                 className="
                   absolute

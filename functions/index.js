@@ -2941,6 +2941,187 @@ exports.cerrarTodasLasSesiones =
     );
 
 /* =========================================================
+   POS — ELIMINAR CIERRE DE CAJA
+========================================================= */
+
+/*
+ * Elimina de forma controlada un cierre histórico del POS.
+ *
+ * Reglas:
+ * - requiere un usuario autenticado asociado al cliente
+ * - la licencia debe seguir activa
+ * - sólo permite cajas con status "closed"
+ * - elimina primero todas las ventas ligadas al cierre
+ * - elimina el documento de caja al final
+ *
+ * El borrado de ventas se realiza por lotes para no superar
+ * el límite de escrituras de Firestore. Si una ejecución se
+ * interrumpe antes de terminar, el documento de caja permanece
+ * y la operación puede reintentarse de forma segura.
+ */
+exports.eliminarCierreCaja =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            if (!request.auth) {
+                throw new HttpsError(
+                    "unauthenticated",
+                    "Debés iniciar sesión."
+                );
+            }
+
+            const cajaId =
+                validarId(
+                    request.data?.cajaId,
+                    "cajaId"
+                );
+
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const cajaRef =
+                clienteRef
+                    .collection("cajas")
+                    .doc(cajaId);
+
+            const cajaSnap =
+                await cajaRef.get();
+
+            /*
+             * Una repetición de la misma solicitud puede ocurrir
+             * si el cliente perdió la respuesta después de que el
+             * backend ya completó el borrado.
+             *
+             * En ese caso respondemos OK para que la operación sea
+             * idempotente y no muestre un falso error al usuario.
+             */
+            if (!cajaSnap.exists) {
+                return {
+                    ok: true,
+                    alreadyDeleted: true,
+                    cajaId,
+                    ventasEliminadas: 0,
+                };
+            }
+
+            const cajaData =
+                cajaSnap.data() || {};
+
+            if (
+                cajaData.status !==
+                "closed"
+            ) {
+                throw new HttpsError(
+                    "failed-precondition",
+                    "Sólo se pueden eliminar cierres de caja finalizados.",
+                    {
+                        motivo:
+                            "caja-no-cerrada",
+                    }
+                );
+            }
+
+            const ventasSnap =
+                await clienteRef
+                    .collection("ventas")
+                    .where(
+                        "sessionId",
+                        "==",
+                        cajaId
+                    )
+                    .get();
+
+            const docsVentas =
+                ventasSnap.docs;
+
+            /*
+             * Firestore admite hasta 500 escrituras por batch.
+             * Usamos 400 para mantener margen y evitar depender
+             * del límite exacto en cambios futuros.
+             */
+            const BATCH_SIZE = 400;
+
+            let ventasEliminadas = 0;
+
+            for (
+                let index = 0;
+                index < docsVentas.length;
+                index += BATCH_SIZE
+            ) {
+                const batch =
+                    db.batch();
+
+                const chunk =
+                    docsVentas.slice(
+                        index,
+                        index + BATCH_SIZE
+                    );
+
+                for (
+                    const ventaDoc
+                    of chunk
+                ) {
+                    batch.delete(
+                        ventaDoc.ref
+                    );
+                }
+
+                await batch.commit();
+
+                ventasEliminadas +=
+                    chunk.length;
+            }
+
+            /*
+             * La caja se elimina al final.
+             *
+             * De esta forma nunca dejamos ventas huérfanas por
+             * haber eliminado primero el cierre. Si una tanda de
+             * ventas falla, el cierre sigue existiendo y se puede
+             * reintentar la operación.
+             */
+            await cajaRef.delete();
+
+            console.info(
+                "Cierre de caja eliminado:",
+                {
+                    clienteId:
+                        clienteRef.id,
+                    cajaId,
+                    ventasEliminadas,
+                    authUid:
+                        request.auth.uid,
+                }
+            );
+
+            return {
+                ok: true,
+                alreadyDeleted: false,
+                cajaId,
+                ventasEliminadas,
+            };
+        }
+    );
+
+
+/* =========================================================
    ELIMINAR SUBCOLECCIÓN
 ========================================================= */
 

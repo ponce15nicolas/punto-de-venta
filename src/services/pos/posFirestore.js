@@ -15,7 +15,9 @@ import {
   writeBatch,
 } from "firebase/firestore";
 
-import { db } from "../../firebase/config";
+import { httpsCallable } from "firebase/functions";
+
+import { db, functions } from "../../firebase/config";
 
 import {
   cajaPath,
@@ -45,6 +47,12 @@ const PAYMENT_METHODS = Object.freeze([
 ]);
 
 const MAX_CART_LINES = 100;
+
+const eliminarCierreCajaFunction =
+  httpsCallable(
+    functions,
+    "eliminarCierreCaja"
+  );
 
 /* =========================================================
    ERROR CONTROLADO
@@ -2113,6 +2121,147 @@ export async function checkoutCloud(
     }
   );
 }
+
+/* =========================================================
+   ELIMINAR CIERRE DE CAJA
+========================================================= */
+
+export async function deleteCashSessionCloud(
+  clienteId,
+  cajaId
+) {
+  const cleanClienteId =
+    requireString(
+      clienteId,
+      "clienteId"
+    );
+
+  const cleanCajaId =
+    requireString(
+      cajaId,
+      "cajaId"
+    );
+
+  try {
+    const response =
+      await eliminarCierreCajaFunction({
+        clienteId:
+          cleanClienteId,
+
+        cajaId:
+          cleanCajaId,
+      });
+
+    const data =
+      response?.data || {};
+
+    if (!data.ok) {
+      fail(
+        "delete-cash-session-failed",
+        "No se pudo eliminar el cierre de caja"
+      );
+    }
+
+    return {
+      ok: true,
+
+      cajaId:
+        data.cajaId ||
+        cleanCajaId,
+
+      ventasEliminadas:
+        Math.max(
+          0,
+          Math.trunc(
+            toNumber(
+              data.ventasEliminadas,
+              0
+            )
+          )
+        ),
+
+      alreadyDeleted:
+        Boolean(
+          data.alreadyDeleted
+        ),
+    };
+  } catch (error) {
+    /*
+     * Si ya viene como error propio de esta capa,
+     * no lo envolvemos nuevamente.
+     */
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    const serverMessage =
+      String(
+        error?.details?.mensaje ||
+        error?.details?.message ||
+        error?.message ||
+        ""
+      ).trim();
+
+    if (
+      code ===
+      "failed-precondition"
+    ) {
+      fail(
+        "cash-session-not-closed",
+        serverMessage ||
+        "Sólo se pueden eliminar cierres de caja finalizados"
+      );
+    }
+
+    if (
+      code ===
+      "unauthenticated"
+    ) {
+      fail(
+        "unauthenticated",
+        "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+      );
+    }
+
+    if (
+      code ===
+      "permission-denied"
+    ) {
+      fail(
+        "permission-denied",
+        "No tenés permisos para eliminar este cierre."
+      );
+    }
+
+    if (
+      code ===
+      "not-found"
+    ) {
+      fail(
+        "cash-session-not-found",
+        "No encontramos el cierre de caja."
+      );
+    }
+
+    fail(
+      "delete-cash-session-failed",
+      serverMessage ||
+      "No se pudo eliminar el cierre de caja"
+    );
+  }
+}
+
 
 /* =========================================================
    CERRAR CAJA
