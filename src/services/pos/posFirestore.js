@@ -9,7 +9,6 @@ import {
   getDoc,
   getDocs,
   onSnapshot,
-  runTransaction,
   serverTimestamp,
   setDoc,
   writeBatch,
@@ -25,7 +24,6 @@ import {
   configuracionPosPath,
   productoPath,
   productosPath,
-  ventaPath,
   ventasPath,
 } from "./posPaths";
 
@@ -54,6 +52,12 @@ const abrirCajaFunction =
     "abrirCaja"
   );
 
+const registrarVentaFunction =
+  httpsCallable(
+    functions,
+    "registrarVenta"
+  );
+
 const cerrarCajaFunction =
   httpsCallable(
     functions,
@@ -66,10 +70,22 @@ const reponerStockFunction =
     "reponerStock"
   );
 
+const crearProductoFunction =
+  httpsCallable(
+    functions,
+    "crearProducto"
+  );
+
 const editarProductoFunction =
   httpsCallable(
     functions,
     "editarProducto"
+  );
+
+const eliminarProductoFunction =
+  httpsCallable(
+    functions,
+    "eliminarProducto"
   );
 
 const eliminarCierreCajaFunction =
@@ -669,19 +685,6 @@ function ventasRef(
   );
 }
 
-function ventaRef(
-  clienteId,
-  ventaId
-) {
-  return doc(
-    db,
-    ...ventaPath(
-      clienteId,
-      ventaId
-    )
-  );
-}
-
 function cajasRef(
   clienteId
 ) {
@@ -1118,6 +1121,21 @@ export async function upsertProductCloud(
       options.auditEdit
     );
 
+  const auditCreate =
+    Boolean(
+      options.auditCreate
+    );
+
+  if (
+    auditEdit &&
+    auditCreate
+  ) {
+    fail(
+      "invalid-argument",
+      "La operación no puede ser alta y edición al mismo tiempo"
+    );
+  }
+
   /*
    * EDICIÓN:
    *
@@ -1280,10 +1298,148 @@ export async function upsertProductCloud(
   }
 
   /*
-   * ALTA:
+   * ALTA AUDITADA:
    *
-   * mantiene el flujo previo porque crear productos no forma
-   * parte de las cinco acciones definidas para auditoría.
+   * pasa por backend para validar al operador y guardar
+   * producto + auditoría en la misma transacción.
+   */
+  if (auditCreate) {
+    if (
+      !options.operadorSesion?.id ||
+      !options.operadorSesion?.token
+    ) {
+      fail(
+        "unauthenticated",
+        "Falta la sesión interna del operador"
+      );
+    }
+
+    const cleanDeviceId =
+      requireString(
+        options.deviceId,
+        "deviceId"
+      );
+
+    try {
+      const response =
+        await crearProductoFunction({
+          clienteId:
+            cleanClienteId,
+
+          product:
+            normalized,
+
+          operadorSesion:
+            options.operadorSesion,
+
+          deviceId:
+            cleanDeviceId,
+        });
+
+      const data =
+        response?.data || {};
+
+      if (
+        !data.ok ||
+        !data.product
+      ) {
+        fail(
+          "create-product-failed",
+          "No se pudo crear el producto"
+        );
+      }
+
+      return {
+        ...normalized,
+        ...data.product,
+      };
+    } catch (error) {
+      if (
+        error instanceof
+        PosFirestoreError
+      ) {
+        throw error;
+      }
+
+      const code =
+        String(
+          error?.code ||
+          "unknown"
+        )
+          .split("/")
+          .pop();
+
+      const serverMessage =
+        String(
+          error?.details?.mensaje ||
+          error?.details?.message ||
+          error?.message ||
+          ""
+        ).trim();
+
+      const motivo =
+        String(
+          error?.details?.motivo ||
+          ""
+        );
+
+      if (
+        code ===
+        "unauthenticated"
+      ) {
+        fail(
+          "unauthenticated",
+          "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+        );
+      }
+
+      if (
+        code ===
+        "permission-denied"
+      ) {
+        fail(
+          "permission-denied",
+          serverMessage ||
+          "No tenés permisos para crear este producto."
+        );
+      }
+
+      if (
+        code ===
+        "already-exists" ||
+        motivo ===
+        "product-barcode-conflict"
+      ) {
+        fail(
+          "product-barcode-conflict",
+          "Ya existe un producto con ese código"
+        );
+      }
+
+      if (
+        code ===
+        "invalid-argument"
+      ) {
+        fail(
+          "invalid-product",
+          serverMessage ||
+          "Datos del producto inválidos"
+        );
+      }
+
+      fail(
+        "create-product-failed",
+        serverMessage ||
+        "No se pudo crear el producto"
+      );
+    }
+  }
+
+  /*
+   * ALTA LEGACY:
+   *
+   * Se conserva únicamente para compatibilidad con llamadas
+   * internas antiguas que no soliciten auditoría.
    */
   const nextRef =
     productoRef(
@@ -1353,7 +1509,12 @@ export async function upsertProductCloud(
 
 export async function deleteProductCloud(
   clienteId,
-  barcode
+  barcode,
+  {
+    operadorSesion = null,
+    deviceId = null,
+    auditDelete = false,
+  } = {}
 ) {
   const cleanClienteId =
     requireString(
@@ -1367,14 +1528,121 @@ export async function deleteProductCloud(
       "barcode"
     );
 
-  await deleteDoc(
-    productoRef(
-      cleanClienteId,
-      cleanBarcode
-    )
-  );
+  if (!auditDelete) {
+    await deleteDoc(
+      productoRef(
+        cleanClienteId,
+        cleanBarcode
+      )
+    );
 
-  return true;
+    return true;
+  }
+
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
+
+  const cleanDeviceId =
+    requireString(
+      deviceId,
+      "deviceId"
+    );
+
+  try {
+    const response =
+      await eliminarProductoFunction({
+        clienteId:
+          cleanClienteId,
+
+        barcode:
+          cleanBarcode,
+
+        operadorSesion,
+
+        deviceId:
+          cleanDeviceId,
+      });
+
+    const data =
+      response?.data || {};
+
+    if (!data.ok) {
+      fail(
+        "delete-product-failed",
+        "No se pudo eliminar el producto"
+      );
+    }
+
+    return true;
+  } catch (error) {
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    const serverMessage =
+      String(
+        error?.details?.mensaje ||
+        error?.details?.message ||
+        error?.message ||
+        ""
+      ).trim();
+
+    if (
+      code ===
+      "unauthenticated"
+    ) {
+      fail(
+        "unauthenticated",
+        "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+      );
+    }
+
+    if (
+      code ===
+      "permission-denied"
+    ) {
+      fail(
+        "permission-denied",
+        serverMessage ||
+        "No tenés permisos para eliminar este producto."
+      );
+    }
+
+    if (
+      code ===
+      "invalid-argument"
+    ) {
+      fail(
+        "invalid-product",
+        serverMessage ||
+        "El producto no es válido"
+      );
+    }
+
+    fail(
+      "delete-product-failed",
+      serverMessage ||
+      "No se pudo eliminar el producto"
+    );
+  }
 }
 
 /* =========================================================
@@ -1765,6 +2033,7 @@ export async function checkoutCloud(
     payment,
     deviceId = null,
     timestamp = null,
+    operadorSesion = null,
   }
 ) {
   const cleanClienteId =
@@ -1778,6 +2047,22 @@ export async function checkoutCloud(
       saleId,
       "saleId"
     );
+
+  const cleanDeviceId =
+    requireString(
+      deviceId,
+      "deviceId"
+    );
+
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
 
   const normalizedItems =
     normalizeSaleItems(
@@ -1842,285 +2127,17 @@ export async function checkoutCloud(
         )
       : 0;
 
-  const configRef =
-    configuracionRef(
-      cleanClienteId
-    );
-
-  const saleRef =
-    ventaRef(
-      cleanClienteId,
-      cleanSaleId
-    );
-
-  return runTransaction(
-    db,
-
-    async (
-      transaction
-    ) => {
-      /*
-       * IMPORTANTE:
-       * todas las lecturas se hacen
-       * antes de las escrituras.
-       */
-
-      /* -----------------------------------------------------
-         CONFIGURACIÓN
-      ----------------------------------------------------- */
-
-      const configSnap =
-        await transaction.get(
-          configRef
-        );
-
-      const sessionId =
-        String(
-          configSnap.data()
-            ?.openCashSessionId ||
-          ""
-        ).trim();
-
-      if (!sessionId) {
-        fail(
-          "cash-not-open",
-          "Abrí la caja primero"
-        );
-      }
-
-      /* -----------------------------------------------------
-         CAJA
-      ----------------------------------------------------- */
-
-      const sessionRef =
-        cajaRef(
+  try {
+    const response =
+      await registrarVentaFunction({
+        clienteId:
           cleanClienteId,
-          sessionId
-        );
 
-      const sessionSnap =
-        await transaction.get(
-          sessionRef
-        );
-
-      if (
-        !sessionSnap.exists() ||
-        sessionSnap.data()
-          ?.status !==
-          "open"
-      ) {
-        fail(
-          "cash-not-open",
-          "La caja ya no se encuentra abierta"
-        );
-      }
-
-      /* -----------------------------------------------------
-         IDEMPOTENCIA DE VENTA
-      ----------------------------------------------------- */
-
-      /*
-       * Si una petición se repite
-       * con el mismo saleId,
-       * no duplicamos la venta.
-       */
-      const existingSaleSnap =
-        await transaction.get(
-          saleRef
-        );
-
-      if (
-        existingSaleSnap.exists()
-      ) {
-        return {
-          alreadyExists:
-            true,
-
-          sale: {
-            id:
-              existingSaleSnap.id,
-
-            ...existingSaleSnap.data(),
-          },
-        };
-      }
-
-      /* -----------------------------------------------------
-         STOCK REQUERIDO
-      ----------------------------------------------------- */
-
-      const requiredByBarcode =
-        new Map();
-
-      for (
-        const item of
-        normalizedItems
-      ) {
-        /*
-         * Precio libre no utiliza
-         * control de stock.
-         */
-        if (
-          item.tipoVenta ===
-          "precio-libre"
-        ) {
-          continue;
-        }
-
-        const current =
-          requiredByBarcode.get(
-            item.barcode
-          ) || 0;
-
-        requiredByBarcode.set(
-          item.barcode,
-
-          roundQuantity(
-            current +
-            item.qty
-          )
-        );
-      }
-
-      /* -----------------------------------------------------
-         LEER PRODUCTOS
-      ----------------------------------------------------- */
-
-      const productEntries =
-        [];
-
-      for (
-        const [
-          barcode,
-          required,
-        ] of
-        requiredByBarcode.entries()
-      ) {
-        const ref =
-          productoRef(
-            cleanClienteId,
-            barcode
-          );
-
-        const snapshot =
-          await transaction.get(
-            ref
-          );
-
-        if (
-          !snapshot.exists()
-        ) {
-          fail(
-            "product-not-found",
-            `Producto no encontrado: ${barcode}`,
-            {
-              barcode,
-            }
-          );
-        }
-
-        const data =
-          snapshot.data();
-
-        const tipoVenta =
-          normalizeProductType(
-            data.tipoVenta
-          );
-
-        /*
-         * Si otro dispositivo
-         * modificó el tipo de venta
-         * mientras el producto estaba
-         * en el carrito, no intentamos
-         * vender datos obsoletos.
-         */
-        const cartItem =
-          normalizedItems.find(
-            (item) =>
-              item.barcode ===
-                barcode &&
-              item.tipoVenta !==
-                "precio-libre"
-          );
-
-        const cartItemType =
-          normalizeProductType(
-            cartItem?.tipoVenta
-          );
-
-        if (
-          tipoVenta !==
-          cartItemType
-        ) {
-          fail(
-            "product-changed",
-            `El tipo de venta de ${
-              data.name ||
-              barcode
-            } cambió. Volvé a agregarlo al ticket.`,
-            {
-              barcode,
-            }
-          );
-        }
-
-        const currentStock =
-          toNumber(
-            data.stock
-          );
-
-        /*
-         * Pequeña tolerancia para
-         * números decimales.
-         */
-        if (
-          currentStock +
-            0.000001 <
-          required
-        ) {
-          fail(
-            "insufficient-stock",
-            `Stock insuficiente para ${
-              data.name ||
-              barcode
-            }`,
-            {
-              barcode,
-              required,
-
-              available:
-                currentStock,
-            }
-          );
-        }
-
-        productEntries.push({
-          ref,
-          tipoVenta,
-          required,
-          currentStock,
-        });
-      }
-
-      /* -----------------------------------------------------
-         CREAR VENTA
-      ----------------------------------------------------- */
-
-      const sale = {
-        id:
+        saleId:
           cleanSaleId,
-
-        timestamp:
-          safeIsoDate(
-            timestamp
-          ),
 
         items:
           normalizedItems,
-
-        total,
-
-        sessionId,
 
         payment: {
           method,
@@ -2129,162 +2146,175 @@ export async function checkoutCloud(
         },
 
         deviceId:
-          deviceId || null,
+          cleanDeviceId,
 
-        createdAt:
-          serverTimestamp(),
-      };
+        timestamp:
+          safeIsoDate(
+            timestamp
+          ),
 
-      /*
-       * A partir de aquí comienzan
-       * las escrituras.
-       */
+        operadorSesion,
+      });
 
-      transaction.set(
-        saleRef,
-        removeUndefined(
-          sale
-        )
+    const data =
+      response?.data || {};
+
+    if (
+      !data.ok ||
+      !data.sale
+    ) {
+      fail(
+        "checkout-failed",
+        "No se pudo registrar la venta"
+      );
+    }
+
+    return {
+      alreadyExists:
+        Boolean(
+          data.alreadyExists
+        ),
+
+      sale:
+        data.sale,
+    };
+  } catch (error) {
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    const motivo =
+      String(
+        error?.details?.motivo ||
+        ""
       );
 
-      /* -----------------------------------------------------
-         DESCONTAR STOCK
-      ----------------------------------------------------- */
+    const serverMessage =
+      String(
+        error?.details?.mensaje ||
+        error?.details?.message ||
+        error?.message ||
+        ""
+      ).trim();
 
-      for (
-        const entry of
-        productEntries
+    if (
+      code ===
+      "unauthenticated"
+    ) {
+      fail(
+        "unauthenticated",
+        serverMessage ||
+        "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+      );
+    }
+
+    if (
+      code ===
+      "permission-denied"
+    ) {
+      fail(
+        "permission-denied",
+        serverMessage ||
+        "No tenés permisos para registrar la venta."
+      );
+    }
+
+    if (
+      code ===
+      "failed-precondition"
+    ) {
+      if (
+        motivo ===
+        "cash-not-open"
       ) {
-        const nextStockRaw =
-          entry.currentStock -
-          entry.required;
-
-        const nextStock =
-          entry.tipoVenta ===
-          "peso"
-            ? roundQuantity(
-                Math.max(
-                  0,
-                  nextStockRaw
-                )
-              )
-            : Math.max(
-                0,
-                Math.trunc(
-                  nextStockRaw
-                )
-              );
-
-        transaction.update(
-          entry.ref,
-          {
-            stock:
-              nextStock,
-
-            updatedAt:
-              serverTimestamp(),
-          }
+        fail(
+          "cash-not-open",
+          serverMessage ||
+          "La caja ya no se encuentra abierta"
         );
       }
 
-      /* -----------------------------------------------------
-         ACTUALIZAR CAJA
-      ----------------------------------------------------- */
-
-      const sessionData =
-        sessionSnap.data();
-
-      const paymentTotals = {
-        efectivo:
-          roundMoney(
-            sessionData
-              ?.paymentTotals
-              ?.efectivo ||
-            0
-          ),
-
-        transferencia:
-          roundMoney(
-            sessionData
-              ?.paymentTotals
-              ?.transferencia ||
-            0
-          ),
-
-        qr:
-          roundMoney(
-            sessionData
-              ?.paymentTotals
-              ?.qr ||
-            0
-          ),
-
-        tarjeta:
-          roundMoney(
-            sessionData
-              ?.paymentTotals
-              ?.tarjeta ||
-            0
-          ),
-      };
-
-      paymentTotals[
-        method
-      ] =
-        roundMoney(
-          paymentTotals[
-            method
-          ] +
-          total
+      if (
+        motivo ===
+        "product-changed"
+      ) {
+        fail(
+          "product-changed",
+          serverMessage ||
+          "El producto cambió. Volvé a agregarlo al ticket"
         );
+      }
 
-      const nextTotalSales =
-        roundMoney(
-          toNumber(
-            sessionData.totalSales
-          ) +
-          total
+      if (
+        motivo ===
+        "insufficient-stock"
+      ) {
+        fail(
+          "insufficient-stock",
+          serverMessage ||
+          "Stock insuficiente"
         );
+      }
 
-      const nextSalesCount =
-        Math.max(
-          0,
-          Math.trunc(
-            toNumber(
-              sessionData.salesCount
-            )
-          )
-        ) + 1;
-
-      transaction.update(
-        sessionRef,
-        {
-          totalSales:
-            nextTotalSales,
-
-          salesCount:
-            nextSalesCount,
-
-          paymentTotals,
-
-          updatedAt:
-            serverTimestamp(),
-        }
+      fail(
+        "checkout-failed",
+        serverMessage ||
+        "No se pudo registrar la venta"
       );
-
-      return {
-        alreadyExists:
-          false,
-
-        sale: {
-          ...sale,
-
-          createdAt:
-            null,
-        },
-      };
     }
-  );
+
+    if (
+      code ===
+      "not-found" &&
+      motivo ===
+      "product-not-found"
+    ) {
+      fail(
+        "product-not-found",
+        serverMessage ||
+        "No encontramos uno de los productos de la venta"
+      );
+    }
+
+    if (
+      code ===
+      "already-exists"
+    ) {
+      fail(
+        "sale-id-used",
+        serverMessage ||
+        "El identificador de venta ya fue utilizado"
+      );
+    }
+
+    if (
+      code ===
+      "invalid-argument"
+    ) {
+      fail(
+        "invalid-sale",
+        serverMessage ||
+        "Los datos de la venta no son válidos"
+      );
+    }
+
+    fail(
+      "checkout-failed",
+      serverMessage ||
+      "No se pudo registrar la venta"
+    );
+  }
 }
 
 /* =========================================================

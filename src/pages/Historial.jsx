@@ -19,6 +19,7 @@
 // No requiere dependencias nuevas.
 
 import {
+  useEffect,
   useMemo,
   useState,
 } from "react";
@@ -33,11 +34,16 @@ import {
 } from "../lib/format";
 
 import {
+  downloadAuditPdf,
   downloadSessionPdf,
 } from "../lib/pdf";
 
 import Modal from "../components/Modal";
 import { useOperator } from "../components/OperatorGate";
+
+import {
+  subscribeSessionAuditEvents,
+} from "../services/pos/auditoriaFirestore";
 
 /* =========================================================
    MÉTODOS DE PAGO
@@ -48,6 +54,37 @@ const METHOD_LABELS = {
   transferencia: "Transferencia",
   qr: "QR",
   tarjeta: "Tarjeta",
+};
+
+const AUDIT_ACTION_META = {
+  "apertura-caja": {
+    title: "Apertura de caja",
+    category: "Caja",
+  },
+  "venta-realizada": {
+    title: "Venta realizada",
+    category: "Ventas",
+  },
+  "reposicion-stock": {
+    title: "Reposición de stock",
+    category: "Inventario",
+  },
+  "edicion-producto": {
+    title: "Edición de producto",
+    category: "Inventario",
+  },
+  "alta-producto": {
+    title: "Alta de producto",
+    category: "Inventario",
+  },
+  "eliminacion-producto": {
+    title: "Eliminación de producto",
+    category: "Inventario",
+  },
+  "cierre-caja": {
+    title: "Cierre de caja",
+    category: "Caja",
+  },
 };
 
 /* =========================================================
@@ -214,6 +251,343 @@ function formatItemDetail(item) {
   )}`;
 }
 
+function formatAuditTime(value) {
+  if (!value) {
+    return "--:--:--";
+  }
+
+  const date =
+    value instanceof Date
+      ? value
+      : new Date(value);
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return "--:--:--";
+  }
+
+  return new Intl.DateTimeFormat(
+    "es-AR",
+    {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }
+  ).format(date);
+}
+
+function formatAuditRole(value) {
+  const role =
+    String(value || "")
+      .trim()
+      .toLowerCase();
+
+  if (role === "administrador") {
+    return "Administrador";
+  }
+
+  if (role === "encargado") {
+    return "Encargado";
+  }
+
+  return role || "Operador";
+}
+
+function formatAuditStock(
+  value,
+  tipoVenta
+) {
+  if (tipoVenta === "peso") {
+    return `${formatQuantity(
+      value
+    )} kg`;
+  }
+
+  return `${Math.trunc(
+    toNumber(value)
+  ).toLocaleString(
+    "es-AR"
+  )} u.`;
+}
+
+function formatAuditPaymentMethod(value) {
+  const method =
+    String(value || "")
+      .trim()
+      .toLowerCase();
+
+  return METHOD_LABELS[method] ||
+    method ||
+    "Sin especificar";
+}
+
+function getAuditDetailRows(event) {
+  const detail =
+    event?.detalle || {};
+
+  switch (event?.accion) {
+    case "apertura-caja":
+      return [
+        [
+          "Monto inicial",
+          money(
+            detail.montoInicial
+          ),
+        ],
+      ];
+
+    case "venta-realizada":
+      return [
+        [
+          "Venta",
+          detail.ventaId
+            ? `#${detail.ventaId}`
+            : "Sin referencia",
+        ],
+        [
+          "Total",
+          money(detail.total),
+        ],
+        [
+          "Medio de pago",
+          formatAuditPaymentMethod(
+            detail.metodoPago
+          ),
+        ],
+        [
+          "Productos",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.cantidadItems
+                )
+              )
+            )
+          ),
+        ],
+      ];
+
+    case "reposicion-stock": {
+      const tipoVenta =
+        String(
+          detail.tipoVenta ||
+          "unidad"
+        );
+
+      return [
+        [
+          "Producto",
+          detail.productoNombre ||
+            "Producto",
+        ],
+        [
+          "Cantidad agregada",
+          formatAuditStock(
+            detail.cantidadAgregada,
+            tipoVenta
+          ),
+        ],
+        [
+          "Stock",
+          `${formatAuditStock(
+            detail.stockAnterior,
+            tipoVenta
+          )} → ${formatAuditStock(
+            detail.stockNuevo,
+            tipoVenta
+          )}`,
+        ],
+      ];
+    }
+
+    case "edicion-producto": {
+      const rows = [];
+
+      if (
+        String(
+          detail.nombreAnterior ||
+          ""
+        ) !==
+        String(
+          detail.nombreNuevo ||
+          ""
+        )
+      ) {
+        rows.push([
+          "Nombre",
+          `${detail.nombreAnterior || "—"} → ${detail.nombreNuevo || "—"}`,
+        ]);
+      }
+
+      if (
+        roundMoney(
+          detail.precioAnterior
+        ) !==
+        roundMoney(
+          detail.precioNuevo
+        )
+      ) {
+        rows.push([
+          "Precio",
+          `${money(
+            detail.precioAnterior
+          )} → ${money(
+            detail.precioNuevo
+          )}`,
+        ]);
+      }
+
+      if (
+        roundQuantity(
+          detail.stockAnterior
+        ) !==
+        roundQuantity(
+          detail.stockNuevo
+        )
+      ) {
+        rows.push([
+          "Stock",
+          `${formatQuantity(
+            detail.stockAnterior
+          )} → ${formatQuantity(
+            detail.stockNuevo
+          )}`,
+        ]);
+      }
+
+      if (
+        String(
+          detail.barcodeAnterior ||
+          ""
+        ) !==
+        String(
+          detail.barcodeNuevo ||
+          ""
+        )
+      ) {
+        rows.push([
+          "Código",
+          `${detail.barcodeAnterior || "—"} → ${detail.barcodeNuevo || "—"}`,
+        ]);
+      }
+
+      return rows.length > 0
+        ? rows
+        : [[
+            "Producto",
+            detail.nombreNuevo ||
+              detail.nombreAnterior ||
+              "Producto actualizado",
+          ]];
+    }
+
+    case "alta-producto":
+    case "eliminacion-producto": {
+      const tipoVenta =
+        String(
+          detail.tipoVenta ||
+          "unidad"
+        );
+
+      return [
+        [
+          "Producto",
+          detail.productoNombre ||
+            "Producto",
+        ],
+        [
+          "Código",
+          detail.barcode ||
+            "Código interno",
+        ],
+        [
+          "Precio",
+          tipoVenta ===
+          "precio-libre"
+            ? "Importe libre"
+            : money(detail.precio),
+        ],
+        [
+          "Stock",
+          tipoVenta ===
+          "precio-libre"
+            ? "Sin control"
+            : formatAuditStock(
+                detail.stock,
+                tipoVenta
+              ),
+        ],
+      ];
+    }
+
+    case "cierre-caja":
+      return [
+        [
+          "Efectivo esperado",
+          money(
+            detail.efectivoEsperado
+          ),
+        ],
+        [
+          "Efectivo contado",
+          money(
+            detail.efectivoContado
+          ),
+        ],
+        [
+          "Diferencia",
+          formatDifference(
+            detail.diferencia
+          ),
+        ],
+        [
+          "Ventas",
+          money(
+            detail.totalVentas
+          ),
+        ],
+        [
+          "Tickets",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.cantidadVentas
+                )
+              )
+            )
+          ),
+        ],
+      ];
+
+    default:
+      return Object.entries(
+        detail
+      )
+        .filter(
+          ([, value]) =>
+            value !== null &&
+            value !== undefined &&
+            typeof value !==
+              "object"
+        )
+        .slice(0, 8)
+        .map(
+          ([key, value]) => [
+            key,
+            String(value),
+          ]
+        );
+  }
+}
+
 /* =========================================================
    COMPONENTE
 ========================================================= */
@@ -229,6 +603,26 @@ export default function Historial({
     selectedSession,
     setSelectedSession,
   ] = useState(null);
+
+  const [
+    detailMode,
+    setDetailMode,
+  ] = useState("detail");
+
+  const [
+    auditEvents,
+    setAuditEvents,
+  ] = useState([]);
+
+  const [
+    auditLoading,
+    setAuditLoading,
+  ] = useState(false);
+
+  const [
+    auditError,
+    setAuditError,
+  ] = useState("");
 
   const [
     deleteCandidate,
@@ -257,6 +651,12 @@ export default function Historial({
     )
       ? pos.sales
       : [];
+
+  const clienteId =
+    String(
+      pos?.clienteId ||
+      ""
+    ).trim();
 
   /* =========================================================
      TURNOS CERRADOS
@@ -368,6 +768,84 @@ export default function Historial({
     ]);
 
   /* =========================================================
+     AUDITORÍA DEL TURNO SELECCIONADO
+  ========================================================= */
+
+  useEffect(() => {
+    if (
+      !selectedSession ||
+      detailMode !== "audit"
+    ) {
+      setAuditEvents([]);
+      setAuditLoading(false);
+      setAuditError("");
+      return undefined;
+    }
+
+    if (!clienteId) {
+      setAuditEvents([]);
+      setAuditLoading(false);
+      setAuditError(
+        "No se encontró el cliente activo."
+      );
+      return undefined;
+    }
+
+    setAuditEvents([]);
+    setAuditLoading(true);
+    setAuditError("");
+
+    let unsubscribe;
+
+    try {
+      unsubscribe =
+        subscribeSessionAuditEvents(
+          clienteId,
+          selectedSession.id,
+          (events) => {
+            setAuditEvents(
+              Array.isArray(events)
+                ? events
+                : []
+            );
+            setAuditLoading(false);
+          },
+          (error) => {
+            console.error(
+              "Error cargando auditoría del turno:",
+              error
+            );
+
+            setAuditEvents([]);
+            setAuditLoading(false);
+            setAuditError(
+              "No se pudo cargar la auditoría de este turno."
+            );
+          }
+        );
+    } catch (error) {
+      console.error(
+        "Error iniciando auditoría del turno:",
+        error
+      );
+
+      setAuditEvents([]);
+      setAuditLoading(false);
+      setAuditError(
+        "No se pudo cargar la auditoría de este turno."
+      );
+    }
+
+    return () => {
+      unsubscribe?.();
+    };
+  }, [
+    clienteId,
+    detailMode,
+    selectedSession,
+  ]);
+
+  /* =========================================================
      DESCARGAR PDF
   ========================================================= */
 
@@ -408,6 +886,66 @@ export default function Historial({
 
       pos?.showToast?.(
         "No se pudo generar el PDF",
+        true
+      );
+    }
+  }
+
+  /* =========================================================
+     DESCARGAR PDF DE AUDITORÍA
+  ========================================================= */
+
+  function handleAuditDownload(
+    session
+  ) {
+    if (!session) {
+      return;
+    }
+
+    if (auditLoading) {
+      pos?.showToast?.(
+        "Esperá a que termine de cargar la auditoría",
+        true
+      );
+      return;
+    }
+
+    if (auditError) {
+      pos?.showToast?.(
+        "No se puede generar el PDF porque la auditoría no cargó correctamente",
+        true
+      );
+      return;
+    }
+
+    if (auditEvents.length === 0) {
+      pos?.showToast?.(
+        "Este turno no tiene eventos de auditoría",
+        true
+      );
+      return;
+    }
+
+    try {
+      downloadAuditPdf({
+        session,
+        events: auditEvents,
+        shopName:
+          pos?.shopName ||
+          "Mi Negocio",
+      });
+
+      pos?.showToast?.(
+        "PDF de auditoría descargado"
+      );
+    } catch (error) {
+      console.error(
+        "Error generando PDF de auditoría:",
+        error
+      );
+
+      pos?.showToast?.(
+        "No se pudo generar el PDF de auditoría",
         true
       );
     }
@@ -846,11 +1384,14 @@ export default function Historial({
               index={
                 index
               }
-              onClick={() =>
+              onClick={() => {
+                setDetailMode(
+                  "detail"
+                );
                 setSelectedSession(
                   session
-                )
-              }
+                );
+              }}
             />
           )
         )}
@@ -866,40 +1407,81 @@ export default function Historial({
             selectedSession
           )
         }
-        onClose={() =>
+        onClose={() => {
           setSelectedSession(
             null
-          )
+          );
+          setDetailMode(
+            "detail"
+          );
+        }}
+        title={
+          detailMode === "audit"
+            ? "Auditoría del turno"
+            : "Detalle del turno"
         }
-        title="Detalle del turno"
       >
-        {selectedSession && (
-          <SessionDetail
-            session={
-              selectedSession
-            }
-            sales={
-              selectedSales
-            }
-            onDownload={() =>
-              handleDownload(
+        {selectedSession &&
+          detailMode === "detail" && (
+            <SessionDetail
+              session={
                 selectedSession
-              )
-            }
-            onDelete={() =>
-              handleRequestDelete(
+              }
+              sales={
+                selectedSales
+              }
+              onAudit={() =>
+                setDetailMode(
+                  "audit"
+                )
+              }
+              onDownload={() =>
+                handleDownload(
+                  selectedSession
+                )
+              }
+              onDelete={() =>
+                handleRequestDelete(
+                  selectedSession
+                )
+              }
+              deleting={
+                deletingSessionId ===
+                selectedSession.id
+              }
+              canDelete={
+                esAdministrador
+              }
+            />
+          )}
+
+        {selectedSession &&
+          detailMode === "audit" && (
+            <SessionAuditDetail
+              session={
                 selectedSession
-              )
-            }
-            deleting={
-              deletingSessionId ===
-              selectedSession.id
-            }
-            canDelete={
-              esAdministrador
-            }
-          />
-        )}
+              }
+              events={
+                auditEvents
+              }
+              loading={
+                auditLoading
+              }
+              error={
+                auditError
+              }
+              onBack={() =>
+                setDetailMode(
+                  "detail"
+                )
+              }
+              onDownload={() =>
+                handleAuditDownload(
+                  selectedSession
+                )
+              }
+            />
+          )}
       </Modal>
 
       {/* =====================================================
@@ -1174,6 +1756,7 @@ function SessionCard({
 function SessionDetail({
   session,
   sales,
+  onAudit,
   onDownload,
   onDelete,
   deleting = false,
@@ -1539,6 +2122,91 @@ function SessionDetail({
       </div>
 
       {/* =====================================================
+          AUDITORÍA DEL TURNO
+      ===================================================== */}
+
+      <div
+        className="
+          mt-5
+          rounded-[20px]
+          border
+          border-[#FFC61A]/20
+          bg-[#FFC61A]/[0.07]
+          p-3.5
+        "
+      >
+        <div className="flex items-start gap-3">
+          <div
+            className="
+              grid
+              h-9
+              w-9
+              shrink-0
+              place-items-center
+              rounded-xl
+              bg-[#FFC61A]/15
+              text-[#FFC61A]
+            "
+          >
+            <HistoryIcon className="h-4 w-4" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <p
+              className="
+                text-sm
+                font-extrabold
+                text-white
+              "
+            >
+              Auditoría del turno
+            </p>
+
+            <p
+              className="
+                mt-1
+                text-xs
+                leading-relaxed
+                text-white/40
+              "
+            >
+              Consultá la cronología registrada desde la apertura hasta el cierre de esta caja.
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={
+            onAudit
+          }
+          className="
+            mt-3
+            inline-flex
+            w-full
+            items-center
+            justify-center
+            gap-2
+            rounded-2xl
+            border
+            border-[#FFC61A]/25
+            bg-[#FFC61A]/10
+            px-4
+            py-3.5
+            text-sm
+            font-extrabold
+            text-[#FFC61A]
+            transition
+            hover:bg-[#FFC61A]/15
+            active:scale-[0.99]
+          "
+        >
+          <HistoryIcon className="h-[17px] w-[17px]" />
+          Ver auditoría completa
+        </button>
+      </div>
+
+      {/* =====================================================
           INFORMACIÓN PDF
       ===================================================== */}
 
@@ -1737,6 +2405,540 @@ function SessionDetail({
         </button>
       </div>
       )}
+    </div>
+  );
+}
+
+/* =========================================================
+   AUDITORÍA DEL TURNO
+========================================================= */
+
+function SessionAuditDetail({
+  session,
+  events,
+  loading,
+  error,
+  onBack,
+  onDownload,
+}) {
+  const safeEvents =
+    Array.isArray(events)
+      ? events
+      : [];
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onBack}
+        className="
+          mb-3
+          inline-flex
+          items-center
+          gap-2
+          rounded-xl
+          border
+          border-white/10
+          bg-white/5
+          px-3
+          py-2.5
+          text-xs
+          font-extrabold
+          text-white/65
+          transition
+          hover:bg-white/10
+          hover:text-white
+        "
+      >
+        <BackIcon className="h-4 w-4" />
+        Volver al detalle
+      </button>
+
+      <div
+        className="
+          overflow-hidden
+          rounded-[22px]
+          bg-white
+          text-[#111318]
+        "
+      >
+        <div className="p-4">
+          <p
+            className="
+              text-[10px]
+              font-extrabold
+              uppercase
+              tracking-[0.16em]
+              text-[#B98700]
+            "
+          >
+            Cronología completa
+          </p>
+
+          <div
+            className="
+              mt-1
+              flex
+              items-end
+              justify-between
+              gap-3
+            "
+          >
+            <div>
+              <h3
+                className="
+                  text-lg
+                  font-black
+                  text-[#111318]
+                "
+              >
+                {fmtDate(
+                  session?.openTime
+                )}
+              </h3>
+
+              <p
+                className="
+                  mt-1
+                  text-xs
+                  font-semibold
+                  text-black/40
+                "
+              >
+                {getTime(
+                  session?.openTime
+                )}
+                {" - "}
+                {getTime(
+                  session?.closeTime
+                )}
+              </p>
+            </div>
+
+            <span
+              className="
+                shrink-0
+                rounded-full
+                bg-[#F4F5F7]
+                px-2.5
+                py-1.5
+                text-[10px]
+                font-extrabold
+                text-black/45
+              "
+            >
+              {safeEvents.length}{" "}
+              {safeEvents.length === 1
+                ? "evento"
+                : "eventos"}
+            </span>
+          </div>
+
+          <div
+            className="
+              mt-4
+              h-[3px]
+              rounded-full
+              bg-[#FFC61A]
+            "
+          />
+        </div>
+      </div>
+
+      {loading && (
+        <div
+          className="
+            mt-3
+            rounded-[20px]
+            border
+            border-white/10
+            bg-white/5
+            px-4
+            py-8
+            text-center
+          "
+        >
+          <div
+            className="
+              mx-auto
+              h-5
+              w-5
+              animate-spin
+              rounded-full
+              border-2
+              border-white/15
+              border-t-[#FFC61A]
+            "
+          />
+
+          <p
+            className="
+              mt-3
+              text-xs
+              font-semibold
+              text-white/40
+            "
+          >
+            Cargando auditoría...
+          </p>
+        </div>
+      )}
+
+      {!loading && error && (
+        <div
+          className="
+            mt-3
+            rounded-[20px]
+            border
+            border-red-400/20
+            bg-red-500/10
+            px-4
+            py-4
+            text-sm
+            font-semibold
+            text-red-200
+          "
+        >
+          {error}
+        </div>
+      )}
+
+      {!loading &&
+        !error &&
+        safeEvents.length === 0 && (
+          <div
+            className="
+              mt-3
+              rounded-[20px]
+              border
+              border-white/10
+              bg-white/5
+              px-4
+              py-6
+              text-center
+            "
+          >
+            <HistoryIcon
+              className="
+                mx-auto
+                h-5
+                w-5
+                text-white/20
+              "
+            />
+
+            <p
+              className="
+                mt-2
+                text-xs
+                font-semibold
+                text-white/35
+              "
+            >
+              Este turno no tiene eventos de auditoría asociados.
+            </p>
+          </div>
+        )}
+
+      {!loading &&
+        !error &&
+        safeEvents.length > 0 && (
+          <div
+            className="
+              mt-3
+              overflow-hidden
+              rounded-[22px]
+              border
+              border-white/10
+              bg-[#151A22]
+            "
+          >
+            {safeEvents.map(
+              (event, index) => (
+                <AuditTimelineEvent
+                  key={
+                    event.id ||
+                    `${event.accion}-${index}`
+                  }
+                  event={event}
+                  first={index === 0}
+                  last={
+                    index ===
+                    safeEvents.length - 1
+                  }
+                />
+              )
+            )}
+          </div>
+        )}
+
+      {!loading &&
+        !error &&
+        safeEvents.length > 0 && (
+          <button
+            type="button"
+            onClick={onDownload}
+            className="
+              mt-4
+              inline-flex
+              w-full
+              items-center
+              justify-center
+              gap-2
+              rounded-2xl
+              bg-[#FFC61A]
+              px-4
+              py-4
+              text-sm
+              font-extrabold
+              text-black
+              shadow-[0_12px_30px_rgba(255,198,26,0.18)]
+              transition
+              hover:bg-[#FFD248]
+              active:scale-[0.99]
+            "
+          >
+            <DownloadIcon className="h-[18px] w-[18px]" />
+            Descargar auditoría PDF
+          </button>
+        )}
+    </div>
+  );
+}
+
+function AuditTimelineEvent({
+  event,
+  first,
+  last,
+}) {
+  const meta =
+    AUDIT_ACTION_META[
+      event?.accion
+    ] || {
+      title:
+        event?.accion ||
+        "Evento de auditoría",
+      category: "Auditoría",
+    };
+
+  const rows =
+    getAuditDetailRows(
+      event
+    );
+
+  return (
+    <div
+      className={
+        `
+          relative
+          grid
+          grid-cols-[64px_1fr]
+          gap-3
+          px-3.5
+          py-4
+        ` +
+        (last
+          ? ""
+          : " border-b border-white/[0.07]")
+      }
+    >
+      <div
+        className="
+          relative
+          flex
+          flex-col
+          items-center
+        "
+      >
+        {!first && (
+          <span
+            className="
+              absolute
+              -top-4
+              left-1/2
+              h-4
+              w-px
+              -translate-x-1/2
+              bg-white/10
+            "
+          />
+        )}
+
+        <span
+          className="
+            text-[10px]
+            font-black
+            tabular-nums
+            text-[#FFC61A]
+          "
+        >
+          {formatAuditTime(
+            event?.fecha
+          )}
+        </span>
+
+        <span
+          className="
+            mt-2
+            h-2.5
+            w-2.5
+            rounded-full
+            border-2
+            border-[#FFC61A]
+            bg-[#151A22]
+          "
+        />
+
+        {!last && (
+          <span
+            className="
+              absolute
+              left-1/2
+              top-[39px]
+              bottom-[-16px]
+              w-px
+              -translate-x-1/2
+              bg-white/10
+            "
+          />
+        )}
+      </div>
+
+      <div className="min-w-0">
+        <div
+          className="
+            flex
+            items-start
+            justify-between
+            gap-2
+          "
+        >
+          <div className="min-w-0">
+            <p
+              className="
+                text-[9px]
+                font-extrabold
+                uppercase
+                tracking-[0.12em]
+                text-white/30
+              "
+            >
+              {meta.category}
+            </p>
+
+            <h4
+              className="
+                mt-0.5
+                text-sm
+                font-black
+                text-white
+              "
+            >
+              {meta.title}
+            </h4>
+          </div>
+
+          <span
+            className="
+              shrink-0
+              rounded-full
+              border
+              border-white/10
+              bg-white/5
+              px-2
+              py-1
+              text-[8px]
+              font-bold
+              uppercase
+              tracking-[0.08em]
+              text-white/35
+            "
+          >
+            {formatAuditRole(
+              event?.operadorRol
+            )}
+          </span>
+        </div>
+
+        <p
+          className="
+            mt-1
+            text-[11px]
+            font-semibold
+            text-white/45
+          "
+        >
+          {event?.operadorNombre ||
+            "Operador"}
+        </p>
+
+        {rows.length > 0 && (
+          <div
+            className="
+              mt-3
+              space-y-1.5
+              rounded-xl
+              bg-white/[0.035]
+              px-3
+              py-2.5
+            "
+          >
+            {rows.map(
+              ([label, value]) => (
+                <div
+                  key={`${event.id}-${label}`}
+                  className="
+                    flex
+                    items-start
+                    justify-between
+                    gap-3
+                  "
+                >
+                  <span
+                    className="
+                      min-w-0
+                      text-[10px]
+                      font-semibold
+                      text-white/30
+                    "
+                  >
+                    {label}
+                  </span>
+
+                  <span
+                    className="
+                      min-w-0
+                      text-right
+                      text-[10px]
+                      font-extrabold
+                      text-white/70
+                    "
+                  >
+                    {value}
+                  </span>
+                </div>
+              )
+            )}
+          </div>
+        )}
+
+        {event?.deviceId && (
+          <p
+            className="
+              mt-2
+              truncate
+              font-mono
+              text-[8px]
+              text-white/20
+            "
+            title={
+              event.deviceId
+            }
+          >
+            Dispositivo: {event.deviceId}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -2865,6 +4067,25 @@ function formatDifference(
 /* =========================================================
    ICONOS
 ========================================================= */
+
+function BackIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M15 18l-6-6 6-6" />
+    </svg>
+  );
+}
 
 function HistoryIcon({
   className = "",

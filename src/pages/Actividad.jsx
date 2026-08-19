@@ -16,9 +16,12 @@ const ACTIONS = [
   { id: "all", label: "Todo" },
   { id: "apertura-caja", label: "Aperturas" },
   { id: "cierre-caja", label: "Cierres" },
+  { id: "venta-realizada", label: "Ventas" },
   { id: "reposicion-stock", label: "Stock" },
   { id: "edicion-producto", label: "Ediciones" },
-  { id: "eliminacion-cierre-historico", label: "Eliminaciones" },
+  { id: "alta-producto", label: "Altas" },
+  { id: "eliminacion-producto", label: "Bajas" },
+  { id: "eliminacion-cierre-historico", label: "Cierres eliminados" },
 ];
 
 const ACTION_META = {
@@ -32,6 +35,11 @@ const ACTION_META = {
     eyebrow: "Caja",
     icon: CashCloseIcon,
   },
+  "venta-realizada": {
+    title: "Venta realizada",
+    eyebrow: "Ventas",
+    icon: SaleIcon,
+  },
   "reposicion-stock": {
     title: "Reposición de stock",
     eyebrow: "Inventario",
@@ -41,6 +49,16 @@ const ACTION_META = {
     title: "Edición de producto",
     eyebrow: "Catálogo",
     icon: EditIcon,
+  },
+  "alta-producto": {
+    title: "Producto agregado",
+    eyebrow: "Inventario",
+    icon: StockIcon,
+  },
+  "eliminacion-producto": {
+    title: "Producto eliminado",
+    eyebrow: "Inventario",
+    icon: TrashIcon,
   },
   "eliminacion-cierre-historico": {
     title: "Eliminación de cierre",
@@ -472,6 +490,26 @@ function getEventDetails(event) {
         },
       ]);
 
+    case "venta-realizada":
+      return compactDetails([
+        {
+          label: "Venta",
+          value: d.ventaId,
+        },
+        {
+          label: "Total",
+          value: formatMoney(d.total),
+        },
+        {
+          label: "Medio de pago",
+          value: d.metodoPago,
+        },
+        {
+          label: "Ítems",
+          value: finiteString(d.cantidadItems),
+        },
+      ]);
+
     case "reposicion-stock":
       return compactDetails([
         {
@@ -528,6 +566,61 @@ function getEventDetails(event) {
                 `${d.barcodeAnterior} → ${d.barcodeNuevo}`,
             }]
           : []),
+      ]);
+
+    case "alta-producto":
+      return compactDetails([
+        {
+          label: "Producto",
+          value:
+            d.productoNombre ||
+            d.barcode,
+        },
+        {
+          label: "Código",
+          value: d.barcode,
+        },
+        {
+          label: "Precio",
+          value:
+            d.tipoVenta === "precio-libre"
+              ? "Importe libre"
+              : formatMoney(d.precio),
+        },
+        {
+          label: "Stock inicial",
+          value:
+            d.tipoVenta === "precio-libre"
+              ? "Sin control"
+              : formatStockValue(
+                  d.stock,
+                  d.tipoVenta
+                ),
+        },
+      ]);
+
+    case "eliminacion-producto":
+      return compactDetails([
+        {
+          label: "Producto",
+          value:
+            d.productoNombre ||
+            d.barcode,
+        },
+        {
+          label: "Código",
+          value: d.barcode,
+        },
+        {
+          label: "Stock al eliminar",
+          value:
+            d.tipoVenta === "precio-libre"
+              ? "Sin control"
+              : formatStockValue(
+                  d.stock,
+                  d.tipoVenta
+                ),
+        },
       ]);
 
     case "eliminacion-cierre-historico":
@@ -639,6 +732,18 @@ function formatNumber(value) {
       maximumFractionDigits: 3,
     }
   ).format(number);
+}
+
+function formatStockValue(value, tipoVenta) {
+  const formatted = formatNumber(value);
+
+  if (!formatted) {
+    return null;
+  }
+
+  return tipoVenta === "peso"
+    ? `${formatted} kg`
+    : formatted;
 }
 
 function formatStockChange(value, tipoVenta) {
@@ -760,6 +865,18 @@ function CashCloseIcon({ className = "" }) {
       <path d="M8 8V5h8v3" />
       <path d="M12 12v4" />
       <path d="m10 14 2 2 2-2" />
+    </svg>
+  );
+}
+
+function SaleIcon({ className = "" }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 6h16v12H4z" />
+      <path d="M8 10h8" />
+      <path d="M8 14h5" />
+      <path d="M16 14h.01" />
     </svg>
   );
 }

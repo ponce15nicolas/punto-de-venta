@@ -1455,13 +1455,14 @@ export function usePosData({
 
         try {
           if (
-            isEdit &&
             cloudRequested &&
             !cloudActiveRef
               .current
           ) {
             showToast(
-              "Necesitás conexión con la nube para editar productos",
+              isEdit
+                ? "Necesitás conexión con la nube para editar productos"
+                : "Necesitás conexión con la nube para agregar productos",
               true
             );
 
@@ -1485,15 +1486,13 @@ export function usePosData({
                     isEdit
                   ),
 
-                operadorSesion:
-                  isEdit
-                    ? operadorSesion
-                    : null,
+                auditCreate:
+                  !isEdit,
+
+                operadorSesion,
 
                 deviceId:
-                  isEdit
-                    ? cleanDeviceId
-                    : null,
+                  cleanDeviceId,
               }
             );
           }
@@ -1590,8 +1589,26 @@ export function usePosData({
           ) {
             await deleteProductCloud(
               cleanClienteId,
-              code
+              code,
+              {
+                operadorSesion,
+
+                deviceId:
+                  cleanDeviceId,
+
+                auditDelete:
+                  true,
+              }
             );
+          } else if (
+            cloudRequested
+          ) {
+            showToast(
+              "Necesitás conexión con la nube para eliminar productos",
+              true
+            );
+
+            return false;
           }
 
           const next = {
@@ -1644,6 +1661,9 @@ export function usePosData({
       },
       [
         cleanClienteId,
+        cleanDeviceId,
+        cloudRequested,
+        operadorSesion,
         persistCatalog,
         showToast,
       ]
@@ -3108,6 +3128,7 @@ export function usePosData({
              * - descuenta stock;
              * - registra la venta;
              * - actualiza los totales de caja;
+             * - registra la auditoría del operador;
              * - evita repetir el mismo saleId.
              */
             const result =
@@ -3126,6 +3147,8 @@ export function usePosData({
                     cleanDeviceId,
 
                   timestamp,
+
+                  operadorSesion,
                 }
               );
 
@@ -3293,6 +3316,7 @@ export function usePosData({
         cart,
         cleanClienteId,
         cleanDeviceId,
+        operadorSesion,
         persistCatalog,
         persistSales,
         showToast,
@@ -3897,6 +3921,9 @@ export function usePosData({
   ========================================================= */
 
   return {
+    clienteId:
+      cleanClienteId || null,
+
     loaded,
 
     syncStatus,

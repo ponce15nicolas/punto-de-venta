@@ -14,6 +14,7 @@
 // clientes/{clienteId}/productos/{productoId}
 // clientes/{clienteId}/ventas/{ventaId}
 // clientes/{clienteId}/cajas/{cajaId}
+// clientes/{clienteId}/auditoria/{eventoId}
 // clientes/{clienteId}/configuracion/pos
 // clientes/{clienteId}/configuracion/migracion-pos-v1
 
@@ -26,6 +27,7 @@ export const POS_COLLECTIONS = Object.freeze({
   PRODUCTOS: "productos",
   VENTAS: "ventas",
   CAJAS: "cajas",
+  AUDITORIA: "auditoria",
   CONFIGURACION: "configuracion",
 });
 
@@ -196,6 +198,19 @@ export function cajaPath(
   return [
     ...cajasPath(clienteId),
     id,
+  ];
+}
+
+/* =========================================================
+   AUDITORÍA
+========================================================= */
+
+export function auditoriaPath(
+  clienteId
+) {
+  return [
+    ...clientePath(clienteId),
+    POS_COLLECTIONS.AUDITORIA,
   ];
 }
 

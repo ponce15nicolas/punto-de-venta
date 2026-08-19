@@ -1883,3 +1883,982 @@ export function downloadSessionPdf({
 
   return filename;
 }
+/* =========================================================
+   PDF EXCLUSIVO DE AUDITORÍA
+========================================================= */
+
+const AUDIT_ACTION_META = {
+  "apertura-caja": {
+    title: "Apertura de caja",
+    category: "Caja",
+  },
+  "venta-realizada": {
+    title: "Venta realizada",
+    category: "Ventas",
+  },
+  "reposicion-stock": {
+    title: "Reposición de stock",
+    category: "Inventario",
+  },
+  "edicion-producto": {
+    title: "Edición de producto",
+    category: "Inventario",
+  },
+  "alta-producto": {
+    title: "Alta de producto",
+    category: "Inventario",
+  },
+  "eliminacion-producto": {
+    title: "Eliminación de producto",
+    category: "Inventario",
+  },
+  "cierre-caja": {
+    title: "Cierre de caja",
+    category: "Caja",
+  },
+};
+
+function formatAuditRole(value) {
+  const role =
+    String(value || "")
+      .trim()
+      .toLowerCase();
+
+  if (role === "administrador") {
+    return "Administrador";
+  }
+
+  if (role === "encargado") {
+    return "Encargado";
+  }
+
+  return role || "Operador";
+}
+
+function formatAuditPaymentMethod(value) {
+  const method =
+    String(value || "")
+      .trim()
+      .toLowerCase();
+
+  return PAYMENT_LABELS[method] ||
+    method ||
+    "Sin especificar";
+}
+
+function formatAuditStock(
+  value,
+  tipoVenta
+) {
+  if (tipoVenta === "peso") {
+    return `${formatQuantity(
+      value
+    )} kg`;
+  }
+
+  return `${Math.trunc(
+    number(value)
+  ).toLocaleString(
+    "es-AR"
+  )} u.`;
+}
+
+function formatAuditDateTime(value) {
+  const date =
+    parseDate(value);
+
+  if (!date) {
+    return "Fecha no disponible";
+  }
+
+  return new Intl.DateTimeFormat(
+    "es-AR",
+    {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }
+  )
+    .format(date)
+    .replace(",", "");
+}
+
+function getAuditPdfDetailRows(event) {
+  const detail =
+    event?.detalle &&
+    typeof event.detalle === "object" &&
+    !Array.isArray(event.detalle)
+      ? event.detalle
+      : {};
+
+  switch (event?.accion) {
+    case "apertura-caja":
+      return [
+        [
+          "Monto inicial",
+          money(
+            detail.montoInicial
+          ),
+        ],
+      ];
+
+    case "venta-realizada":
+      return [
+        [
+          "Venta",
+          detail.ventaId
+            ? `#${detail.ventaId}`
+            : "Sin referencia",
+        ],
+        [
+          "Total",
+          money(detail.total),
+        ],
+        [
+          "Medio de pago",
+          formatAuditPaymentMethod(
+            detail.metodoPago
+          ),
+        ],
+        [
+          "Productos",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                number(
+                  detail.cantidadItems
+                )
+              )
+            )
+          ),
+        ],
+      ];
+
+    case "reposicion-stock": {
+      const tipoVenta =
+        String(
+          detail.tipoVenta ||
+          "unidad"
+        );
+
+      return [
+        [
+          "Producto",
+          detail.productoNombre ||
+            "Producto",
+        ],
+        [
+          "Cantidad agregada",
+          formatAuditStock(
+            detail.cantidadAgregada,
+            tipoVenta
+          ),
+        ],
+        [
+          "Stock",
+          `${formatAuditStock(
+            detail.stockAnterior,
+            tipoVenta
+          )} -> ${formatAuditStock(
+            detail.stockNuevo,
+            tipoVenta
+          )}`,
+        ],
+      ];
+    }
+
+    case "edicion-producto": {
+      const rows = [];
+
+      if (
+        String(
+          detail.nombreAnterior ||
+          ""
+        ) !==
+        String(
+          detail.nombreNuevo ||
+          ""
+        )
+      ) {
+        rows.push([
+          "Nombre",
+          `${detail.nombreAnterior || "-"} -> ${detail.nombreNuevo || "-"}`,
+        ]);
+      }
+
+      if (
+        roundMoney(
+          detail.precioAnterior
+        ) !==
+        roundMoney(
+          detail.precioNuevo
+        )
+      ) {
+        rows.push([
+          "Precio",
+          `${money(
+            detail.precioAnterior
+          )} -> ${money(
+            detail.precioNuevo
+          )}`,
+        ]);
+      }
+
+      if (
+        roundQuantity(
+          detail.stockAnterior
+        ) !==
+        roundQuantity(
+          detail.stockNuevo
+        )
+      ) {
+        rows.push([
+          "Stock",
+          `${formatQuantity(
+            detail.stockAnterior
+          )} -> ${formatQuantity(
+            detail.stockNuevo
+          )}`,
+        ]);
+      }
+
+      if (
+        String(
+          detail.barcodeAnterior ||
+          ""
+        ) !==
+        String(
+          detail.barcodeNuevo ||
+          ""
+        )
+      ) {
+        rows.push([
+          "Código",
+          `${detail.barcodeAnterior || "-"} -> ${detail.barcodeNuevo || "-"}`,
+        ]);
+      }
+
+      return rows.length > 0
+        ? rows
+        : [[
+            "Producto",
+            detail.nombreNuevo ||
+              detail.nombreAnterior ||
+              "Producto actualizado",
+          ]];
+    }
+
+    case "alta-producto":
+    case "eliminacion-producto": {
+      const tipoVenta =
+        String(
+          detail.tipoVenta ||
+          "unidad"
+        );
+
+      return [
+        [
+          "Producto",
+          detail.productoNombre ||
+            "Producto",
+        ],
+        [
+          "Código",
+          detail.barcode ||
+            "Código interno",
+        ],
+        [
+          "Precio",
+          tipoVenta ===
+          "precio-libre"
+            ? "Importe libre"
+            : money(
+                detail.precio
+              ),
+        ],
+        [
+          "Stock",
+          tipoVenta ===
+          "precio-libre"
+            ? "Sin control"
+            : formatAuditStock(
+                detail.stock,
+                tipoVenta
+              ),
+        ],
+      ];
+    }
+
+    case "cierre-caja":
+      return [
+        [
+          "Efectivo esperado",
+          money(
+            detail.efectivoEsperado
+          ),
+        ],
+        [
+          "Efectivo contado",
+          money(
+            detail.efectivoContado
+          ),
+        ],
+        [
+          "Diferencia",
+          formatDifference(
+            detail.diferencia
+          ),
+        ],
+        [
+          "Ventas",
+          money(
+            detail.totalVentas
+          ),
+        ],
+        [
+          "Tickets",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                number(
+                  detail.cantidadVentas
+                )
+              )
+            )
+          ),
+        ],
+      ];
+
+    default:
+      return Object.entries(
+        detail
+      )
+        .filter(
+          ([, value]) =>
+            value !== null &&
+            value !== undefined &&
+            typeof value !==
+              "object"
+        )
+        .slice(0, 10)
+        .map(
+          ([key, value]) => [
+            key,
+            String(value),
+          ]
+        );
+  }
+}
+
+export function downloadAuditPdf({
+  session,
+  events = [],
+  shopName = "Mi Negocio",
+}) {
+  if (
+    !session ||
+    session.status !==
+      "closed"
+  ) {
+    throw new Error(
+      "La caja debe estar cerrada para generar el PDF de auditoría."
+    );
+  }
+
+  const safeEvents =
+    Array.isArray(events)
+      ? events
+      : [];
+
+  const sessionEvents =
+    safeEvents
+      .filter(
+        (event) =>
+          event?.sessionId ===
+          session.id
+      )
+      .slice()
+      .sort(
+        (a, b) => {
+          const aTime =
+            parseDate(
+              a?.fecha
+            )?.getTime() ||
+            0;
+
+          const bTime =
+            parseDate(
+              b?.fecha
+            )?.getTime() ||
+            0;
+
+          return aTime - bTime;
+        }
+      );
+
+  if (
+    sessionEvents.length === 0
+  ) {
+    throw new Error(
+      "Este turno no tiene eventos de auditoría para exportar."
+    );
+  }
+
+  const doc =
+    new jsPDF({
+      orientation:
+        "portrait",
+      unit: "mm",
+      format: "a4",
+      compress: true,
+    });
+
+  const pageWidth =
+    doc.internal.pageSize.getWidth();
+
+  const pageHeight =
+    doc.internal.pageSize.getHeight();
+
+  const margin = 14;
+  const contentWidth =
+    pageWidth -
+    margin * 2;
+
+  const footerTop =
+    pageHeight - 15;
+
+  let y = 0;
+
+  function drawPageHeader(
+    continuation = false
+  ) {
+    y = 16;
+
+    doc.setFont(
+      "helvetica",
+      "bold"
+    );
+
+    doc.setFontSize(
+      continuation
+        ? 11
+        : 16
+    );
+
+    doc.setTextColor(
+      ...COLORS.dark
+    );
+
+    doc.text(
+      cleanPdfText(
+        continuation
+          ? "Auditoría del turno - continuación"
+          : "Auditoría del turno"
+      ),
+      margin,
+      y
+    );
+
+    if (!continuation) {
+      y += 7;
+
+      doc.setFont(
+        "helvetica",
+        "bold"
+      );
+
+      doc.setFontSize(9);
+      doc.setTextColor(
+        ...COLORS.yellowDark
+      );
+
+      doc.text(
+        cleanPdfText(
+          shopName ||
+          "Mi Negocio"
+        ),
+        margin,
+        y
+      );
+
+      y += 5;
+
+      doc.setFont(
+        "helvetica",
+        "normal"
+      );
+
+      doc.setFontSize(7.5);
+      doc.setTextColor(
+        ...COLORS.muted
+      );
+
+      doc.text(
+        cleanPdfText(
+          `${formatDateTime(
+            session.openTime
+          )} - ${formatDateTime(
+            session.closeTime
+          )}`
+        ),
+        margin,
+        y
+      );
+
+      y += 4;
+
+      doc.text(
+        cleanPdfText(
+          `Sesión: ${session.id}`
+        ),
+        margin,
+        y
+      );
+
+      y += 5;
+
+      doc.setFillColor(
+        ...COLORS.light
+      );
+
+      doc.roundedRect(
+        margin,
+        y,
+        contentWidth,
+        13,
+        2.5,
+        2.5,
+        "F"
+      );
+
+      doc.setFont(
+        "helvetica",
+        "normal"
+      );
+
+      doc.setFontSize(7.2);
+      doc.setTextColor(
+        ...COLORS.muted
+      );
+
+      const note =
+        doc.splitTextToSize(
+          cleanPdfText(
+            "Este documento contiene únicamente la cronología de auditoría registrada para el turno. El reporte económico de caja se descarga por separado."
+          ),
+          contentWidth - 8
+        );
+
+      doc.text(
+        note,
+        margin + 4,
+        y + 5
+      );
+
+      y += 18;
+    } else {
+      y += 7;
+    }
+
+    doc.setDrawColor(
+      ...COLORS.yellow
+    );
+
+    doc.setLineWidth(0.8);
+    doc.line(
+      margin,
+      y,
+      pageWidth - margin,
+      y
+    );
+
+    y += 8;
+  }
+
+  function ensureAuditSpace(
+    needed
+  ) {
+    if (
+      y + needed <=
+      footerTop
+    ) {
+      return;
+    }
+
+    doc.addPage();
+    drawPageHeader(true);
+  }
+
+  drawPageHeader(false);
+
+  sessionEvents.forEach(
+    (event, index) => {
+      const meta =
+        AUDIT_ACTION_META[
+          event?.accion
+        ] || {
+          title:
+            event?.accion ||
+            "Evento de auditoría",
+          category:
+            "Auditoría",
+        };
+
+      const rows =
+        getAuditPdfDetailRows(
+          event
+        );
+
+      const operatorText =
+        `${event?.operadorNombre || "Operador"} - ${formatAuditRole(
+          event?.operadorRol
+        )}`;
+
+      const operatorLines =
+        doc.splitTextToSize(
+          cleanPdfText(
+            operatorText
+          ),
+          contentWidth - 34
+        );
+
+      const deviceText =
+        event?.deviceId
+          ? `Dispositivo: ${event.deviceId}`
+          : "";
+
+      const deviceLines =
+        deviceText
+          ? doc.splitTextToSize(
+              cleanPdfText(
+                deviceText
+              ),
+              contentWidth - 34
+            )
+          : [];
+
+      const rowLayouts =
+        rows.map(
+          ([label, value]) => {
+            const valueLines =
+              doc.splitTextToSize(
+                cleanPdfText(
+                  value
+                ),
+                contentWidth - 52
+              );
+
+            return {
+              label:
+                cleanPdfText(
+                  label
+                ),
+              valueLines,
+              height:
+                Math.max(
+                  4.2,
+                  valueLines.length *
+                    3.5
+                ),
+            };
+          }
+        );
+
+      const detailHeight =
+        rowLayouts.reduce(
+          (sum, row) =>
+            sum + row.height,
+          0
+        );
+
+      const cardHeight =
+        22 +
+        operatorLines.length * 3.3 +
+        deviceLines.length * 3.2 +
+        detailHeight +
+        (rows.length > 0
+          ? 5
+          : 1);
+
+      ensureAuditSpace(
+        cardHeight + 6
+      );
+
+      doc.setFillColor(
+        250,
+        250,
+        251
+      );
+
+      doc.setDrawColor(
+        ...COLORS.line
+      );
+
+      doc.setLineWidth(0.25);
+
+      doc.roundedRect(
+        margin,
+        y,
+        contentWidth,
+        cardHeight,
+        3,
+        3,
+        "FD"
+      );
+
+      doc.setFillColor(
+        ...COLORS.yellow
+      );
+
+      doc.roundedRect(
+        margin + 4,
+        y + 4,
+        12,
+        8,
+        2,
+        2,
+        "F"
+      );
+
+      doc.setFont(
+        "helvetica",
+        "bold"
+      );
+
+      doc.setFontSize(7.5);
+      doc.setTextColor(
+        ...COLORS.dark
+      );
+
+      doc.text(
+        String(
+          index + 1
+        ).padStart(
+          2,
+          "0"
+        ),
+        margin + 10,
+        y + 9.2,
+        {
+          align: "center",
+        }
+      );
+
+      const textX =
+        margin + 20;
+
+      doc.setFont(
+        "helvetica",
+        "bold"
+      );
+
+      doc.setFontSize(7.3);
+      doc.setTextColor(
+        ...COLORS.yellowDark
+      );
+
+      doc.text(
+        cleanPdfText(
+          `${meta.category} - ${formatAuditDateTime(
+            event?.fecha
+          )}`
+        ),
+        textX,
+        y + 6.2
+      );
+
+      doc.setFontSize(10.2);
+      doc.setTextColor(
+        ...COLORS.dark
+      );
+
+      doc.text(
+        cleanPdfText(
+          meta.title
+        ),
+        textX,
+        y + 11.3
+      );
+
+      let currentY =
+        y + 16.5;
+
+      doc.setFont(
+        "helvetica",
+        "normal"
+      );
+
+      doc.setFontSize(7.2);
+      doc.setTextColor(
+        ...COLORS.muted
+      );
+
+      doc.text(
+        operatorLines,
+        textX,
+        currentY
+      );
+
+      currentY +=
+        operatorLines.length *
+        3.3;
+
+      if (
+        deviceLines.length > 0
+      ) {
+        doc.text(
+          deviceLines,
+          textX,
+          currentY
+        );
+
+        currentY +=
+          deviceLines.length *
+          3.2;
+      }
+
+      if (
+        rowLayouts.length > 0
+      ) {
+        currentY += 2;
+
+        doc.setDrawColor(
+          ...COLORS.line
+        );
+
+        doc.setLineWidth(0.15);
+        doc.line(
+          textX,
+          currentY,
+          pageWidth -
+            margin -
+            4,
+          currentY
+        );
+
+        currentY += 4;
+      }
+
+      rowLayouts.forEach(
+        (row) => {
+          doc.setFont(
+            "helvetica",
+            "bold"
+          );
+
+          doc.setFontSize(7);
+          doc.setTextColor(
+            ...COLORS.muted
+          );
+
+          doc.text(
+            row.label,
+            textX,
+            currentY
+          );
+
+          doc.setFont(
+            "helvetica",
+            "normal"
+          );
+
+          doc.setTextColor(
+            ...COLORS.dark
+          );
+
+          doc.text(
+            row.valueLines,
+            textX + 32,
+            currentY
+          );
+
+          currentY +=
+            row.height;
+        }
+      );
+
+      y +=
+        cardHeight + 5;
+    }
+  );
+
+  const totalPages =
+    doc.getNumberOfPages();
+
+  const generatedAt =
+    formatDateTime(
+      new Date()
+    );
+
+  for (
+    let page = 1;
+    page <= totalPages;
+    page += 1
+  ) {
+    doc.setPage(page);
+
+    doc.setDrawColor(
+      ...COLORS.line
+    );
+
+    doc.setLineWidth(0.25);
+    doc.line(
+      margin,
+      pageHeight - 13,
+      pageWidth - margin,
+      pageHeight - 13
+    );
+
+    doc.setFont(
+      "helvetica",
+      "normal"
+    );
+
+    doc.setFontSize(6.5);
+    doc.setTextColor(
+      ...COLORS.muted
+    );
+
+    doc.text(
+      cleanPdfText(
+        `Generado ${generatedAt}`
+      ),
+      margin,
+      pageHeight - 8
+    );
+
+    doc.text(
+      `Pagina ${page} de ${totalPages}`,
+      pageWidth - margin,
+      pageHeight - 8,
+      {
+        align: "right",
+      }
+    );
+  }
+
+  const business =
+    safeFileSegment(
+      shopName
+    ) ||
+    "mi-negocio";
+
+  const date =
+    fileDate(
+      session.closeTime ||
+      session.openTime
+    );
+
+  const filename =
+    `${business}-auditoria-turno-${date}.pdf`;
+
+  doc.save(filename);
+
+  return filename;
+}

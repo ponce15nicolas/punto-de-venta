@@ -1567,11 +1567,20 @@ const AUDIT_ACTIONS = Object.freeze({
     CIERRE_CAJA:
         "cierre-caja",
 
+    VENTA_REALIZADA:
+        "venta-realizada",
+
     REPOSICION_STOCK:
         "reposicion-stock",
 
     EDICION_PRODUCTO:
         "edicion-producto",
+
+    ALTA_PRODUCTO:
+        "alta-producto",
+
+    ELIMINACION_PRODUCTO:
+        "eliminacion-producto",
 
     ELIMINACION_CIERRE_HISTORICO:
         "eliminacion-cierre-historico",
@@ -1709,6 +1718,7 @@ function crearEventoAuditoria(
         accion,
         detalle = {},
         deviceId = null,
+        sessionId = null,
     }
 ) {
     if (
@@ -1764,6 +1774,18 @@ function crearEventoAuditoria(
             fecha:
                 admin.firestore.FieldValue.serverTimestamp(),
 
+            /*
+             * sessionId es el vínculo canónico entre un evento
+             * de auditoría y un turno de caja. Puede ser null
+             * para acciones que ocurren fuera de una caja.
+             */
+            sessionId:
+                textoSeguro(
+                    sessionId,
+                    180
+                ) ||
+                null,
+
             detalle:
                 normalizarDetalleAuditoria(
                     detalle
@@ -1802,6 +1824,69 @@ async function registrarAuditoria(
         );
 
     return evento.ref.id;
+}
+
+/*
+ * Resuelve el turno de caja que está realmente abierto dentro
+ * de la misma transacción que modifica inventario.
+ *
+ * No confiamos en un sessionId enviado por el navegador.
+ * Si no hay una caja abierta válida, la operación continúa y
+ * la auditoría queda con sessionId null.
+ */
+async function obtenerSessionIdCajaAbiertaEnTransaccion(
+    transaction,
+    clienteRef
+) {
+    const configRef =
+        clienteRef
+            .collection(
+                "configuracion"
+            )
+            .doc(
+                "pos"
+            );
+
+    const configSnap =
+        await transaction.get(
+            configRef
+        );
+
+    const sessionId =
+        textoSeguro(
+            configSnap.data()
+                ?.openCashSessionId,
+            180
+        );
+
+    if (!sessionId) {
+        return null;
+    }
+
+    const sessionRef =
+        clienteRef
+            .collection(
+                "cajas"
+            )
+            .doc(
+                sessionId
+            );
+
+    const sessionSnap =
+        await transaction.get(
+            sessionRef
+        );
+
+    if (
+        !sessionSnap.exists ||
+        sessionSnap.data()
+            ?.status !==
+            "open"
+    ) {
+        return null;
+    }
+
+    return sessionId;
 }
 
 
@@ -5209,18 +5294,360 @@ exports.cerrarTodasLasSesiones =
  */
 
 /* =========================================================
+   PRODUCTOS — VALIDACIÓN + AUDITORÍA
+========================================================= */
+
+const INVENTORY_PRODUCT_TYPES =
+    new Set([
+        "unidad",
+        "peso",
+        "precio-libre",
+    ]);
+
+function redondearDineroInventario(
+    value
+) {
+    return (
+        Math.round(
+            (
+                Number(value) +
+                Number.EPSILON
+            ) *
+            100
+        ) /
+        100
+    );
+}
+
+function redondearCantidadInventario(
+    value
+) {
+    return (
+        Math.round(
+            (
+                Number(value) +
+                Number.EPSILON
+            ) *
+            1000
+        ) /
+        1000
+    );
+}
+
+function normalizarProductoInventario(
+    value
+) {
+    if (
+        !value ||
+        typeof value !==
+            "object" ||
+        Array.isArray(
+            value
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Datos del producto inválidos."
+        );
+    }
+
+    const barcode =
+        textoSeguro(
+            value.barcode,
+            180
+        );
+
+    const name =
+        textoSeguro(
+            value.name,
+            180
+        );
+
+    if (
+        !barcode ||
+        !name
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El código y el nombre del producto son obligatorios."
+        );
+    }
+
+    const tipoVenta =
+        INVENTORY_PRODUCT_TYPES
+            .has(
+                value.tipoVenta
+            )
+            ? value.tipoVenta
+            : "unidad";
+
+    const price =
+        tipoVenta ===
+            "precio-libre"
+            ? 0
+            : redondearDineroInventario(
+                value.price
+            );
+
+    let stock = 0;
+
+    if (
+        tipoVenta ===
+        "peso"
+    ) {
+        stock =
+            redondearCantidadInventario(
+                value.stock
+            );
+    } else if (
+        tipoVenta ===
+        "unidad"
+    ) {
+        stock =
+            Math.trunc(
+                Number(
+                    value.stock
+                )
+            );
+    }
+
+    if (
+        tipoVenta !==
+            "precio-libre" &&
+        (
+            !Number.isFinite(
+                price
+            ) ||
+            price < 0
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El precio del producto no es válido."
+        );
+    }
+
+    if (
+        tipoVenta !==
+            "precio-libre" &&
+        (
+            !Number.isFinite(
+                stock
+            ) ||
+            stock < 0
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El stock del producto no es válido."
+        );
+    }
+
+    const expiry =
+        textoSeguro(
+            value.expiry,
+            120
+        ) ||
+        null;
+
+    const unidadMedida =
+        tipoVenta ===
+            "peso"
+            ? (
+                textoSeguro(
+                    value.unidadMedida,
+                    40
+                ) ||
+                "kg"
+            )
+            : null;
+
+    return {
+        barcode,
+        name,
+        tipoVenta,
+        unidadMedida,
+        price,
+        stock,
+        expiry,
+    };
+}
+
+/* =========================================================
+   CREAR PRODUCTO + AUDITORÍA
+========================================================= */
+
+/*
+ * El alta pasa por backend para que producto y auditoría
+ * formen parte de la misma transacción. Si existe una caja
+ * abierta, el backend la vincula mediante sessionId.
+ */
+exports.crearProducto =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const producto =
+                normalizarProductoInventario(
+                    request.data?.product
+                );
+
+            const productoRef =
+                clienteRef
+                    .collection(
+                        "productos"
+                    )
+                    .doc(
+                        encodeURIComponent(
+                            producto.barcode
+                        )
+                    );
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const existingSnap =
+                            await transaction.get(
+                                productoRef
+                            );
+
+                        if (
+                            existingSnap.exists
+                        ) {
+                            throw new HttpsError(
+                                "already-exists",
+                                "Ya existe un producto con ese código.",
+                                {
+                                    motivo:
+                                        "product-barcode-conflict",
+                                }
+                            );
+                        }
+
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
+
+                        transaction.set(
+                            productoRef,
+                            {
+                                ...producto,
+
+                                createdAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+
+                                operador:
+                                    operadorAutorizado,
+
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .ALTA_PRODUCTO,
+
+                                sessionId,
+
+                                deviceId,
+
+                                detalle: {
+                                    barcode:
+                                        producto.barcode,
+
+                                    productoNombre:
+                                        producto.name,
+
+                                    tipoVenta:
+                                        producto.tipoVenta,
+
+                                    precio:
+                                        producto.price,
+
+                                    stock:
+                                        producto.stock,
+
+                                    vencimiento:
+                                        producto.expiry,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            product:
+                                producto,
+                        };
+                    }
+                );
+
+            return {
+                ok:
+                    true,
+
+                product:
+                    result.product,
+            };
+        }
+    );
+
+/* =========================================================
    EDITAR PRODUCTO + AUDITORÍA
 ========================================================= */
 
 /*
- * Sólo la EDICIÓN pasa por esta callable.
- *
- * El alta de un producto sigue fuera de esta auditoría porque
- * la acción definida es "edicion-producto".
- *
  * La edición y el evento de auditoría se escriben en la misma
- * transacción. Administrador y Encargado pueden editar.
+ * transacción. Si existe una caja abierta, el backend la
+ * vincula mediante sessionId.
  */
+
 exports.editarProducto =
     onCall(
         CALLABLE_OPTIONS,
@@ -5261,23 +5688,6 @@ exports.editarProducto =
                     }
                 );
 
-            const productoEntrada =
-                request.data?.product;
-
-            if (
-                !productoEntrada ||
-                typeof productoEntrada !==
-                    "object" ||
-                Array.isArray(
-                    productoEntrada
-                )
-            ) {
-                throw new HttpsError(
-                    "invalid-argument",
-                    "Datos del producto inválidos."
-                );
-            }
-
             const previousBarcode =
                 textoSeguro(
                     request.data
@@ -5285,154 +5695,27 @@ exports.editarProducto =
                     180
                 );
 
-            const barcode =
-                textoSeguro(
-                    productoEntrada
-                        ?.barcode,
-                    180
-                );
-
-            const name =
-                textoSeguro(
-                    productoEntrada
-                        ?.name,
-                    180
-                );
-
-            if (
-                !previousBarcode ||
-                !barcode ||
-                !name
-            ) {
+            if (!previousBarcode) {
                 throw new HttpsError(
                     "invalid-argument",
-                    "El producto, su código anterior y su nombre son obligatorios."
+                    "El código anterior del producto es obligatorio."
                 );
             }
 
-            const tiposPermitidos =
-                new Set([
-                    "unidad",
-                    "peso",
-                    "precio-libre",
-                ]);
-
-            const tipoVenta =
-                tiposPermitidos.has(
-                    productoEntrada
-                        ?.tipoVenta
-                )
-                    ? productoEntrada
-                        .tipoVenta
-                    : "unidad";
-
-            const roundMoney =
-                (value) =>
-                    Math.round(
-                        (
-                            Number(value) +
-                            Number.EPSILON
-                        ) *
-                        100
-                    ) /
-                    100;
-
-            const roundQuantity =
-                (value) =>
-                    Math.round(
-                        (
-                            Number(value) +
-                            Number.EPSILON
-                        ) *
-                        1000
-                    ) /
-                    1000;
-
-            const price =
-                tipoVenta ===
-                    "precio-libre"
-                    ? 0
-                    : roundMoney(
-                        productoEntrada
-                            ?.price
-                    );
-
-            let stock = 0;
-
-            if (
-                tipoVenta ===
-                "peso"
-            ) {
-                stock =
-                    roundQuantity(
-                        productoEntrada
-                            ?.stock
-                    );
-            } else if (
-                tipoVenta ===
-                "unidad"
-            ) {
-                stock =
-                    Math.trunc(
-                        Number(
-                            productoEntrada
-                                ?.stock
-                        )
-                    );
-            }
-
-            if (
-                tipoVenta !==
-                    "precio-libre" &&
-                (
-                    !Number.isFinite(
-                        price
-                    ) ||
-                    price < 0
-                )
-            ) {
-                throw new HttpsError(
-                    "invalid-argument",
-                    "El precio del producto no es válido."
+            const producto =
+                normalizarProductoInventario(
+                    request.data?.product
                 );
-            }
 
-            if (
-                tipoVenta !==
-                    "precio-libre" &&
-                (
-                    !Number.isFinite(
-                        stock
-                    ) ||
-                    stock < 0
-                )
-            ) {
-                throw new HttpsError(
-                    "invalid-argument",
-                    "El stock del producto no es válido."
-                );
-            }
-
-            const expiry =
-                textoSeguro(
-                    productoEntrada
-                        ?.expiry,
-                    120
-                ) ||
-                null;
-
-            const unidadMedida =
-                tipoVenta ===
-                    "peso"
-                    ? (
-                        textoSeguro(
-                            productoEntrada
-                                ?.unidadMedida,
-                            40
-                        ) ||
-                        "kg"
-                    )
-                    : null;
+            const {
+                barcode,
+                name,
+                tipoVenta,
+                unidadMedida,
+                price,
+                stock,
+                expiry,
+            } = producto;
 
             const previousRef =
                 clienteRef
@@ -5440,7 +5723,9 @@ exports.editarProducto =
                         "productos"
                     )
                     .doc(
-                        previousBarcode
+                        encodeURIComponent(
+                            previousBarcode
+                        )
                     );
 
             const nextRef =
@@ -5449,7 +5734,9 @@ exports.editarProducto =
                         "productos"
                     )
                     .doc(
-                        barcode
+                        encodeURIComponent(
+                            barcode
+                        )
                     );
 
             const result =
@@ -5500,6 +5787,12 @@ exports.editarProducto =
                                 );
                             }
                         }
+
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
 
                         const anterior =
                             previousSnap.data() ||
@@ -5572,6 +5865,8 @@ exports.editarProducto =
                                 accion:
                                     AUDIT_ACTIONS
                                         .EDICION_PRODUCTO,
+
+                                sessionId,
 
                                 deviceId,
 
@@ -5654,6 +5949,180 @@ exports.editarProducto =
         }
     );
 
+/* =========================================================
+   ELIMINAR PRODUCTO + AUDITORÍA
+========================================================= */
+
+/*
+ * La eliminación pasa por backend. El producto y su evento de
+ * auditoría se confirman dentro de la misma transacción.
+ */
+exports.eliminarProducto =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const barcode =
+                textoSeguro(
+                    request.data?.barcode,
+                    180
+                );
+
+            if (!barcode) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "barcode es obligatorio."
+                );
+            }
+
+            const productoRef =
+                clienteRef
+                    .collection(
+                        "productos"
+                    )
+                    .doc(
+                        encodeURIComponent(
+                            barcode
+                        )
+                    );
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const productoSnap =
+                            await transaction.get(
+                                productoRef
+                            );
+
+                        if (
+                            !productoSnap.exists
+                        ) {
+                            return {
+                                alreadyDeleted:
+                                    true,
+                            };
+                        }
+
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
+
+                        const producto =
+                            productoSnap.data() ||
+                            {};
+
+                        transaction.delete(
+                            productoRef
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+
+                                operador:
+                                    operadorAutorizado,
+
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .ELIMINACION_PRODUCTO,
+
+                                sessionId,
+
+                                deviceId,
+
+                                detalle: {
+                                    barcode,
+
+                                    productoNombre:
+                                        textoSeguro(
+                                            producto.name,
+                                            180
+                                        ),
+
+                                    tipoVenta:
+                                        textoSeguro(
+                                            producto.tipoVenta,
+                                            40
+                                        ) ||
+                                        "unidad",
+
+                                    precio:
+                                        Number(
+                                            producto.price ||
+                                            0
+                                        ),
+
+                                    stock:
+                                        Number(
+                                            producto.stock ||
+                                            0
+                                        ),
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            alreadyDeleted:
+                                false,
+                        };
+                    }
+                );
+
+            return {
+                ok:
+                    true,
+
+                barcode,
+
+                alreadyDeleted:
+                    result.alreadyDeleted,
+            };
+        }
+    );
+
 
 exports.reponerStock =
     onCall(
@@ -5731,7 +6200,9 @@ exports.reponerStock =
                         "productos"
                     )
                     .doc(
-                        barcode
+                        encodeURIComponent(
+                            barcode
+                        )
                     );
 
             const result =
@@ -5849,6 +6320,12 @@ exports.reponerStock =
                                     cantidadAgregada
                                 );
 
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
+
                         transaction.update(
                             productoRef,
                             {
@@ -5870,6 +6347,8 @@ exports.reponerStock =
                                 accion:
                                     AUDIT_ACTIONS
                                         .REPOSICION_STOCK,
+
+                                sessionId,
 
                                 deviceId,
 
@@ -5907,6 +6386,1035 @@ exports.reponerStock =
                             stockAnterior,
 
                             stockNuevo,
+                        };
+                    }
+                );
+
+            return {
+                ok:
+                    true,
+
+                ...result,
+            };
+        }
+    );
+
+
+/* =========================================================
+   REGISTRAR VENTA + AUDITORÍA
+========================================================= */
+
+/*
+ * La venta completa pasa por backend para que:
+ *
+ * - la licencia y la sesión interna se validen;
+ * - la caja activa se resuelva desde Firestore;
+ * - el precio y el stock se contrasten con el catálogo real;
+ * - venta, descuento de stock, totales de caja y auditoría
+ *   se confirmen dentro de una única transacción;
+ * - un reintento con el mismo saleId no duplique la venta.
+ */
+
+const POS_VENTA_TIPOS =
+    new Set([
+        "unidad",
+        "peso",
+        "precio-libre",
+    ]);
+
+const POS_METODOS_PAGO =
+    new Set([
+        "efectivo",
+        "transferencia",
+        "qr",
+        "tarjeta",
+    ]);
+
+const POS_MAX_LINEAS_VENTA = 100;
+
+function redondearDineroVenta(
+    value
+) {
+    return Math.round(
+        (
+            Number(value) +
+            Number.EPSILON
+        ) *
+        100
+    ) / 100;
+}
+
+function redondearCantidadVenta(
+    value
+) {
+    return Math.round(
+        (
+            Number(value) +
+            Number.EPSILON
+        ) *
+        1000
+    ) / 1000;
+}
+
+function normalizarFechaIsoVenta(
+    value
+) {
+    const date =
+        value
+            ? new Date(value)
+            : new Date();
+
+    if (
+        Number.isNaN(
+            date.getTime()
+        )
+    ) {
+        return new Date()
+            .toISOString();
+    }
+
+    return date.toISOString();
+}
+
+function normalizarItemsVenta(
+    rawItems
+) {
+    if (
+        !Array.isArray(
+            rawItems
+        ) ||
+        rawItems.length === 0
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El carrito está vacío."
+        );
+    }
+
+    if (
+        rawItems.length >
+        POS_MAX_LINEAS_VENTA
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "La venta contiene demasiados productos."
+        );
+    }
+
+    return rawItems.map(
+        (
+            rawItem,
+            index
+        ) => {
+            if (
+                !esObjetoPlano(
+                    rawItem
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    `El producto ${index + 1} de la venta es inválido.`
+                );
+            }
+
+            const barcode =
+                textoSeguro(
+                    rawItem.barcode,
+                    180
+                );
+
+            const name =
+                textoSeguro(
+                    rawItem.name,
+                    180
+                );
+
+            const tipoVenta =
+                textoSeguro(
+                    rawItem.tipoVenta,
+                    40
+                );
+
+            if (
+                !barcode ||
+                !name ||
+                !POS_VENTA_TIPOS.has(
+                    tipoVenta
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    `Hay datos inválidos en el producto ${index + 1}.`
+                );
+            }
+
+            let qty;
+
+            if (
+                tipoVenta ===
+                "peso"
+            ) {
+                qty =
+                    redondearCantidadVenta(
+                        rawItem.qty
+                    );
+            } else if (
+                tipoVenta ===
+                "unidad"
+            ) {
+                qty =
+                    Math.trunc(
+                        Number(
+                            rawItem.qty
+                        )
+                    );
+            } else {
+                qty = 1;
+            }
+
+            if (
+                !Number.isFinite(
+                    qty
+                ) ||
+                qty <= 0
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    `Cantidad inválida para ${name}.`
+                );
+            }
+
+            const price =
+                redondearDineroVenta(
+                    rawItem.price
+                );
+
+            if (
+                !Number.isFinite(
+                    price
+                ) ||
+                price < 0
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    `Precio inválido para ${name}.`
+                );
+            }
+
+            return {
+                barcode,
+                name,
+                tipoVenta,
+
+                unidadMedida:
+                    tipoVenta ===
+                    "peso"
+                        ? textoSeguro(
+                            rawItem.unidadMedida,
+                            20
+                        ) ||
+                        "kg"
+                        : null,
+
+                price,
+                qty,
+            };
+        }
+    );
+}
+
+exports.registrarVenta =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const saleId =
+                validarId(
+                    request.data?.saleId,
+                    "saleId"
+                );
+
+            const itemsEntrada =
+                normalizarItemsVenta(
+                    request.data?.items
+                );
+
+            const timestamp =
+                normalizarFechaIsoVenta(
+                    request.data
+                        ?.timestamp
+                );
+
+            const configRef =
+                clienteRef
+                    .collection(
+                        "configuracion"
+                    )
+                    .doc(
+                        "pos"
+                    );
+
+            const saleRef =
+                clienteRef
+                    .collection(
+                        "ventas"
+                    )
+                    .doc(
+                        saleId
+                    );
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        /*
+                         * Todas las lecturas se completan antes de
+                         * iniciar las escrituras de la transacción.
+                         */
+                        const configSnap =
+                            await transaction.get(
+                                configRef
+                            );
+
+                        const sessionId =
+                            textoSeguro(
+                                configSnap.data()
+                                    ?.openCashSessionId,
+                                180
+                            );
+
+                        if (!sessionId) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Abrí la caja primero.",
+                                {
+                                    motivo:
+                                        "cash-not-open",
+                                }
+                            );
+                        }
+
+                        const sessionRef =
+                            clienteRef
+                                .collection(
+                                    "cajas"
+                                )
+                                .doc(
+                                    sessionId
+                                );
+
+                        const sessionSnap =
+                            await transaction.get(
+                                sessionRef
+                            );
+
+                        if (
+                            !sessionSnap.exists ||
+                            sessionSnap.data()
+                                ?.status !==
+                                "open"
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La caja ya no se encuentra abierta.",
+                                {
+                                    motivo:
+                                        "cash-not-open",
+                                }
+                            );
+                        }
+
+                        const existingSaleSnap =
+                            await transaction.get(
+                                saleRef
+                            );
+
+                        if (
+                            existingSaleSnap.exists
+                        ) {
+                            const existingSale =
+                                existingSaleSnap.data() ||
+                                {};
+
+                            if (
+                                textoSeguro(
+                                    existingSale.sessionId,
+                                    180
+                                ) !==
+                                sessionId
+                            ) {
+                                throw new HttpsError(
+                                    "already-exists",
+                                    "El identificador de venta ya fue utilizado."
+                                );
+                            }
+
+                            return {
+                                alreadyExists:
+                                    true,
+
+                                sale: {
+                                    id:
+                                        existingSaleSnap.id,
+
+                                    ...existingSale,
+
+                                    createdAt:
+                                        null,
+                                },
+                            };
+                        }
+
+                        const requiredByBarcode =
+                            new Map();
+
+                        for (
+                            const item of
+                            itemsEntrada
+                        ) {
+                            const current =
+                                requiredByBarcode.get(
+                                    item.barcode
+                                ) ||
+                                0;
+
+                            const required =
+                                item.tipoVenta ===
+                                    "precio-libre"
+                                    ? 0
+                                    : item.qty;
+
+                            requiredByBarcode.set(
+                                item.barcode,
+                                redondearCantidadVenta(
+                                    current +
+                                    required
+                                )
+                            );
+                        }
+
+                        const productEntries =
+                            new Map();
+
+                        for (
+                            const [
+                                barcode,
+                                required,
+                            ] of
+                            requiredByBarcode
+                        ) {
+                            const productRef =
+                                clienteRef
+                                    .collection(
+                                        "productos"
+                                    )
+                                    .doc(
+                                        encodeURIComponent(
+                                            barcode
+                                        )
+                                    );
+
+                            const productSnap =
+                                await transaction.get(
+                                    productRef
+                                );
+
+                            if (
+                                !productSnap.exists
+                            ) {
+                                throw new HttpsError(
+                                    "not-found",
+                                    `Producto no encontrado: ${barcode}.`,
+                                    {
+                                        motivo:
+                                            "product-not-found",
+
+                                        barcode,
+                                    }
+                                );
+                            }
+
+                            productEntries.set(
+                                barcode,
+                                {
+                                    ref:
+                                        productRef,
+
+                                    data:
+                                        productSnap.data() ||
+                                        {},
+
+                                    required,
+                                }
+                            );
+                        }
+
+                        /*
+                         * Ya no se realizan más lecturas a partir
+                         * de este punto.
+                         */
+
+                        for (
+                            const [
+                                barcode,
+                                entry,
+                            ] of
+                            productEntries
+                        ) {
+                            const product =
+                                entry.data;
+
+                            const tipoVenta =
+                                textoSeguro(
+                                    product.tipoVenta,
+                                    40
+                                );
+
+                            if (
+                                !POS_VENTA_TIPOS.has(
+                                    tipoVenta
+                                )
+                            ) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    `El producto ${product.name || barcode} cambió. Volvé a agregarlo al ticket.`,
+                                    {
+                                        motivo:
+                                            "product-changed",
+
+                                        barcode,
+                                    }
+                                );
+                            }
+
+                            const cartItems =
+                                itemsEntrada.filter(
+                                    (item) =>
+                                        item.barcode ===
+                                        barcode
+                                );
+
+                            if (
+                                cartItems.length === 0 ||
+                                cartItems.some(
+                                    (item) =>
+                                        item.tipoVenta !==
+                                        tipoVenta
+                                )
+                            ) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    `El producto ${product.name || barcode} cambió. Volvé a agregarlo al ticket.`,
+                                    {
+                                        motivo:
+                                            "product-changed",
+
+                                        barcode,
+                                    }
+                                );
+                            }
+
+                            if (
+                                tipoVenta ===
+                                "precio-libre"
+                            ) {
+                                continue;
+                            }
+
+                            const currentPrice =
+                                redondearDineroVenta(
+                                    product.price
+                                );
+
+                            if (
+                                !Number.isFinite(
+                                    currentPrice
+                                ) ||
+                                currentPrice < 0 ||
+                                cartItems.some(
+                                    (item) =>
+                                        Math.abs(
+                                            currentPrice -
+                                            item.price
+                                        ) >
+                                        0.009
+                                )
+                            ) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    `El precio de ${product.name || barcode} cambió. Volvé a agregarlo al ticket.`,
+                                    {
+                                        motivo:
+                                            "product-changed",
+
+                                        barcode,
+                                    }
+                                );
+                            }
+
+                            const currentStock =
+                                Number(
+                                    product.stock
+                                );
+
+                            if (
+                                !Number.isFinite(
+                                    currentStock
+                                ) ||
+                                currentStock +
+                                    0.000001 <
+                                    entry.required
+                            ) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    `Stock insuficiente para ${product.name || barcode}.`,
+                                    {
+                                        motivo:
+                                            "insufficient-stock",
+
+                                        barcode,
+
+                                        required:
+                                            entry.required,
+
+                                        available:
+                                            Number.isFinite(
+                                                currentStock
+                                            )
+                                                ? currentStock
+                                                : 0,
+                                    }
+                                );
+                            }
+                        }
+
+                        const items =
+                            itemsEntrada.map(
+                                (item) => {
+                                    const product =
+                                        productEntries.get(
+                                            item.barcode
+                                        )?.data ||
+                                        {};
+
+                                    if (
+                                        item.tipoVenta ===
+                                        "precio-libre"
+                                    ) {
+                                        const subtotal =
+                                            redondearDineroVenta(
+                                                item.qty *
+                                                item.price
+                                            );
+
+                                        if (
+                                            subtotal <= 0
+                                        ) {
+                                            throw new HttpsError(
+                                                "invalid-argument",
+                                                `Importe inválido para ${item.name}.`
+                                            );
+                                        }
+
+                                        return {
+                                            ...item,
+
+                                            name:
+                                                textoSeguro(
+                                                    product.name,
+                                                    180
+                                                ) ||
+                                                item.name,
+
+                                            subtotal,
+                                        };
+                                    }
+
+
+                                    const price =
+                                        redondearDineroVenta(
+                                            product.price
+                                        );
+
+                                    const subtotal =
+                                        redondearDineroVenta(
+                                            item.qty *
+                                            price
+                                        );
+
+                                    if (
+                                        subtotal <= 0
+                                    ) {
+                                        throw new HttpsError(
+                                            "invalid-argument",
+                                            `Importe inválido para ${product.name || item.name}.`
+                                        );
+                                    }
+
+                                    return {
+                                        ...item,
+
+                                        name:
+                                            textoSeguro(
+                                                product.name,
+                                                180
+                                            ) ||
+                                            item.name,
+
+                                        price,
+                                        subtotal,
+                                    };
+                                }
+                            );
+
+                        const total =
+                            redondearDineroVenta(
+                                items.reduce(
+                                    (
+                                        sum,
+                                        item
+                                    ) =>
+                                        sum +
+                                        item.subtotal,
+                                    0
+                                )
+                            );
+
+                        if (
+                            !Number.isFinite(
+                                total
+                            ) ||
+                            total <= 0
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                "El total de la venta debe ser mayor a cero."
+                            );
+                        }
+
+                        const rawMethod =
+                            textoSeguro(
+                                request.data
+                                    ?.payment
+                                    ?.method,
+                                40
+                            ) ||
+                            "efectivo";
+
+                        if (
+                            !POS_METODOS_PAGO.has(
+                                rawMethod
+                            )
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                "El método de pago no es válido."
+                            );
+                        }
+
+                        const receivedRaw =
+                            rawMethod ===
+                                "efectivo"
+                                ? Number(
+                                    request.data
+                                        ?.payment
+                                        ?.received ??
+                                    total
+                                )
+                                : total;
+
+                        const received =
+                            redondearDineroVenta(
+                                receivedRaw
+                            );
+
+                        if (
+                            !Number.isFinite(
+                                received
+                            ) ||
+                            (
+                                rawMethod ===
+                                    "efectivo" &&
+                                received <
+                                    total
+                            )
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                "El monto recibido es menor al total."
+                            );
+                        }
+
+                        const change =
+                            rawMethod ===
+                                "efectivo"
+                                ? redondearDineroVenta(
+                                    received -
+                                    total
+                                )
+                                : 0;
+
+                        const sessionData =
+                            sessionSnap.data() ||
+                            {};
+
+                        const paymentTotals = {
+                            efectivo:
+                                redondearDineroVenta(
+                                    sessionData
+                                        ?.paymentTotals
+                                        ?.efectivo ||
+                                    0
+                                ),
+
+                            transferencia:
+                                redondearDineroVenta(
+                                    sessionData
+                                        ?.paymentTotals
+                                        ?.transferencia ||
+                                    0
+                                ),
+
+                            qr:
+                                redondearDineroVenta(
+                                    sessionData
+                                        ?.paymentTotals
+                                        ?.qr ||
+                                    0
+                                ),
+
+                            tarjeta:
+                                redondearDineroVenta(
+                                    sessionData
+                                        ?.paymentTotals
+                                        ?.tarjeta ||
+                                    0
+                                ),
+                        };
+
+                        paymentTotals[
+                            rawMethod
+                        ] =
+                            redondearDineroVenta(
+                                paymentTotals[
+                                    rawMethod
+                                ] +
+                                total
+                            );
+
+                        const nextTotalSales =
+                            redondearDineroVenta(
+                                Number(
+                                    sessionData.totalSales ||
+                                    0
+                                ) +
+                                total
+                            );
+
+                        const nextSalesCount =
+                            Math.max(
+                                0,
+                                Math.trunc(
+                                    Number(
+                                        sessionData.salesCount ||
+                                        0
+                                    )
+                                )
+                            ) +
+                            1;
+
+                        const sale = {
+                            id:
+                                saleId,
+
+                            timestamp,
+
+                            items,
+
+                            total,
+
+                            sessionId,
+
+                            payment: {
+                                method:
+                                    rawMethod,
+
+                                received,
+
+                                change,
+                            },
+
+                            deviceId,
+
+                            createdAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                        };
+
+                        /*
+                         * A partir de aquí comienzan las escrituras.
+                         */
+                        transaction.set(
+                            saleRef,
+                            sale
+                        );
+
+                        for (
+                            const [
+                                ,
+                                entry,
+                            ] of
+                            productEntries
+                        ) {
+                            const tipoVenta =
+                                textoSeguro(
+                                    entry.data
+                                        .tipoVenta,
+                                    40
+                                );
+
+                            if (
+                                tipoVenta ===
+                                "precio-libre"
+                            ) {
+                                continue;
+                            }
+
+                            const currentStock =
+                                Number(
+                                    entry.data.stock
+                                );
+
+                            const nextStockRaw =
+                                currentStock -
+                                entry.required;
+
+                            const nextStock =
+                                tipoVenta ===
+                                    "peso"
+                                    ? redondearCantidadVenta(
+                                        Math.max(
+                                            0,
+                                            nextStockRaw
+                                        )
+                                    )
+                                    : Math.max(
+                                        0,
+                                        Math.trunc(
+                                            nextStockRaw
+                                        )
+                                    );
+
+                            transaction.update(
+                                entry.ref,
+                                {
+                                    stock:
+                                        nextStock,
+
+                                    updatedAt:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }
+                            );
+                        }
+
+                        transaction.update(
+                            sessionRef,
+                            {
+                                totalSales:
+                                    nextTotalSales,
+
+                                salesCount:
+                                    nextSalesCount,
+
+                                paymentTotals,
+
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+
+                                operador:
+                                    operadorAutorizado,
+
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .VENTA_REALIZADA,
+
+                                sessionId,
+
+                                deviceId,
+
+                                detalle: {
+                                    cajaId:
+                                        sessionId,
+
+                                    ventaId:
+                                        saleId,
+
+                                    total,
+
+                                    metodoPago:
+                                        rawMethod,
+
+                                    cantidadItems:
+                                        items.length,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            alreadyExists:
+                                false,
+
+                            sale: {
+                                ...sale,
+
+                                createdAt:
+                                    null,
+                            },
                         };
                     }
                 );
@@ -6226,6 +7734,8 @@ exports.abrirCaja =
                                 accion:
                                     AUDIT_ACTIONS
                                         .APERTURA_CAJA,
+
+                                sessionId,
 
                                 deviceId,
 
@@ -6573,6 +8083,8 @@ exports.cerrarCaja =
                                 accion:
                                     AUDIT_ACTIONS
                                         .CIERRE_CAJA,
+
+                                sessionId,
 
                                 deviceId,
 

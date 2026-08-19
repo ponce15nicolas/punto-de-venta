@@ -7,9 +7,11 @@ import {
   onSnapshot,
   orderBy,
   query,
+  where,
 } from "firebase/firestore";
 
 import { db } from "../../firebase/config";
+import { auditoriaPath } from "./posPaths";
 
 const MAX_AUDIT_EVENTS = 100;
 
@@ -51,6 +53,8 @@ function normalizeEvent(snapshotDoc) {
     operadorNombre: String(data.operadorNombre || "Operador").trim(),
     operadorRol: String(data.operadorRol || "").trim(),
     fecha: normalizeDate(data.fecha),
+    sessionId:
+      String(data.sessionId || "").trim() || null,
     detalle:
       data.detalle &&
       typeof data.detalle === "object" &&
@@ -61,14 +65,21 @@ function normalizeEvent(snapshotDoc) {
   };
 }
 
+function getAuditCollection(clienteId) {
+  const cleanClienteId =
+    requireString(clienteId, "clienteId");
+
+  return collection(
+    db,
+    ...auditoriaPath(cleanClienteId)
+  );
+}
+
 export function subscribeAuditEvents(
   clienteId,
   onData,
   onError = console.error
 ) {
-  const cleanClienteId =
-    requireString(clienteId, "clienteId");
-
   if (typeof onData !== "function") {
     throw new Error(
       "subscribeAuditEvents necesita onData"
@@ -76,18 +87,59 @@ export function subscribeAuditEvents(
   }
 
   const auditRef =
-    collection(
-      db,
-      "clientes",
-      cleanClienteId,
-      "auditoria"
-    );
+    getAuditCollection(clienteId);
 
   const auditQuery =
     query(
       auditRef,
       orderBy("fecha", "desc"),
       limit(MAX_AUDIT_EVENTS)
+    );
+
+  return onSnapshot(
+    auditQuery,
+    (snapshot) => {
+      onData(
+        snapshot.docs.map(
+          normalizeEvent
+        )
+      );
+    },
+    onError
+  );
+}
+
+/* =========================================================
+   AUDITORÍA COMPLETA DE UN TURNO
+========================================================= */
+
+export function subscribeSessionAuditEvents(
+  clienteId,
+  sessionId,
+  onData,
+  onError = console.error
+) {
+  const cleanSessionId =
+    requireString(sessionId, "sessionId");
+
+  if (typeof onData !== "function") {
+    throw new Error(
+      "subscribeSessionAuditEvents necesita onData"
+    );
+  }
+
+  const auditRef =
+    getAuditCollection(clienteId);
+
+  const auditQuery =
+    query(
+      auditRef,
+      where(
+        "sessionId",
+        "==",
+        cleanSessionId
+      ),
+      orderBy("fecha", "asc")
     );
 
   return onSnapshot(
