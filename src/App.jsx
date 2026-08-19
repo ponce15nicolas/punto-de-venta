@@ -13,6 +13,7 @@ import { useLicenseCheck } from "./hooks/useLicenseCheck";
 import Header from "./components/Header";
 import BottomNav from "./components/BottomNav";
 import Toast from "./components/Toast";
+import UpdateNotice from "./components/UpdateNotice";
 import LicenseGate from "./components/LicenseGate";
 import { useOperator } from "./components/OperatorGate";
 import AdminRoute from "./components/AdminRoute";
@@ -360,6 +361,8 @@ function PosApp({ license }) {
         toast={pos.toastMsg}
         onDone={pos.clearToast}
       />
+
+      <UpdateNotice />
     </div>
   );
 }
