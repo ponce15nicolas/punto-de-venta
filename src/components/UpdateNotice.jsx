@@ -204,10 +204,46 @@ export default function UpdateNotice() {
     availableBuildId !==
       dismissedBuildId;
 
+  useEffect(() => {
+    if (!visible) {
+      return undefined;
+    }
+
+    const previousOverflow =
+      document.body.style.overflow;
+
+    document.body.style.overflow =
+      "hidden";
+
+    return () => {
+      document.body.style.overflow =
+        previousOverflow;
+    };
+  }, [visible]);
+
   return (
     <AnimatePresence>
       {visible && (
-        <motion.aside
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{
+              duration: 0.18,
+              ease: "easeOut",
+            }}
+            className="
+              fixed
+              inset-0
+              z-[70]
+              bg-black/40
+              backdrop-blur-[6px]
+            "
+            aria-hidden="true"
+          />
+
+          <motion.aside
           initial={{
             opacity: 0,
             y: 18,
@@ -229,7 +265,7 @@ export default function UpdateNotice() {
           }}
           className="
             fixed
-            bottom-[calc(88px+env(safe-area-inset-bottom))]
+            bottom-[calc(112px+env(safe-area-inset-bottom))]
             left-1/2
             z-[80]
             w-[calc(100%-28px)]
@@ -242,10 +278,12 @@ export default function UpdateNotice() {
             bg-[#151A22]/95
             shadow-[0_22px_70px_rgba(0,0,0,0.5)]
             backdrop-blur-xl
-            sm:bottom-6
+            sm:bottom-[92px]
           "
-          role="status"
-          aria-live="polite"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="update-notice-title"
+          aria-describedby="update-notice-description"
         >
           <div
             className="
@@ -293,6 +331,7 @@ export default function UpdateNotice() {
                 </p>
 
                 <h3
+                  id="update-notice-title"
                   className="
                     mt-1
                     text-[15px]
@@ -305,6 +344,7 @@ export default function UpdateNotice() {
                 </h3>
 
                 <p
+                  id="update-notice-description"
                   className="
                     mt-1.5
                     text-xs
@@ -377,7 +417,8 @@ export default function UpdateNotice() {
               </button>
             </div>
           </div>
-        </motion.aside>
+          </motion.aside>
+        </>
       )}
     </AnimatePresence>
   );
