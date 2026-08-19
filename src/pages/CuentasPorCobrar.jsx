@@ -199,6 +199,56 @@ function getSummary(accounts) {
   };
 }
 
+const PAYMENT_METHODS = [
+  {
+    id: "efectivo",
+    label: "Efectivo",
+  },
+  {
+    id: "transferencia",
+    label: "Transferencia",
+  },
+  {
+    id: "qr",
+    label: "QR",
+  },
+  {
+    id: "tarjeta",
+    label: "Tarjeta",
+  },
+];
+
+function formatPaymentDate(value) {
+  if (!value) {
+    return "Sin fecha";
+  }
+
+  const date =
+    value instanceof Date
+      ? value
+      : new Date(value);
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return "Sin fecha";
+  }
+
+  return new Intl.DateTimeFormat(
+    "es-AR",
+    {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }
+  ).format(date);
+}
+
 const FILTERS = [
   {
     id: "pendientes",
@@ -254,6 +304,28 @@ export default function CuentasPorCobrar({
 
   const [selected, setSelected] =
     useState(null);
+
+  const [detailMode, setDetailMode] =
+    useState("detail");
+
+  const selectedAccount =
+    useMemo(() => {
+      if (!selected?.id) {
+        return null;
+      }
+
+      return (
+        accounts.find(
+          (account) =>
+            account?.id ===
+            selected.id
+        ) ||
+        selected
+      );
+    }, [
+      accounts,
+      selected,
+    ]);
 
   const filtered =
     useMemo(() => {
@@ -686,11 +758,14 @@ export default function CuentasPorCobrar({
                 key={account.id}
                 account={account}
                 index={index}
-                onClick={() =>
+                onClick={() => {
+                  setDetailMode(
+                    "detail"
+                  );
                   setSelected(
                     account
-                  )
-                }
+                  );
+                }}
               />
             )
           )}
@@ -727,15 +802,60 @@ export default function CuentasPorCobrar({
       ===================================================== */}
 
       <Modal
-        open={Boolean(selected)}
-        onClose={() =>
-          setSelected(null)
+        open={Boolean(
+          selectedAccount
+        )}
+        onClose={() => {
+          setSelected(null);
+          setDetailMode(
+            "detail"
+          );
+        }}
+        title={
+          detailMode ===
+          "payment"
+            ? "Registrar pago"
+            : "Detalle de cuenta"
         }
-        title="Detalle de cuenta"
       >
-        {selected && (
+        {selectedAccount &&
+          detailMode ===
+            "detail" && (
           <AccountDetail
-            account={selected}
+            account={
+              selectedAccount
+            }
+            hasOpenCash={
+              Boolean(
+                pos?.openSession
+              )
+            }
+            onPay={() =>
+              setDetailMode(
+                "payment"
+              )
+            }
+          />
+        )}
+
+        {selectedAccount &&
+          detailMode ===
+            "payment" && (
+          <RegisterPaymentForm
+            pos={pos}
+            account={
+              selectedAccount
+            }
+            onCancel={() =>
+              setDetailMode(
+                "detail"
+              )
+            }
+            onPaid={() =>
+              setDetailMode(
+                "detail"
+              )
+            }
           />
         )}
       </Modal>
@@ -1352,9 +1472,31 @@ function AccountCard({
 
 function AccountDetail({
   account,
+  hasOpenCash,
+  onPay,
 }) {
   const status =
     getStatusMeta(account);
+
+  const payments =
+    Array.isArray(
+      account?.pagos
+    )
+      ? account.pagos
+          .slice()
+          .sort(
+            (a, b) =>
+              String(
+                b?.fecha ||
+                ""
+              ).localeCompare(
+                String(
+                  a?.fecha ||
+                  ""
+                )
+              )
+          )
+      : [];
 
   return (
     <div>
@@ -1535,9 +1677,162 @@ function AccountDetail({
         </div>
       )}
 
+      {!isSettled(account) && (
+        <div
+          className="
+            mt-4
+            rounded-[20px]
+            border
+            border-[#FFC61A]/20
+            bg-[#FFC61A]/[0.07]
+            p-3.5
+          "
+        >
+          <p
+            className="
+              text-sm
+              font-extrabold
+              text-white
+            "
+          >
+            Registrar cobro
+          </p>
+
+          <p
+            className="
+              mt-1
+              text-xs
+              leading-relaxed
+              text-white/40
+            "
+          >
+            {hasOpenCash
+              ? "Podés registrar un pago parcial o cancelar el saldo completo."
+              : "Necesitás abrir una caja para registrar un cobro real."}
+          </p>
+
+          <button
+            type="button"
+            onClick={onPay}
+            disabled={!hasOpenCash}
+            className="
+              mt-3
+              inline-flex
+              w-full
+              items-center
+              justify-center
+              gap-2
+              rounded-2xl
+              bg-[#FFC61A]
+              px-4
+              py-3.5
+              text-sm
+              font-extrabold
+              text-black
+              transition
+              hover:bg-[#FFD248]
+              active:scale-[0.99]
+              disabled:cursor-not-allowed
+              disabled:opacity-40
+            "
+          >
+            Registrar pago
+          </button>
+        </div>
+      )}
+
+      <div className="mt-5">
+        <div
+          className="
+            mb-2.5
+            flex
+            items-end
+            justify-between
+            gap-3
+          "
+        >
+          <div>
+            <p
+              className="
+                text-[9px]
+                font-extrabold
+                uppercase
+                tracking-[0.14em]
+                text-[#FFC61A]
+              "
+            >
+              Cobros
+            </p>
+
+            <h4
+              className="
+                mt-1
+                text-sm
+                font-black
+                text-white
+              "
+            >
+              Historial de pagos
+            </h4>
+          </div>
+
+          <span
+            className="
+              shrink-0
+              rounded-full
+              border
+              border-white/10
+              bg-white/5
+              px-2.5
+              py-1
+              text-[9px]
+              font-bold
+              text-white/40
+            "
+          >
+            {payments.length}
+          </span>
+        </div>
+
+        {payments.length === 0 ? (
+          <div
+            className="
+              rounded-[20px]
+              border
+              border-white/10
+              bg-white/5
+              px-4
+              py-5
+              text-center
+            "
+          >
+            <p
+              className="
+                text-xs
+                font-semibold
+                text-white/35
+              "
+            >
+              Todavía no hay pagos registrados para esta cuenta.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {payments.map(
+              (payment) => (
+                <PaymentHistoryRow
+                  key={payment.id}
+                  payment={payment}
+                />
+              )
+            )}
+          </div>
+        )}
+      </div>
+
       <div
         className="
-          mt-3
+          mt-4
           rounded-[20px]
           border
           border-white/10
@@ -1570,10 +1865,432 @@ function AccountDetail({
             ? `Registrada por ${account.creadoPor.operadorNombre}.`
             : "Registrada en el sistema."}
           {" "}
-          Los pagos parciales se incorporarán sobre esta misma cuenta sin perder su historial.
+          Cada cobro conserva importe, método, caja y operador.
         </p>
       </div>
     </div>
+  );
+}
+
+function PaymentHistoryRow({
+  payment,
+}) {
+  const method =
+    PAYMENT_METHODS.find(
+      (item) =>
+        item.id ===
+        payment?.metodoPago
+    );
+
+  return (
+    <div
+      className="
+        rounded-[18px]
+        border
+        border-white/10
+        bg-[#151A22]
+        px-3.5
+        py-3
+      "
+    >
+      <div
+        className="
+          flex
+          items-start
+          justify-between
+          gap-3
+        "
+      >
+        <div className="min-w-0">
+          <p
+            className="
+              text-xs
+              font-extrabold
+              text-white
+            "
+          >
+            {method?.label ||
+              "Cobro"}
+          </p>
+
+          <p
+            className="
+              mt-1
+              text-[10px]
+              font-semibold
+              text-white/35
+            "
+          >
+            {formatPaymentDate(
+              payment?.fecha
+            )}
+          </p>
+
+          {payment?.operador
+            ?.operadorNombre && (
+            <p
+              className="
+                mt-1
+                truncate
+                text-[10px]
+                font-semibold
+                text-white/30
+              "
+            >
+              {payment.operador
+                .operadorNombre}
+            </p>
+          )}
+        </div>
+
+        <span
+          className="
+            shrink-0
+            text-sm
+            font-black
+            text-[#FFC61A]
+          "
+        >
+          {money(
+            payment?.importe
+          )}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function RegisterPaymentForm({
+  pos,
+  account,
+  onCancel,
+  onPaid,
+}) {
+  const balance =
+    roundMoney(
+      account?.saldoPendiente
+    );
+
+  const [amount, setAmount] =
+    useState(
+      balance > 0
+        ? String(balance)
+        : ""
+    );
+
+  const [method, setMethod] =
+    useState("efectivo");
+
+  const [saving, setSaving] =
+    useState(false);
+
+  const paymentAmount =
+    roundMoney(
+      toNumber(
+        amount,
+        NaN
+      )
+    );
+
+  const valid =
+    Boolean(
+      pos?.openSession &&
+      Number.isFinite(
+        paymentAmount
+      ) &&
+      paymentAmount > 0 &&
+      paymentAmount <=
+        balance
+    );
+
+  async function handleSubmit(
+    event
+  ) {
+    event.preventDefault();
+
+    if (
+      !valid ||
+      saving
+    ) {
+      return;
+    }
+
+    if (
+      typeof pos
+        ?.registerReceivablePayment !==
+      "function"
+    ) {
+      pos?.showToast?.(
+        "El registro de pagos no está disponible",
+        true
+      );
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      const ok =
+        await pos
+          .registerReceivablePayment(
+            account.id,
+            {
+              importe:
+                paymentAmount,
+              metodoPago:
+                method,
+            }
+          );
+
+      if (ok) {
+        onPaid?.();
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <div
+        className="
+          mb-4
+          overflow-hidden
+          rounded-[22px]
+          bg-white
+          text-[#111318]
+        "
+      >
+        <div className="p-4">
+          <p
+            className="
+              text-[10px]
+              font-extrabold
+              uppercase
+              tracking-[0.16em]
+              text-[#B98700]
+            "
+          >
+            {account?.clienteNombre ||
+              "Cliente"}
+          </p>
+
+          <div
+            className="
+              mt-2
+              flex
+              items-end
+              justify-between
+              gap-3
+            "
+          >
+            <div>
+              <p
+                className="
+                  text-xs
+                  font-semibold
+                  text-black/40
+                "
+              >
+                Saldo pendiente
+              </p>
+              <p
+                className="
+                  mt-1
+                  text-xl
+                  font-black
+                  text-[#111318]
+                "
+              >
+                {money(balance)}
+              </p>
+            </div>
+
+            <span
+              className="
+                rounded-full
+                bg-[#FFF5CC]
+                px-2.5
+                py-1.5
+                text-[9px]
+                font-extrabold
+                text-[#8C6700]
+              "
+            >
+              Caja abierta
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <FormField
+        label="Importe a cobrar"
+        required
+      >
+        <div className="relative">
+          <span
+            className="
+              pointer-events-none
+              absolute
+              left-4
+              top-1/2
+              -translate-y-1/2
+              text-base
+              font-black
+              text-[#FFC61A]
+            "
+          >
+            $
+          </span>
+
+          <input
+            type="number"
+            min="0.01"
+            max={balance}
+            step="0.01"
+            inputMode="decimal"
+            value={amount}
+            onChange={(event) =>
+              setAmount(
+                event.target.value
+              )
+            }
+            className={`${inputClassName} pl-9`}
+          />
+        </div>
+      </FormField>
+
+      <div className="mb-4">
+        <p
+          className="
+            mb-2
+            text-xs
+            font-bold
+            text-white/55
+          "
+        >
+          Medio de pago
+        </p>
+
+        <div className="grid grid-cols-2 gap-2">
+          {PAYMENT_METHODS.map(
+            (item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() =>
+                  setMethod(
+                    item.id
+                  )
+                }
+                className={
+                  `
+                    rounded-2xl
+                    border
+                    px-3
+                    py-3
+                    text-xs
+                    font-extrabold
+                    transition
+                  ` +
+                  (
+                    method ===
+                    item.id
+                      ? " border-[#FFC61A]/30 bg-[#FFC61A]/10 text-[#FFC61A]"
+                      : " border-white/10 bg-white/5 text-white/50 hover:bg-white/10"
+                  )
+                }
+              >
+                {item.label}
+              </button>
+            )
+          )}
+        </div>
+      </div>
+
+      {paymentAmount >
+        balance && (
+        <p
+          className="
+            mb-3
+            rounded-xl
+            border
+            border-red-400/20
+            bg-red-500/10
+            px-3
+            py-2.5
+            text-xs
+            font-semibold
+            text-red-200
+          "
+        >
+          El pago no puede superar el saldo pendiente.
+        </p>
+      )}
+
+      <div className="grid grid-cols-2 gap-2.5">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          className="
+            rounded-2xl
+            border
+            border-white/10
+            bg-white/5
+            px-4
+            py-3.5
+            text-sm
+            font-extrabold
+            text-white/65
+            transition
+            hover:bg-white/10
+            disabled:opacity-50
+          "
+        >
+          Volver
+        </button>
+
+        <button
+          type="submit"
+          disabled={
+            !valid ||
+            saving
+          }
+          className="
+            inline-flex
+            items-center
+            justify-center
+            gap-2
+            rounded-2xl
+            bg-[#FFC61A]
+            px-4
+            py-3.5
+            text-sm
+            font-extrabold
+            text-black
+            transition
+            hover:bg-[#FFD248]
+            active:scale-[0.99]
+            disabled:cursor-not-allowed
+            disabled:opacity-40
+          "
+        >
+          {saving ? (
+            <LoadingIcon className="h-4 w-4" />
+          ) : (
+            <CheckIcon className="h-4 w-4" />
+          )}
+
+          {saving
+            ? "Registrando..."
+            : paymentAmount ===
+                balance
+              ? "Saldar cuenta"
+              : "Registrar pago"}
+        </button>
+      </div>
+    </form>
   );
 }
 

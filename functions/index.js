@@ -1587,6 +1587,12 @@ const AUDIT_ACTIONS = Object.freeze({
 
     ALTA_CUENTA_POR_COBRAR:
         "alta-cuenta-por-cobrar",
+
+    COBRO_CUENTA_POR_COBRAR:
+        "cobro-cuenta-por-cobrar",
+
+    CUENTA_POR_COBRAR_SALDADA:
+        "cuenta-por-cobrar-saldada",
 });
 
 const AUDIT_ACTION_VALUES =
@@ -5687,6 +5693,549 @@ exports.crearCuentaPorCobrarManual =
     );
 
 /* =========================================================
+   CUENTAS POR COBRAR — REGISTRAR PAGO
+========================================================= */
+
+exports.registrarPagoCuentaPorCobrar =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data
+                        ?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const cuentaId =
+                validarId(
+                    request.data
+                        ?.cuentaId,
+                    "cuentaId"
+                );
+
+            const importe =
+                redondearDineroCuentaPorCobrar(
+                    request.data
+                        ?.pago
+                        ?.importe
+                );
+
+            if (
+                !Number.isFinite(
+                    importe
+                ) ||
+                importe <= 0 ||
+                importe >
+                    999999999999
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El importe del pago no es válido."
+                );
+            }
+
+            const metodoPago =
+                textoSeguro(
+                    request.data
+                        ?.pago
+                        ?.metodoPago,
+                    40
+                ) ||
+                "efectivo";
+
+            if (
+                !POS_METODOS_PAGO.has(
+                    metodoPago
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El método de pago no es válido."
+                );
+            }
+
+            const cuentaRef =
+                clienteRef
+                    .collection(
+                        "cuentasPorCobrar"
+                    )
+                    .doc(
+                        cuentaId
+                    );
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
+
+                        if (!sessionId) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Abrí una caja antes de registrar el cobro.",
+                                {
+                                    motivo:
+                                        "cash-required",
+                                }
+                            );
+                        }
+
+                        const sessionRef =
+                            clienteRef
+                                .collection(
+                                    "cajas"
+                                )
+                                .doc(
+                                    sessionId
+                                );
+
+                        const [
+                            cuentaSnap,
+                            sessionSnap,
+                        ] =
+                            await Promise.all([
+                                transaction.get(
+                                    cuentaRef
+                                ),
+                                transaction.get(
+                                    sessionRef
+                                ),
+                            ]);
+
+                        if (
+                            !cuentaSnap.exists
+                        ) {
+                            throw new HttpsError(
+                                "not-found",
+                                "La cuenta por cobrar no existe."
+                            );
+                        }
+
+                        if (
+                            !sessionSnap.exists ||
+                            sessionSnap.data()
+                                ?.status !==
+                                "open"
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La caja activa ya no está disponible.",
+                                {
+                                    motivo:
+                                        "cash-required",
+                                }
+                            );
+                        }
+
+                        const cuenta =
+                            cuentaSnap.data() ||
+                            {};
+
+                        const saldoAnterior =
+                            redondearDineroCuentaPorCobrar(
+                                cuenta
+                                    .saldoPendiente
+                            );
+
+                        if (
+                            cuenta.estado ===
+                                "pagado" ||
+                            cuenta.estado ===
+                                "cancelado" ||
+                            saldoAnterior <= 0
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Esta cuenta ya está saldada.",
+                                {
+                                    motivo:
+                                        "receivable-settled",
+                                }
+                            );
+                        }
+
+                        if (
+                            importe >
+                            saldoAnterior
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                "El pago no puede superar el saldo pendiente.",
+                                {
+                                    saldoPendiente:
+                                        saldoAnterior,
+                                }
+                            );
+                        }
+
+                        const pagosAnteriores =
+                            Array.isArray(
+                                cuenta.pagos
+                            )
+                                ? cuenta.pagos
+                                : [];
+
+                        if (
+                            pagosAnteriores.length >=
+                            1000
+                        ) {
+                            throw new HttpsError(
+                                "resource-exhausted",
+                                "Esta cuenta alcanzó el máximo de pagos registrados."
+                            );
+                        }
+
+                        const saldoRestante =
+                            redondearDineroCuentaPorCobrar(
+                                Math.max(
+                                    0,
+                                    saldoAnterior -
+                                    importe
+                                )
+                            );
+
+                        const totalPagado =
+                            redondearDineroCuentaPorCobrar(
+                                Number(
+                                    cuenta.totalPagado ||
+                                    0
+                                ) +
+                                importe
+                            );
+
+                        const estadoNuevo =
+                            saldoRestante <= 0
+                                ? "pagado"
+                                : "parcial";
+
+                        const operadorNombre =
+                            textoSeguro(
+                                operadorAutorizado
+                                    ?.data
+                                    ?.nombre,
+                                80
+                            );
+
+                        const operadorRol =
+                            validarRolOperador(
+                                operadorAutorizado
+                                    .rol
+                            );
+
+                        const pagoId =
+                            crypto.randomUUID();
+
+                        const fecha =
+                            admin.firestore.Timestamp.now();
+
+                        const pago = {
+                            id:
+                                pagoId,
+
+                            importe,
+
+                            metodoPago,
+
+                            sessionId,
+
+                            fecha,
+
+                            deviceId,
+
+                            operador: {
+                                operadorId:
+                                    operadorAutorizado
+                                        .id,
+
+                                operadorNombre,
+
+                                operadorRol,
+                            },
+                        };
+
+                        transaction.update(
+                            cuentaRef,
+                            {
+                                pagos: [
+                                    ...pagosAnteriores,
+                                    pago,
+                                ],
+
+                                totalPagado,
+
+                                saldoPendiente:
+                                    saldoRestante,
+
+                                estado:
+                                    estadoNuevo,
+
+                                ultimoPagoEn:
+                                    fecha,
+
+                                actualizadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        const sessionData =
+                            sessionSnap.data() ||
+                            {};
+
+                        const receivablePaymentTotals = {
+                            efectivo:
+                                redondearDineroCuentaPorCobrar(
+                                    sessionData
+                                        ?.receivablePaymentTotals
+                                        ?.efectivo ||
+                                    0
+                                ),
+
+                            transferencia:
+                                redondearDineroCuentaPorCobrar(
+                                    sessionData
+                                        ?.receivablePaymentTotals
+                                        ?.transferencia ||
+                                    0
+                                ),
+
+                            qr:
+                                redondearDineroCuentaPorCobrar(
+                                    sessionData
+                                        ?.receivablePaymentTotals
+                                        ?.qr ||
+                                    0
+                                ),
+
+                            tarjeta:
+                                redondearDineroCuentaPorCobrar(
+                                    sessionData
+                                        ?.receivablePaymentTotals
+                                        ?.tarjeta ||
+                                    0
+                                ),
+                        };
+
+                        receivablePaymentTotals[
+                            metodoPago
+                        ] =
+                            redondearDineroCuentaPorCobrar(
+                                receivablePaymentTotals[
+                                    metodoPago
+                                ] +
+                                importe
+                            );
+
+                        const receivablePaymentsTotal =
+                            redondearDineroCuentaPorCobrar(
+                                Number(
+                                    sessionData
+                                        .receivablePaymentsTotal ||
+                                    0
+                                ) +
+                                importe
+                            );
+
+                        const receivablePaymentsCount =
+                            Math.max(
+                                0,
+                                Math.trunc(
+                                    Number(
+                                        sessionData
+                                            .receivablePaymentsCount ||
+                                        0
+                                    )
+                                )
+                            ) +
+                            1;
+
+                        transaction.update(
+                            sessionRef,
+                            {
+                                receivablePaymentTotals,
+
+                                receivablePaymentsTotal,
+
+                                receivablePaymentsCount,
+
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        const eventoCobro =
+                            crearEventoAuditoria({
+                                clienteRef,
+
+                                operador:
+                                    operadorAutorizado,
+
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .COBRO_CUENTA_POR_COBRAR,
+
+                                sessionId,
+
+                                deviceId,
+
+                                detalle: {
+                                    cajaId:
+                                        sessionId,
+
+                                    cuentaId,
+
+                                    pagoId,
+
+                                    clienteNombre:
+                                        textoSeguro(
+                                            cuenta
+                                                .clienteNombre,
+                                            120
+                                        ),
+
+                                    concepto:
+                                        textoSeguro(
+                                            cuenta
+                                                .concepto,
+                                            180
+                                        ),
+
+                                    importe,
+
+                                    metodoPago,
+
+                                    saldoAnterior,
+
+                                    saldoRestante,
+
+                                    estadoNuevo,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoCobro.ref,
+                            eventoCobro.data
+                        );
+
+                        if (
+                            estadoNuevo ===
+                            "pagado"
+                        ) {
+                            const eventoSaldada =
+                                crearEventoAuditoria({
+                                    clienteRef,
+
+                                    operador:
+                                        operadorAutorizado,
+
+                                    accion:
+                                        AUDIT_ACTIONS
+                                            .CUENTA_POR_COBRAR_SALDADA,
+
+                                    sessionId,
+
+                                    deviceId,
+
+                                    detalle: {
+                                        cajaId:
+                                            sessionId,
+
+                                        cuentaId,
+
+                                        pagoId,
+
+                                        clienteNombre:
+                                            textoSeguro(
+                                                cuenta
+                                                    .clienteNombre,
+                                                120
+                                            ),
+
+                                        importeOriginal:
+                                            redondearDineroCuentaPorCobrar(
+                                                cuenta
+                                                    .importeOriginal
+                                            ),
+
+                                        totalPagado,
+                                    },
+                                });
+
+                            transaction.set(
+                                eventoSaldada.ref,
+                                eventoSaldada.data
+                            );
+                        }
+
+                        return {
+                            pago: {
+                                ...pago,
+
+                                fecha:
+                                    fecha
+                                        .toDate()
+                                        .toISOString(),
+                            },
+
+                            cuenta: {
+                                id:
+                                    cuentaId,
+
+                                totalPagado,
+
+                                saldoPendiente:
+                                    saldoRestante,
+
+                                estado:
+                                    estadoNuevo,
+                            },
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+                ...result,
+            };
+        }
+    );
+
+/* =========================================================
    PRODUCTOS — VALIDACIÓN + AUDITORÍA
 ========================================================= */
 
@@ -8385,6 +8934,54 @@ exports.cerrarCaja =
                                 ),
                         };
 
+                        const receivablePaymentTotals = {
+                            efectivo:
+                                roundMoney(
+                                    session
+                                        ?.receivablePaymentTotals
+                                        ?.efectivo
+                                ),
+
+                            transferencia:
+                                roundMoney(
+                                    session
+                                        ?.receivablePaymentTotals
+                                        ?.transferencia
+                                ),
+
+                            qr:
+                                roundMoney(
+                                    session
+                                        ?.receivablePaymentTotals
+                                        ?.qr
+                                ),
+
+                            tarjeta:
+                                roundMoney(
+                                    session
+                                        ?.receivablePaymentTotals
+                                        ?.tarjeta
+                                ),
+                        };
+
+                        const receivablePaymentsTotal =
+                            roundMoney(
+                                session
+                                    .receivablePaymentsTotal
+                            );
+
+                        const receivablePaymentsCount =
+                            Math.max(
+                                0,
+                                Math.trunc(
+                                    Number(
+                                        session
+                                            .receivablePaymentsCount ||
+                                        0
+                                    )
+                                )
+                            );
+
                         const totalSales =
                             roundMoney(
                                 session.totalSales
@@ -8407,7 +9004,9 @@ exports.cerrarCaja =
                                     session.openAmount ||
                                     0
                                 ) +
-                                paymentTotals.efectivo
+                                paymentTotals.efectivo +
+                                receivablePaymentTotals
+                                    .efectivo
                             );
 
                         const diff =
@@ -8439,6 +9038,12 @@ exports.cerrarCaja =
                                 salesCount,
 
                                 paymentTotals,
+
+                                receivablePaymentTotals,
+
+                                receivablePaymentsTotal,
+
+                                receivablePaymentsCount,
 
                                 status:
                                     "closed",
@@ -8504,6 +9109,12 @@ exports.cerrarCaja =
 
                                     cantidadVentas:
                                         salesCount,
+
+                                    totalCobranzas:
+                                        receivablePaymentsTotal,
+
+                                    cantidadCobranzas:
+                                        receivablePaymentsCount,
                                 },
                             });
 

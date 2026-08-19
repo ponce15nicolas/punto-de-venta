@@ -101,6 +101,12 @@ const crearCuentaPorCobrarManualFunction =
     "crearCuentaPorCobrarManual"
   );
 
+const registrarPagoCuentaPorCobrarFunction =
+  httpsCallable(
+    functions,
+    "registrarPagoCuentaPorCobrar"
+  );
+
 /* =========================================================
    ERROR CONTROLADO
 ========================================================= */
@@ -874,6 +880,93 @@ function normalizeCuentaPorCobrarFromCloud(
           ""
         ).trim(),
     },
+
+    pagos:
+      Array.isArray(
+        data?.pagos
+      )
+        ? data.pagos
+            .map(
+              (pago) => ({
+                id:
+                  String(
+                    pago?.id ||
+                    ""
+                  ).trim(),
+
+                importe:
+                  roundMoney(
+                    toNumber(
+                      pago?.importe
+                    )
+                  ),
+
+                metodoPago:
+                  normalizePaymentMethod(
+                    pago?.metodoPago
+                  ),
+
+                sessionId:
+                  String(
+                    pago?.sessionId ||
+                    ""
+                  ).trim() ||
+                  null,
+
+                fecha:
+                  timestampToIsoString(
+                    pago?.fecha
+                  ),
+
+                deviceId:
+                  String(
+                    pago?.deviceId ||
+                    ""
+                  ).trim() ||
+                  null,
+
+                operador: {
+                  operadorId:
+                    String(
+                      pago?.operador
+                        ?.operadorId ||
+                      ""
+                    ).trim(),
+
+                  operadorNombre:
+                    String(
+                      pago?.operador
+                        ?.operadorNombre ||
+                      ""
+                    ).trim(),
+
+                  operadorRol:
+                    String(
+                      pago?.operador
+                        ?.operadorRol ||
+                      ""
+                    ).trim(),
+                },
+              })
+            )
+            .filter(
+              (pago) =>
+                pago.id &&
+                pago.importe > 0
+            )
+            .sort(
+              (a, b) =>
+                String(
+                  a.fecha ||
+                  ""
+                ).localeCompare(
+                  String(
+                    b.fecha ||
+                    ""
+                  )
+                )
+            )
+        : [],
   };
 }
 
@@ -1565,6 +1658,217 @@ export async function createManualReceivableCloud(
       "create-receivable-failed",
       serverMessage ||
       "No se pudo registrar la deuda"
+    );
+  }
+}
+
+/* =========================================================
+   REGISTRAR PAGO DE CUENTA POR COBRAR
+========================================================= */
+
+export async function registerReceivablePaymentCloud(
+  clienteId,
+  cuentaId,
+  payload,
+  {
+    operadorSesion = null,
+    deviceId = null,
+  } = {}
+) {
+  const cleanClienteId =
+    requireString(
+      clienteId,
+      "clienteId"
+    );
+
+  const cleanCuentaId =
+    requireString(
+      cuentaId,
+      "cuentaId"
+    );
+
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
+
+  const cleanDeviceId =
+    requireString(
+      deviceId,
+      "deviceId"
+    );
+
+  const importe =
+    roundMoney(
+      toNumber(
+        payload?.importe,
+        NaN
+      )
+    );
+
+  if (
+    !Number.isFinite(
+      importe
+    ) ||
+    importe <= 0
+  ) {
+    fail(
+      "invalid-amount",
+      "Ingresá un importe válido"
+    );
+  }
+
+  const metodoPago =
+    normalizePaymentMethod(
+      payload?.metodoPago
+    );
+
+  try {
+    const response =
+      await registrarPagoCuentaPorCobrarFunction({
+        clienteId:
+          cleanClienteId,
+
+        cuentaId:
+          cleanCuentaId,
+
+        pago: {
+          importe,
+          metodoPago,
+        },
+
+        operadorSesion,
+        deviceId:
+          cleanDeviceId,
+      });
+
+    const data =
+      response?.data || {};
+
+    if (
+      !data.ok ||
+      !data.pago?.id
+    ) {
+      fail(
+        "register-receivable-payment-failed",
+        "No se pudo registrar el pago"
+      );
+    }
+
+    return data;
+  } catch (error) {
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    const serverMessage =
+      String(
+        error?.details?.mensaje ||
+        error?.details?.message ||
+        error?.message ||
+        ""
+      ).trim();
+
+    const motivo =
+      String(
+        error?.details?.motivo ||
+        ""
+      ).trim();
+
+    if (
+      code ===
+      "unauthenticated"
+    ) {
+      fail(
+        "unauthenticated",
+        "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+      );
+    }
+
+    if (
+      code ===
+      "permission-denied"
+    ) {
+      fail(
+        "permission-denied",
+        serverMessage ||
+        "No tenés permisos para registrar este pago."
+      );
+    }
+
+    if (
+      code ===
+      "not-found"
+    ) {
+      fail(
+        "receivable-not-found",
+        serverMessage ||
+        "La cuenta por cobrar ya no existe."
+      );
+    }
+
+    if (
+      code ===
+      "failed-precondition"
+    ) {
+      if (
+        motivo ===
+        "cash-required"
+      ) {
+        fail(
+          "cash-required",
+          "Abrí una caja antes de registrar el cobro."
+        );
+      }
+
+      if (
+        motivo ===
+        "receivable-settled"
+      ) {
+        fail(
+          "receivable-settled",
+          "Esta cuenta ya está saldada."
+        );
+      }
+
+      fail(
+        "failed-precondition",
+        serverMessage ||
+        "No se puede registrar el pago en este momento."
+      );
+    }
+
+    if (
+      code ===
+      "invalid-argument"
+    ) {
+      fail(
+        "invalid-receivable-payment",
+        serverMessage ||
+        "Los datos del pago no son válidos."
+      );
+    }
+
+    fail(
+      "register-receivable-payment-failed",
+      serverMessage ||
+      "No se pudo registrar el pago"
     );
   }
 }

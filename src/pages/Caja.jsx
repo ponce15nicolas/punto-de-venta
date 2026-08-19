@@ -542,10 +542,68 @@ export default function Caja({
     breakdown.totals ||
     {};
 
+  const saleTotals =
+    breakdown.saleTotals ||
+    totals;
+
+  const receivableTotals =
+    breakdown.receivableTotals ||
+    {};
+
   const totalSales =
     roundMoney(
       breakdown.totalSales
     );
+
+  const totalReceivablePayments =
+    roundMoney(
+      breakdown
+        .totalReceivablePayments
+    );
+
+  const safeSaleTotals = {
+    efectivo:
+      roundMoney(
+        saleTotals.efectivo
+      ),
+
+    transferencia:
+      roundMoney(
+        saleTotals.transferencia
+      ),
+
+    qr:
+      roundMoney(
+        saleTotals.qr
+      ),
+
+    tarjeta:
+      roundMoney(
+        saleTotals.tarjeta
+      ),
+  };
+
+  const safeReceivableTotals = {
+    efectivo:
+      roundMoney(
+        receivableTotals.efectivo
+      ),
+
+    transferencia:
+      roundMoney(
+        receivableTotals.transferencia
+      ),
+
+    qr:
+      roundMoney(
+        receivableTotals.qr
+      ),
+
+    tarjeta:
+      roundMoney(
+        receivableTotals.tarjeta
+      ),
+  };
 
   const safeTotals = {
     efectivo:
@@ -932,6 +990,29 @@ export default function Caja({
                 }
               )}
             </div>
+
+            {totalReceivablePayments >
+              0 && (
+              <div
+                className="
+                  mt-2.5
+                  rounded-2xl
+                  border
+                  border-[#FFC61A]/15
+                  bg-[#FFF8DD]
+                  px-3.5
+                  py-3
+                  text-[11px]
+                  font-semibold
+                  leading-relaxed
+                  text-[#765600]
+                "
+              >
+                Incluye {money(
+                  totalReceivablePayments
+                )} cobrados de cuentas por cobrar durante este turno.
+              </div>
+            )}
           </div>
 
           {/* ===============================================
@@ -1287,11 +1368,25 @@ export default function Caja({
             <DarkStat
               label="Ventas en efectivo"
               value={money(
-                safeTotals.efectivo
+                safeSaleTotals.efectivo
               )}
               highlight
             />
           </div>
+
+          {safeReceivableTotals
+            .efectivo > 0 && (
+            <div className="mb-4">
+              <DarkStat
+                label="Cuentas por cobrar en efectivo"
+                value={money(
+                  safeReceivableTotals
+                    .efectivo
+                )}
+                highlight
+              />
+            </div>
+          )}
 
           {/* ===============================================
               EFECTIVO ESPERADO
@@ -1378,7 +1473,7 @@ export default function Caja({
                 text-white/35
               "
             >
-              No incluye transferencia, QR ni tarjeta porque esos medios no ingresan a la caja física.
+              Incluye ventas y cobros de cuentas por cobrar realizados en efectivo. Transferencia, QR y tarjeta no ingresan a la caja física.
             </p>
           </div>
 

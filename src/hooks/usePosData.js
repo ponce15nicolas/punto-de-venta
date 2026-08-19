@@ -26,6 +26,7 @@ import {
   checkoutCloud,
   closeCashSessionCloud,
   createManualReceivableCloud,
+  registerReceivablePaymentCloud,
   deleteCashSessionCloud,
   deleteProductCloud,
   openCashSessionCloud,
@@ -479,6 +480,9 @@ export function usePosData({
   const cashSessionsRef =
     useRef([]);
 
+  const accountsReceivableRef =
+    useRef([]);
+
   const cloudActiveRef =
     useRef(false);
 
@@ -521,6 +525,13 @@ export function usePosData({
       cashSessions;
   }, [
     cashSessions,
+  ]);
+
+  useEffect(() => {
+    accountsReceivableRef.current =
+      accountsReceivable;
+  }, [
+    accountsReceivable,
   ]);
 
   /* =========================================================
@@ -2810,7 +2821,7 @@ export function usePosData({
               sessionId
           );
 
-        const totals = {
+        const saleTotals = {
           efectivo: 0,
           transferencia: 0,
           qr: 0,
@@ -2832,11 +2843,11 @@ export function usePosData({
               ? requestedMethod
               : "efectivo";
 
-          totals[
+          saleTotals[
             method
           ] =
             roundMoney(
-              totals[
+              saleTotals[
                 method
               ] +
                 toNumber(
@@ -2844,6 +2855,84 @@ export function usePosData({
                 )
             );
         }
+
+        const receivablePayments =
+          accountsReceivableRef.current
+            .flatMap(
+              (account) =>
+                Array.isArray(
+                  account?.pagos
+                )
+                  ? account.pagos.map(
+                      (pago) => ({
+                        ...pago,
+                        cuentaId:
+                          account.id,
+                        clienteNombre:
+                          account.clienteNombre,
+                      })
+                    )
+                  : []
+            )
+            .filter(
+              (pago) =>
+                pago?.sessionId ===
+                sessionId
+            );
+
+        const receivableTotals = {
+          efectivo: 0,
+          transferencia: 0,
+          qr: 0,
+          tarjeta: 0,
+        };
+
+        for (
+          const pago of
+          receivablePayments
+        ) {
+          const requestedMethod =
+            pago?.metodoPago ||
+            "efectivo";
+
+          const method =
+            PAYMENT_METHODS.includes(
+              requestedMethod
+            )
+              ? requestedMethod
+              : "efectivo";
+
+          receivableTotals[
+            method
+          ] =
+            roundMoney(
+              receivableTotals[
+                method
+              ] +
+                toNumber(
+                  pago?.importe
+                )
+            );
+        }
+
+        const totals =
+          Object.fromEntries(
+            PAYMENT_METHODS.map(
+              (method) => [
+                method,
+                roundMoney(
+                  toNumber(
+                    saleTotals[method]
+                  ) +
+                    toNumber(
+                      receivableTotals[
+                        method
+                      ]
+                    )
+                ),
+              ]
+            )
+          );
 
         const totalSales =
           roundMoney(
@@ -2860,10 +2949,29 @@ export function usePosData({
             )
           );
 
+        const totalReceivablePayments =
+          roundMoney(
+            receivablePayments.reduce(
+              (
+                accumulator,
+                pago
+              ) =>
+                accumulator +
+                toNumber(
+                  pago?.importe
+                ),
+              0
+            )
+          );
+
         return {
           sessSales,
+          saleTotals,
+          receivablePayments,
+          receivableTotals,
           totals,
           totalSales,
+          totalReceivablePayments,
         };
       },
       []
@@ -4012,6 +4120,90 @@ export function usePosData({
 
 
   /* =========================================================
+     CUENTAS POR COBRAR — REGISTRAR PAGO
+  ========================================================= */
+
+  const registerReceivablePayment =
+    useCallback(
+      async (
+        cuentaId,
+        payload
+      ) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para registrar un cobro",
+            true
+          );
+
+          return false;
+        }
+
+        const currentOpenSession =
+          cashSessionsRef.current
+            .find(
+              (session) =>
+                session?.status ===
+                "open"
+            ) ||
+          null;
+
+        if (
+          !currentOpenSession
+        ) {
+          showToast(
+            "Abrí una caja antes de registrar el cobro",
+            true
+          );
+
+          return false;
+        }
+
+        try {
+          await registerReceivablePaymentCloud(
+            cleanClienteId,
+            cuentaId,
+            payload,
+            {
+              operadorSesion,
+              deviceId:
+                cleanDeviceId,
+            }
+          );
+
+          showToast(
+            "Pago registrado"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error registrando pago de cuenta por cobrar:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        showToast,
+      ]
+    );
+
+
+  /* =========================================================
      RETURN
   ========================================================= */
 
@@ -4067,6 +4259,7 @@ export function usePosData({
     deleteCashSession,
 
     createManualReceivable,
+    registerReceivablePayment,
 
     paymentBreakdown,
   };
