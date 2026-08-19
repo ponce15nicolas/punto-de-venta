@@ -22,6 +22,7 @@ import {
   cajaPath,
   cajasPath,
   configuracionPosPath,
+  cuentasPorCobrarPath,
   productoPath,
   productosPath,
   ventasPath,
@@ -92,6 +93,12 @@ const eliminarCierreCajaFunction =
   httpsCallable(
     functions,
     "eliminarCierreCaja"
+  );
+
+const crearCuentaPorCobrarManualFunction =
+  httpsCallable(
+    functions,
+    "crearCuentaPorCobrarManual"
   );
 
 /* =========================================================
@@ -281,6 +288,89 @@ function safeIsoDate(
   }
 
   return date.toISOString();
+}
+
+function timestampToIsoString(
+  value
+) {
+  if (!value) {
+    return null;
+  }
+
+  if (
+    typeof value?.toDate ===
+    "function"
+  ) {
+    return value
+      .toDate()
+      .toISOString();
+  }
+
+  const date =
+    value instanceof Date
+      ? value
+      : new Date(value);
+
+  return Number.isNaN(
+    date.getTime()
+  )
+    ? null
+    : date.toISOString();
+}
+
+function normalizeDateOnly(
+  value,
+  {
+    required = false,
+  } = {}
+) {
+  const clean =
+    String(value ?? "")
+      .trim();
+
+  if (!clean) {
+    if (required) {
+      fail(
+        "invalid-date",
+        "La fecha es obligatoria"
+      );
+    }
+
+    return null;
+  }
+
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(
+      clean
+    )
+  ) {
+    fail(
+      "invalid-date",
+      "La fecha no es válida"
+    );
+  }
+
+  const parsed =
+    new Date(
+      `${clean}T00:00:00.000Z`
+    );
+
+  if (
+    Number.isNaN(
+      parsed.getTime()
+    ) ||
+    parsed
+      .toISOString()
+      .slice(0, 10) !==
+      clean
+  ) {
+    fail(
+      "invalid-date",
+      "La fecha no es válida"
+    );
+  }
+
+  return clean;
 }
 
 /* =========================================================
@@ -647,6 +737,147 @@ function normalizeSaleItems(
 }
 
 /* =========================================================
+   NORMALIZAR CUENTA POR COBRAR
+========================================================= */
+
+function normalizeCuentaPorCobrarFromCloud(
+  data,
+  documentId
+) {
+  const importeOriginal =
+    roundMoney(
+      toNumber(
+        data?.importeOriginal
+      )
+    );
+
+  const totalPagado =
+    roundMoney(
+      toNumber(
+        data?.totalPagado
+      )
+    );
+
+  const saldoPendiente =
+    roundMoney(
+      toNumber(
+        data?.saldoPendiente,
+        Math.max(
+          0,
+          importeOriginal -
+            totalPagado
+        )
+      )
+    );
+
+  const estado =
+    [
+      "pendiente",
+      "parcial",
+      "pagado",
+      "cancelado",
+    ].includes(
+      data?.estado
+    )
+      ? data.estado
+      : saldoPendiente <= 0
+        ? "pagado"
+        : totalPagado > 0
+          ? "parcial"
+          : "pendiente";
+
+  return {
+    id: documentId,
+
+    clienteNombre:
+      String(
+        data?.clienteNombre ||
+        "Cliente"
+      ).trim(),
+
+    clienteTelefono:
+      String(
+        data?.clienteTelefono ||
+        ""
+      ).trim(),
+
+    concepto:
+      String(
+        data?.concepto ||
+        "Deuda"
+      ).trim(),
+
+    notas:
+      String(
+        data?.notas ||
+        ""
+      ).trim(),
+
+    origen:
+      data?.origen ===
+      "venta"
+        ? "venta"
+        : "manual",
+
+    ventaId:
+      String(
+        data?.ventaId ||
+        ""
+      ).trim() || null,
+
+    fechaOrigen:
+      String(
+        data?.fechaOrigen ||
+        ""
+      ).trim() || null,
+
+    vencimiento:
+      String(
+        data?.vencimiento ||
+        ""
+      ).trim() || null,
+
+    importeOriginal,
+    totalPagado,
+    saldoPendiente,
+    estado,
+
+    creadoEn:
+      timestampToIsoString(
+        data?.creadoEn
+      ),
+
+    actualizadoEn:
+      timestampToIsoString(
+        data?.actualizadoEn
+      ),
+
+    creadoPor: {
+      operadorId:
+        String(
+          data?.creadoPor
+            ?.operadorId ||
+          ""
+        ).trim(),
+
+      operadorNombre:
+        String(
+          data?.creadoPor
+            ?.operadorNombre ||
+          ""
+        ).trim(),
+
+      operadorRol:
+        String(
+          data?.creadoPor
+            ?.operadorRol ||
+          ""
+        ).trim(),
+    },
+  };
+}
+
+/* =========================================================
    REFERENCIAS
 ========================================================= */
 
@@ -691,6 +922,17 @@ function cajasRef(
   return collection(
     db,
     ...cajasPath(
+      clienteId
+    )
+  );
+}
+
+function cuentasPorCobrarRef(
+  clienteId
+) {
+  return collection(
+    db,
+    ...cuentasPorCobrarPath(
       clienteId
     )
   );
@@ -1009,6 +1251,84 @@ export function subscribeCashSessions(
   );
 }
 
+export function subscribeCuentasPorCobrar(
+  clienteId,
+  onData,
+  onError = console.error
+) {
+  requireString(
+    clienteId,
+    "clienteId"
+  );
+
+  if (
+    typeof onData !==
+    "function"
+  ) {
+    fail(
+      "invalid-callback",
+      "subscribeCuentasPorCobrar necesita onData"
+    );
+  }
+
+  return onSnapshot(
+    cuentasPorCobrarRef(
+      clienteId
+    ),
+
+    (snapshot) => {
+      const cuentas =
+        snapshot.docs
+          .map(
+            (snapshotDoc) =>
+              normalizeCuentaPorCobrarFromCloud(
+                snapshotDoc.data(),
+                snapshotDoc.id
+              )
+          )
+          .sort(
+            (a, b) => {
+              const aDate =
+                String(
+                  a?.fechaOrigen ||
+                  ""
+                );
+
+              const bDate =
+                String(
+                  b?.fechaOrigen ||
+                  ""
+                );
+
+              if (
+                aDate !==
+                bDate
+              ) {
+                return bDate
+                  .localeCompare(
+                    aDate
+                  );
+              }
+
+              return String(
+                b?.creadoEn ||
+                ""
+              ).localeCompare(
+                String(
+                  a?.creadoEn ||
+                  ""
+                )
+              );
+            }
+          );
+
+      onData(cuentas);
+    },
+
+    onError
+  );
+}
+
 export function subscribePosConfig(
   clienteId,
   onData,
@@ -1049,6 +1369,204 @@ export function subscribePosConfig(
 
     onError
   );
+}
+
+/* =========================================================
+   CREAR CUENTA POR COBRAR MANUAL
+========================================================= */
+
+export async function createManualReceivableCloud(
+  clienteId,
+  payload,
+  {
+    operadorSesion = null,
+    deviceId = null,
+  } = {}
+) {
+  const cleanClienteId =
+    requireString(
+      clienteId,
+      "clienteId"
+    );
+
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
+
+  const cleanDeviceId =
+    requireString(
+      deviceId,
+      "deviceId"
+    );
+
+  const clienteNombre =
+    requireString(
+      payload?.clienteNombre,
+      "clienteNombre"
+    ).slice(0, 120);
+
+  const clienteTelefono =
+    String(
+      payload?.clienteTelefono ||
+      ""
+    )
+      .trim()
+      .slice(0, 50);
+
+  const concepto =
+    requireString(
+      payload?.concepto,
+      "concepto"
+    ).slice(0, 180);
+
+  const notas =
+    String(
+      payload?.notas ||
+      ""
+    )
+      .trim()
+      .slice(0, 1000);
+
+  const importeOriginal =
+    roundMoney(
+      toNumber(
+        payload?.importeOriginal,
+        NaN
+      )
+    );
+
+  if (
+    !Number.isFinite(
+      importeOriginal
+    ) ||
+    importeOriginal <= 0
+  ) {
+    fail(
+      "invalid-amount",
+      "Ingresá un importe válido"
+    );
+  }
+
+  const fechaOrigen =
+    normalizeDateOnly(
+      payload?.fechaOrigen,
+      { required: true }
+    );
+
+  const vencimiento =
+    normalizeDateOnly(
+      payload?.vencimiento
+    );
+
+  try {
+    const response =
+      await crearCuentaPorCobrarManualFunction({
+        clienteId:
+          cleanClienteId,
+
+        cuenta: {
+          clienteNombre,
+          clienteTelefono,
+          concepto,
+          notas,
+          importeOriginal,
+          fechaOrigen,
+          vencimiento,
+        },
+
+        operadorSesion,
+        deviceId:
+          cleanDeviceId,
+      });
+
+    const data =
+      response?.data || {};
+
+    if (
+      !data.ok ||
+      !data.cuenta?.id
+    ) {
+      fail(
+        "create-receivable-failed",
+        "No se pudo registrar la deuda"
+      );
+    }
+
+    return {
+      ...data.cuenta,
+      id:
+        String(
+          data.cuenta.id
+        ),
+    };
+  } catch (error) {
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    const serverMessage =
+      String(
+        error?.details?.mensaje ||
+        error?.details?.message ||
+        error?.message ||
+        ""
+      ).trim();
+
+    if (
+      code ===
+      "unauthenticated"
+    ) {
+      fail(
+        "unauthenticated",
+        "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+      );
+    }
+
+    if (
+      code ===
+      "permission-denied"
+    ) {
+      fail(
+        "permission-denied",
+        serverMessage ||
+        "No tenés permisos para registrar esta deuda."
+      );
+    }
+
+    if (
+      code ===
+      "invalid-argument"
+    ) {
+      fail(
+        "invalid-receivable",
+        serverMessage ||
+        "Los datos de la deuda no son válidos"
+      );
+    }
+
+    fail(
+      "create-receivable-failed",
+      serverMessage ||
+      "No se pudo registrar la deuda"
+    );
+  }
 }
 
 /* =========================================================

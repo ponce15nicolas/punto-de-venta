@@ -1584,6 +1584,9 @@ const AUDIT_ACTIONS = Object.freeze({
 
     ELIMINACION_CIERRE_HISTORICO:
         "eliminacion-cierre-historico",
+
+    ALTA_CUENTA_POR_COBRAR:
+        "alta-cuenta-por-cobrar",
 });
 
 const AUDIT_ACTION_VALUES =
@@ -5292,6 +5295,396 @@ exports.cerrarTodasLasSesiones =
  * - el cambio de stock y la auditoría se escriban
  *   dentro de la misma transacción.
  */
+
+/* =========================================================
+   CUENTAS POR COBRAR — ALTA MANUAL + AUDITORÍA
+========================================================= */
+
+function redondearDineroCuentaPorCobrar(
+    value
+) {
+    return (
+        Math.round(
+            (
+                Number(value) +
+                Number.EPSILON
+            ) *
+            100
+        ) /
+        100
+    );
+}
+
+function validarFechaCuentaPorCobrar(
+    value,
+    fieldName,
+    {
+        required = false,
+    } = {}
+) {
+    const clean =
+        textoSeguro(
+            value,
+            10
+        );
+
+    if (!clean) {
+        if (required) {
+            throw new HttpsError(
+                "invalid-argument",
+                `${fieldName} es obligatoria.`
+            );
+        }
+
+        return null;
+    }
+
+    if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(
+            clean
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            `${fieldName} no es válida.`
+        );
+    }
+
+    const parsed =
+        new Date(
+            `${clean}T00:00:00.000Z`
+        );
+
+    if (
+        Number.isNaN(
+            parsed.getTime()
+        ) ||
+        parsed
+            .toISOString()
+            .slice(0, 10) !==
+            clean
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            `${fieldName} no es válida.`
+        );
+    }
+
+    return clean;
+}
+
+function normalizarCuentaPorCobrarManual(
+    value
+) {
+    if (
+        !esObjetoPlano(
+            value
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Los datos de la deuda no son válidos."
+        );
+    }
+
+    const clienteNombre =
+        textoSeguro(
+            value.clienteNombre,
+            120
+        );
+
+    const clienteTelefono =
+        textoSeguro(
+            value.clienteTelefono,
+            50
+        );
+
+    const concepto =
+        textoSeguro(
+            value.concepto,
+            180
+        );
+
+    const notas =
+        textoSeguro(
+            value.notas,
+            1000
+        );
+
+    if (!clienteNombre) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El nombre del cliente es obligatorio."
+        );
+    }
+
+    if (!concepto) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El concepto de la deuda es obligatorio."
+        );
+    }
+
+    const importeOriginal =
+        redondearDineroCuentaPorCobrar(
+            value.importeOriginal
+        );
+
+    if (
+        !Number.isFinite(
+            importeOriginal
+        ) ||
+        importeOriginal <= 0 ||
+        importeOriginal >
+            999999999999
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El importe de la deuda no es válido."
+        );
+    }
+
+    const fechaOrigen =
+        validarFechaCuentaPorCobrar(
+            value.fechaOrigen,
+            "La fecha de origen",
+            {
+                required: true,
+            }
+        );
+
+    const vencimiento =
+        validarFechaCuentaPorCobrar(
+            value.vencimiento,
+            "La fecha de vencimiento"
+        );
+
+    if (
+        vencimiento &&
+        vencimiento <
+            fechaOrigen
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El vencimiento no puede ser anterior a la fecha de origen."
+        );
+    }
+
+    return {
+        clienteNombre,
+        clienteTelefono,
+        concepto,
+        notas,
+        importeOriginal,
+        fechaOrigen,
+        vencimiento,
+    };
+}
+
+exports.crearCuentaPorCobrarManual =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data
+                        ?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const cuenta =
+                normalizarCuentaPorCobrarManual(
+                    request.data
+                        ?.cuenta
+                );
+
+            const cuentaRef =
+                clienteRef
+                    .collection(
+                        "cuentasPorCobrar"
+                    )
+                    .doc();
+
+            const operadorNombre =
+                textoSeguro(
+                    operadorAutorizado
+                        ?.data
+                        ?.nombre,
+                    80
+                );
+
+            const operadorRol =
+                validarRolOperador(
+                    operadorAutorizado
+                        .rol
+                );
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
+
+                        transaction.set(
+                            cuentaRef,
+                            {
+                                ...cuenta,
+
+                                origen:
+                                    "manual",
+
+                                ventaId:
+                                    null,
+
+                                totalPagado:
+                                    0,
+
+                                saldoPendiente:
+                                    cuenta
+                                        .importeOriginal,
+
+                                estado:
+                                    "pendiente",
+
+                                creadoPor: {
+                                    operadorId:
+                                        operadorAutorizado
+                                            .id,
+
+                                    operadorNombre,
+
+                                    operadorRol,
+                                },
+
+                                creadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+
+                                actualizadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+
+                                operador:
+                                    operadorAutorizado,
+
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .ALTA_CUENTA_POR_COBRAR,
+
+                                sessionId,
+
+                                deviceId,
+
+                                detalle: {
+                                    cuentaId:
+                                        cuentaRef.id,
+
+                                    clienteNombre:
+                                        cuenta
+                                            .clienteNombre,
+
+                                    concepto:
+                                        cuenta
+                                            .concepto,
+
+                                    importeOriginal:
+                                        cuenta
+                                            .importeOriginal,
+
+                                    fechaOrigen:
+                                        cuenta
+                                            .fechaOrigen,
+
+                                    vencimiento:
+                                        cuenta
+                                            .vencimiento,
+
+                                    origen:
+                                        "manual",
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            sessionId,
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+
+                cuenta: {
+                    id:
+                        cuentaRef.id,
+
+                    ...cuenta,
+
+                    origen:
+                        "manual",
+
+                    ventaId:
+                        null,
+
+                    totalPagado:
+                        0,
+
+                    saldoPendiente:
+                        cuenta
+                            .importeOriginal,
+
+                    estado:
+                        "pendiente",
+
+                    sessionIdAuditoria:
+                        result.sessionId,
+                },
+            };
+        }
+    );
 
 /* =========================================================
    PRODUCTOS — VALIDACIÓN + AUDITORÍA

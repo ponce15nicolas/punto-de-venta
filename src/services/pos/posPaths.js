@@ -14,6 +14,7 @@
 // clientes/{clienteId}/productos/{productoId}
 // clientes/{clienteId}/ventas/{ventaId}
 // clientes/{clienteId}/cajas/{cajaId}
+// clientes/{clienteId}/cuentasPorCobrar/{cuentaId}
 // clientes/{clienteId}/auditoria/{eventoId}
 // clientes/{clienteId}/configuracion/pos
 // clientes/{clienteId}/configuracion/migracion-pos-v1
@@ -27,6 +28,7 @@ export const POS_COLLECTIONS = Object.freeze({
   PRODUCTOS: "productos",
   VENTAS: "ventas",
   CAJAS: "cajas",
+  CUENTAS_POR_COBRAR: "cuentasPorCobrar",
   AUDITORIA: "auditoria",
   CONFIGURACION: "configuracion",
 });
@@ -197,6 +199,37 @@ export function cajaPath(
 
   return [
     ...cajasPath(clienteId),
+    id,
+  ];
+}
+
+/* =========================================================
+   CUENTAS POR COBRAR
+========================================================= */
+
+export function cuentasPorCobrarPath(
+  clienteId
+) {
+  return [
+    ...clientePath(clienteId),
+    POS_COLLECTIONS.CUENTAS_POR_COBRAR,
+  ];
+}
+
+export function cuentaPorCobrarPath(
+  clienteId,
+  cuentaId
+) {
+  const id =
+    requireSegment(
+      cuentaId,
+      "cuentaId"
+    );
+
+  return [
+    ...cuentasPorCobrarPath(
+      clienteId
+    ),
     id,
   ];
 }

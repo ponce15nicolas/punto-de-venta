@@ -349,6 +349,28 @@ service cloud.firestore {
 
 
       /* ===================================================
+         CUENTAS POR COBRAR
+      =================================================== */
+
+      match /cuentasPorCobrar/{cuentaId} {
+
+        /*
+         * El cliente puede consultar su cartera de cobros
+         * desde cualquier dispositivo autorizado.
+         */
+        allow get, list: if perteneceAlCliente(
+          clienteId
+        );
+
+        /*
+         * Altas y futuras modificaciones de deudas/pagos
+         * pasan por Cloud Functions para conservar validación
+         * y auditoría del operador.
+         */
+        allow create, update, delete: if false;
+      }
+
+      /* ===================================================
          AUDITORÍA / ACTIVIDAD
       =================================================== */
 

@@ -25,12 +25,14 @@ import { uid } from "../lib/format";
 import {
   checkoutCloud,
   closeCashSessionCloud,
+  createManualReceivableCloud,
   deleteCashSessionCloud,
   deleteProductCloud,
   openCashSessionCloud,
   restockProductCloud,
   saveShopNameCloud,
   subscribeCashSessions,
+  subscribeCuentasPorCobrar,
   subscribePosConfig,
   subscribeProducts,
   subscribeSales,
@@ -426,6 +428,11 @@ export function usePosData({
   const [
     cashSessions,
     setCashSessions,
+  ] = useState([]);
+
+  const [
+    accountsReceivable,
+    setAccountsReceivable,
   ] = useState([]);
 
   const [
@@ -838,6 +845,7 @@ export function usePosData({
           setCatalog({});
           setSales([]);
           setCashSessions([]);
+          setAccountsReceivable([]);
           setCart([]);
 
           setShopNameState(
@@ -901,6 +909,7 @@ export function usePosData({
           products: false,
           sales: false,
           cash: false,
+          receivables: false,
           config: false,
         };
 
@@ -1042,6 +1051,32 @@ export function usePosData({
 
               markSnapshot(
                 "cash"
+              );
+            },
+
+            handleListenerError
+          ),
+
+          subscribeCuentasPorCobrar(
+            cleanClienteId,
+
+            (nextAccounts) => {
+              if (
+                cancelled
+              ) {
+                return;
+              }
+
+              setAccountsReceivable(
+                Array.isArray(
+                  nextAccounts
+                )
+                  ? nextAccounts
+                  : []
+              );
+
+              markSnapshot(
+                "receivables"
               );
             },
 
@@ -3917,6 +3952,66 @@ export function usePosData({
 
 
   /* =========================================================
+     CUENTAS POR COBRAR — ALTA MANUAL
+  ========================================================= */
+
+  const createManualReceivable =
+    useCallback(
+      async (payload) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para registrar una deuda",
+            true
+          );
+
+          return false;
+        }
+
+        try {
+          await createManualReceivableCloud(
+            cleanClienteId,
+            payload,
+            {
+              operadorSesion,
+              deviceId:
+                cleanDeviceId,
+            }
+          );
+
+          showToast(
+            "Deuda registrada"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error registrando cuenta por cobrar:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        showToast,
+      ]
+    );
+
+
+  /* =========================================================
      RETURN
   ========================================================= */
 
@@ -3935,6 +4030,7 @@ export function usePosData({
     catalog,
     sales,
     cashSessions,
+    accountsReceivable,
 
     shopName,
     setShopName,
@@ -3969,6 +4065,9 @@ export function usePosData({
     openCashSession,
     closeCashSession,
     deleteCashSession,
+
+    createManualReceivable,
+
     paymentBreakdown,
   };
 }

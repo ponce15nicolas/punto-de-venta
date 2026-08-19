@@ -23,6 +23,10 @@ import {
 
 import Modal from "../components/Modal";
 
+import CuentasPorCobrar, {
+  getAccountsReceivableSummary,
+} from "./CuentasPorCobrar";
+
 /* =========================================================
    MÉTODOS DE PAGO
 ========================================================= */
@@ -163,6 +167,27 @@ export default function Caja({
     closingCash,
     setClosingCash,
   ] = useState(false);
+
+  const [
+    section,
+    setSection,
+  ] = useState("cash");
+
+  const receivablesSummary =
+    getAccountsReceivableSummary(
+      pos?.accountsReceivable
+    );
+
+  if (section === "receivables") {
+    return (
+      <CuentasPorCobrar
+        pos={pos}
+        onBack={() =>
+          setSection("cash")
+        }
+      />
+    );
+  }
 
   /* =========================================================
      CAJA CERRADA
@@ -486,6 +511,13 @@ export default function Caja({
             </button>
           </div>
         </section>
+
+        <AccountsReceivableAccess
+          summary={receivablesSummary}
+          onOpen={() =>
+            setSection("receivables")
+          }
+        />
       </div>
     );
   }
@@ -943,6 +975,13 @@ export default function Caja({
           </button>
         </div>
       </section>
+
+      <AccountsReceivableAccess
+        summary={receivablesSummary}
+        onOpen={() =>
+          setSection("receivables")
+        }
+      />
 
       {/* =====================================================
           VENTAS DEL TURNO
@@ -1582,6 +1621,214 @@ export default function Caja({
 }
 
 /* =========================================================
+   ACCESO A CUENTAS POR COBRAR
+========================================================= */
+
+function AccountsReceivableAccess({
+  summary,
+  onOpen,
+}) {
+  const totalPending =
+    roundMoney(
+      summary?.totalPending
+    );
+
+  const customers =
+    Math.max(
+      0,
+      Math.trunc(
+        toNumber(
+          summary?.customers
+        )
+      )
+    );
+
+  const overdue =
+    Math.max(
+      0,
+      Math.trunc(
+        toNumber(
+          summary?.overdue
+        )
+      )
+    );
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="
+        group
+        mb-5
+        mt-4
+        w-full
+        overflow-hidden
+        rounded-[24px]
+        border
+        border-[#FFC61A]/20
+        bg-[#151A22]
+        p-4
+        text-left
+        shadow-[0_14px_35px_rgba(0,0,0,0.15)]
+        transition
+        hover:border-[#FFC61A]/35
+        hover:bg-[#191E27]
+        active:scale-[0.995]
+      "
+    >
+      <div
+        className="
+          flex
+          items-start
+          justify-between
+          gap-3
+        "
+      >
+        <div
+          className="
+            flex
+            min-w-0
+            items-center
+            gap-3
+          "
+        >
+          <div
+            className="
+              grid
+              h-11
+              w-11
+              shrink-0
+              place-items-center
+              rounded-2xl
+              bg-[#FFC61A]
+              text-black
+            "
+          >
+            <WalletIcon className="h-5 w-5" />
+          </div>
+
+          <div className="min-w-0">
+            <p
+              className="
+                text-[10px]
+                font-extrabold
+                uppercase
+                tracking-[0.14em]
+                text-[#FFC61A]
+              "
+            >
+              Gestión de cobros
+            </p>
+
+            <h3
+              className="
+                mt-0.5
+                truncate
+                text-sm
+                font-black
+                text-white
+              "
+            >
+              Cuentas por cobrar
+            </h3>
+          </div>
+        </div>
+
+        <ChevronIcon
+          className="
+            mt-3
+            h-4
+            w-4
+            shrink-0
+            text-white/25
+            transition
+            group-hover:translate-x-0.5
+            group-hover:text-[#FFC61A]
+          "
+        />
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <ReceivableMiniStat
+          label="Pendiente"
+          value={money(
+            totalPending
+          )}
+          highlight
+        />
+
+        <ReceivableMiniStat
+          label="Clientes"
+          value={customers}
+        />
+
+        <ReceivableMiniStat
+          label="Vencidas"
+          value={overdue}
+          danger={overdue > 0}
+        />
+      </div>
+    </button>
+  );
+}
+
+function ReceivableMiniStat({
+  label,
+  value,
+  highlight = false,
+  danger = false,
+}) {
+  return (
+    <div
+      className="
+        min-w-0
+        rounded-xl
+        border
+        border-white/[0.07]
+        bg-white/[0.04]
+        px-2.5
+        py-2
+      "
+    >
+      <span
+        className="
+          block
+          truncate
+          text-[8px]
+          font-bold
+          uppercase
+          tracking-[0.08em]
+          text-white/30
+        "
+      >
+        {label}
+      </span>
+
+      <span
+        className={
+          `
+            mt-0.5
+            block
+            truncate
+            text-xs
+            font-black
+          ` +
+          (
+            danger
+              ? " text-red-300"
+              : highlight
+                ? " text-[#FFC61A]"
+                : " text-white"
+          )
+        }
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/* =========================================================
    TARJETA ESTADÍSTICA
 ========================================================= */
 
@@ -1995,6 +2242,45 @@ function CardIcon({
 
       <path d="M3 10h18" />
       <path d="M7 15h4" />
+    </svg>
+  );
+}
+
+function WalletIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 6h14a2 2 0 0 1 2 2v10H4a2 2 0 0 1-2-2V6.5A2.5 2.5 0 0 1 4.5 4H17" />
+      <path d="M16 11h6v4h-6a2 2 0 0 1 0-4Z" />
+    </svg>
+  );
+}
+
+function ChevronIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m9 18 6-6-6-6" />
     </svg>
   );
 }
