@@ -37,6 +37,7 @@ import {
 } from "../lib/pdf";
 
 import Modal from "../components/Modal";
+import { useOperator } from "../components/OperatorGate";
 
 /* =========================================================
    MÉTODOS DE PAGO
@@ -220,6 +221,10 @@ function formatItemDetail(item) {
 export default function Historial({
   pos,
 }) {
+  const {
+    esAdministrador,
+  } = useOperator();
+
   const [
     selectedSession,
     setSelectedSession,
@@ -415,6 +420,10 @@ export default function Historial({
   function handleRequestDelete(
     session
   ) {
+    if (!esAdministrador) {
+      return;
+    }
+
     if (
       !session ||
       session.status !==
@@ -434,6 +443,14 @@ export default function Historial({
   }
 
   async function handleConfirmDelete() {
+    if (!esAdministrador) {
+      setDeleteCandidate(
+        null
+      );
+
+      return;
+    }
+
     const session =
       deleteCandidate;
 
@@ -878,6 +895,9 @@ export default function Historial({
               deletingSessionId ===
               selectedSession.id
             }
+            canDelete={
+              esAdministrador
+            }
           />
         )}
       </Modal>
@@ -889,6 +909,7 @@ export default function Historial({
       <Modal
         open={
           Boolean(
+            esAdministrador &&
             deleteCandidate
           )
         }
@@ -1156,6 +1177,7 @@ function SessionDetail({
   onDownload,
   onDelete,
   deleting = false,
+  canDelete = false,
 }) {
   const diff =
     roundMoney(
@@ -1616,14 +1638,15 @@ function SessionDetail({
           ELIMINAR CIERRE
       ===================================================== */}
 
-      <div
-        className="
-          mt-4
-          border-t
-          border-white/10
-          pt-4
-        "
-      >
+      {canDelete && (
+        <div
+          className="
+            mt-4
+            border-t
+            border-white/10
+            pt-4
+          "
+        >
         <div
           className="
             mb-3
@@ -1713,6 +1736,7 @@ function SessionDetail({
             : "Eliminar cierre"}
         </button>
       </div>
+      )}
     </div>
   );
 }

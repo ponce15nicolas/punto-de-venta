@@ -48,6 +48,30 @@ const PAYMENT_METHODS = Object.freeze([
 
 const MAX_CART_LINES = 100;
 
+const abrirCajaFunction =
+  httpsCallable(
+    functions,
+    "abrirCaja"
+  );
+
+const cerrarCajaFunction =
+  httpsCallable(
+    functions,
+    "cerrarCaja"
+  );
+
+const reponerStockFunction =
+  httpsCallable(
+    functions,
+    "reponerStock"
+  );
+
+const editarProductoFunction =
+  httpsCallable(
+    functions,
+    "editarProducto"
+  );
+
 const eliminarCierreCajaFunction =
   httpsCallable(
     functions,
@@ -1089,18 +1113,184 @@ export async function upsertProductCloud(
       ""
     ).trim();
 
+  const auditEdit =
+    Boolean(
+      options.auditEdit
+    );
+
+  /*
+   * EDICIÓN:
+   *
+   * pasa por backend para validar al operador y guardar
+   * producto + auditoría en la misma transacción.
+   */
+  if (auditEdit) {
+    if (
+      !previousBarcode
+    ) {
+      fail(
+        "invalid-argument",
+        "previousBarcode es obligatorio al editar"
+      );
+    }
+
+    if (
+      !options.operadorSesion?.id ||
+      !options.operadorSesion?.token
+    ) {
+      fail(
+        "unauthenticated",
+        "Falta la sesión interna del operador"
+      );
+    }
+
+    const cleanDeviceId =
+      requireString(
+        options.deviceId,
+        "deviceId"
+      );
+
+    try {
+      const response =
+        await editarProductoFunction({
+          clienteId:
+            cleanClienteId,
+
+          previousBarcode,
+
+          product:
+            normalized,
+
+          operadorSesion:
+            options.operadorSesion,
+
+          deviceId:
+            cleanDeviceId,
+        });
+
+      const data =
+        response?.data || {};
+
+      if (
+        !data.ok ||
+        !data.product
+      ) {
+        fail(
+          "edit-product-failed",
+          "No se pudo editar el producto"
+        );
+      }
+
+      return {
+        ...normalized,
+        ...data.product,
+      };
+    } catch (error) {
+      if (
+        error instanceof
+        PosFirestoreError
+      ) {
+        throw error;
+      }
+
+      const code =
+        String(
+          error?.code ||
+          "unknown"
+        )
+          .split("/")
+          .pop();
+
+      const serverMessage =
+        String(
+          error?.details?.mensaje ||
+          error?.details?.message ||
+          error?.message ||
+          ""
+        ).trim();
+
+      const motivo =
+        String(
+          error?.details?.motivo ||
+          ""
+        );
+
+      if (
+        code ===
+        "unauthenticated"
+      ) {
+        fail(
+          "unauthenticated",
+          "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+        );
+      }
+
+      if (
+        code ===
+        "permission-denied"
+      ) {
+        fail(
+          "permission-denied",
+          serverMessage ||
+          "No tenés permisos para editar este producto."
+        );
+      }
+
+      if (
+        code ===
+        "not-found" ||
+        motivo ===
+        "product-not-found"
+      ) {
+        fail(
+          "product-not-found",
+          "Producto no encontrado"
+        );
+      }
+
+      if (
+        code ===
+        "already-exists" ||
+        motivo ===
+        "product-barcode-conflict"
+      ) {
+        fail(
+          "product-barcode-conflict",
+          "Ya existe otro producto con ese código"
+        );
+      }
+
+      if (
+        code ===
+        "invalid-argument"
+      ) {
+        fail(
+          "invalid-product",
+          serverMessage ||
+          "Datos del producto inválidos"
+        );
+      }
+
+      fail(
+        "edit-product-failed",
+        serverMessage ||
+        "No se pudo editar el producto"
+      );
+    }
+  }
+
+  /*
+   * ALTA:
+   *
+   * mantiene el flujo previo porque crear productos no forma
+   * parte de las cinco acciones definidas para auditoría.
+   */
   const nextRef =
     productoRef(
       cleanClienteId,
       normalized.barcode
     );
 
-  /*
-   * Si cambia el código,
-   * creamos el nuevo documento
-   * y eliminamos el anterior
-   * dentro del mismo batch.
-   */
   if (
     previousBarcode &&
     previousBarcode !==
@@ -1194,7 +1384,11 @@ export async function deleteProductCloud(
 export async function restockProductCloud(
   clienteId,
   barcode,
-  add
+  add,
+  {
+    operadorSesion = null,
+    deviceId = null,
+  } = {}
 ) {
   const cleanClienteId =
     requireString(
@@ -1208,110 +1402,170 @@ export async function restockProductCloud(
       "barcode"
     );
 
-  const ref =
-    productoRef(
-      cleanClienteId,
-      cleanBarcode
+  const cleanDeviceId =
+    requireString(
+      deviceId,
+      "deviceId"
     );
 
-  return runTransaction(
-    db,
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
 
-    async (
-      transaction
-    ) => {
-      const snapshot =
-        await transaction.get(
-          ref
-        );
+  const amount =
+    toNumber(
+      add,
+      NaN
+    );
 
-      if (
-        !snapshot.exists()
-      ) {
-        fail(
-          "product-not-found",
-          "Producto no encontrado"
-        );
-      }
+  if (
+    !Number.isFinite(
+      amount
+    ) ||
+    amount <= 0
+  ) {
+    fail(
+      "invalid-restock",
+      "Ingresá una cantidad válida"
+    );
+  }
 
-      const data =
-        snapshot.data();
+  try {
+    const response =
+      await reponerStockFunction({
+        clienteId:
+          cleanClienteId,
 
-      const tipoVenta =
-        normalizeProductType(
-          data.tipoVenta
-        );
+        barcode:
+          cleanBarcode,
 
-      if (
-        tipoVenta ===
-        "precio-libre"
-      ) {
-        fail(
-          "product-without-stock",
-          "Este producto no utiliza stock"
-        );
-      }
+        add:
+          amount,
 
-      const amount =
-        tipoVenta === "peso"
-          ? roundQuantity(
-              toNumber(
-                add,
-                NaN
-              )
-            )
-          : Math.trunc(
-              toNumber(
-                add,
-                NaN
-              )
-            );
+        operadorSesion,
 
-      if (
-        !Number.isFinite(
-          amount
-        ) ||
-        amount <= 0
-      ) {
-        fail(
-          "invalid-restock",
+        deviceId:
+          cleanDeviceId,
+      });
 
-          tipoVenta === "peso"
-            ? "Ingresá un peso válido"
-            : "Ingresá una cantidad válida"
-        );
-      }
+    const data =
+      response?.data || {};
 
-      const currentStock =
-        toNumber(
-          data.stock
-        );
+    if (
+      !data.ok ||
+      !Number.isFinite(
+        Number(
+          data.stockNuevo
+        )
+      )
+    ) {
+      fail(
+        "restock-failed",
+        "No se pudo actualizar el stock"
+      );
+    }
 
-      const nextStock =
-        tipoVenta === "peso"
-          ? roundQuantity(
-              currentStock +
-              amount
-            )
-          : Math.trunc(
-              currentStock +
-              amount
-            );
+    return Number(
+      data.stockNuevo
+    );
+  } catch (error) {
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
 
-      transaction.update(
-        ref,
-        {
-          stock:
-            nextStock,
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
 
-          updatedAt:
-            serverTimestamp(),
-        }
+    const serverMessage =
+      String(
+        error?.details?.mensaje ||
+        error?.details?.message ||
+        error?.message ||
+        ""
+      ).trim();
+
+    const motivo =
+      String(
+        error?.details?.motivo ||
+        ""
       );
 
-      return nextStock;
+    if (
+      code ===
+      "unauthenticated"
+    ) {
+      fail(
+        "unauthenticated",
+        "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+      );
     }
-  );
+
+    if (
+      code ===
+      "permission-denied"
+    ) {
+      fail(
+        "permission-denied",
+        serverMessage ||
+        "No tenés permisos para reponer stock."
+      );
+    }
+
+    if (
+      code ===
+      "not-found" ||
+      motivo ===
+      "product-not-found"
+    ) {
+      fail(
+        "product-not-found",
+        "Producto no encontrado"
+      );
+    }
+
+    if (
+      code ===
+      "failed-precondition" &&
+      motivo ===
+      "product-without-stock"
+    ) {
+      fail(
+        "product-without-stock",
+        "Este producto no utiliza stock"
+      );
+    }
+
+    if (
+      code ===
+      "invalid-argument"
+    ) {
+      fail(
+        "invalid-restock",
+        serverMessage ||
+        "Ingresá una cantidad válida"
+      );
+    }
+
+    fail(
+      "restock-failed",
+      serverMessage ||
+      "No se pudo actualizar el stock"
+    );
+  }
 }
 
 /* =========================================================
@@ -1324,6 +1578,7 @@ export async function openCashSessionCloud(
     sessionId,
     openAmount,
     deviceId = null,
+    operadorSesion = null,
   }
 ) {
   const cleanClienteId =
@@ -1337,6 +1592,22 @@ export async function openCashSessionCloud(
       sessionId,
       "sessionId"
     );
+
+  const cleanDeviceId =
+    requireString(
+      deviceId,
+      "deviceId"
+    );
+
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
 
   const amount =
     roundMoney(
@@ -1358,234 +1629,128 @@ export async function openCashSessionCloud(
     );
   }
 
-  const configRef =
-    configuracionRef(
-      cleanClienteId
-    );
+  try {
+    const response =
+      await abrirCajaFunction({
+        clienteId:
+          cleanClienteId,
 
-  const sessionRef =
-    cajaRef(
-      cleanClienteId,
-      cleanSessionId
-    );
-
-  return runTransaction(
-    db,
-
-    async (
-      transaction
-    ) => {
-      /*
-       * La configuración mantiene
-       * el ID de la única caja
-       * abierta del cliente.
-       */
-      const configSnap =
-        await transaction.get(
-          configRef
-        );
-
-      const existingOpenId =
-        String(
-          configSnap.data()
-            ?.openCashSessionId ||
-          ""
-        ).trim();
-
-      if (
-        existingOpenId
-      ) {
-        const existingRef =
-          cajaRef(
-            cleanClienteId,
-            existingOpenId
-          );
-
-        const existingSnap =
-          await transaction.get(
-            existingRef
-          );
-
-        if (
-          existingSnap.exists() &&
-          existingSnap.data()
-            ?.status ===
-            "open"
-        ) {
-          /*
-           * Si es exactamente
-           * la misma operación,
-           * devolvemos la caja.
-           *
-           * Esto hace la apertura
-           * idempotente ante un
-           * posible reintento.
-           */
-          if (
-            existingOpenId ===
-            cleanSessionId
-          ) {
-            return {
-              id:
-                existingSnap.id,
-
-              ...existingSnap.data(),
-            };
-          }
-
-          fail(
-            "cash-already-open",
-            "Ya hay una caja abierta",
-            {
-              sessionId:
-                existingOpenId,
-            }
-          );
-        }
-      }
-
-      const targetSnap =
-        await transaction.get(
-          sessionRef
-        );
-
-      if (
-        targetSnap.exists()
-      ) {
-        const existing = {
-          id:
-            targetSnap.id,
-
-          ...targetSnap.data(),
-        };
-
-        /*
-         * Recuperación ante una
-         * configuración desactualizada.
-         */
-        if (
-          existing.status ===
-          "open"
-        ) {
-          transaction.set(
-            configRef,
-            {
-              openCashSessionId:
-                cleanSessionId,
-
-              updatedAt:
-                serverTimestamp(),
-            },
-            {
-              merge: true,
-            }
-          );
-
-          return existing;
-        }
-
-        fail(
-          "cash-session-id-used",
-          "El identificador de caja ya fue utilizado"
-        );
-      }
-
-      const now =
-        new Date()
-          .toISOString();
-
-      const session = {
-        id:
+        sessionId:
           cleanSessionId,
-
-        openTime:
-          now,
 
         openAmount:
           amount,
 
-        closeTime:
-          null,
+        deviceId:
+          cleanDeviceId,
 
-        closeAmount:
-          null,
+        operadorSesion,
+      });
 
-        expectedAmount:
-          null,
+    const data =
+      response?.data || {};
 
-        counted:
-          null,
-
-        diff:
-          null,
-
-        /*
-         * Estos acumuladores se
-         * actualizan dentro de la
-         * misma transacción de venta.
-         *
-         * Así cerrar caja no depende
-         * de calcular nuevamente todo
-         * el historial.
-         */
-        totalSales:
-          0,
-
-        salesCount:
-          0,
-
-        paymentTotals: {
-          efectivo: 0,
-          transferencia: 0,
-          qr: 0,
-          tarjeta: 0,
-        },
-
-        status:
-          "open",
-
-        openedByDeviceId:
-          deviceId || null,
-
-        createdAt:
-          serverTimestamp(),
-
-        updatedAt:
-          serverTimestamp(),
-      };
-
-      transaction.set(
-        sessionRef,
-        removeUndefined(
-          session
-        )
+    if (
+      !data.ok ||
+      !data.session
+    ) {
+      fail(
+        "open-cash-session-failed",
+        "No se pudo abrir la caja"
       );
-
-      transaction.set(
-        configRef,
-        {
-          openCashSessionId:
-            cleanSessionId,
-
-          updatedAt:
-            serverTimestamp(),
-        },
-        {
-          merge: true,
-        }
-      );
-
-      return {
-        ...session,
-
-        createdAt:
-          null,
-
-        updatedAt:
-          null,
-      };
     }
-  );
+
+    return data.session;
+  } catch (error) {
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    const serverMessage =
+      String(
+        error?.details?.mensaje ||
+        error?.details?.message ||
+        error?.message ||
+        ""
+      ).trim();
+
+    if (
+      code ===
+      "already-exists"
+    ) {
+      const motivo =
+        String(
+          error?.details?.motivo ||
+          ""
+        );
+
+      if (
+        motivo ===
+        "cash-session-id-used"
+      ) {
+        fail(
+          "cash-session-id-used",
+          serverMessage ||
+          "El identificador de caja ya fue utilizado"
+        );
+      }
+
+      fail(
+        "cash-already-open",
+        serverMessage ||
+        "Ya hay una caja abierta"
+      );
+    }
+
+    if (
+      code ===
+      "unauthenticated"
+    ) {
+      fail(
+        "unauthenticated",
+        "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+      );
+    }
+
+    if (
+      code ===
+      "permission-denied"
+    ) {
+      fail(
+        "permission-denied",
+        serverMessage ||
+        "No tenés permisos para abrir la caja."
+      );
+    }
+
+    if (
+      code ===
+      "invalid-argument"
+    ) {
+      fail(
+        "invalid-open-amount",
+        serverMessage ||
+        "Ingresá un monto inicial válido"
+      );
+    }
+
+    fail(
+      "open-cash-session-failed",
+      serverMessage ||
+      "No se pudo abrir la caja"
+    );
+  }
 }
 
 /* =========================================================
@@ -2128,7 +2293,11 @@ export async function checkoutCloud(
 
 export async function deleteCashSessionCloud(
   clienteId,
-  cajaId
+  cajaId,
+  {
+    operadorSesion = null,
+    deviceId = null,
+  } = {}
 ) {
   const cleanClienteId =
     requireString(
@@ -2142,6 +2311,22 @@ export async function deleteCashSessionCloud(
       "cajaId"
     );
 
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
+
+  const cleanDeviceId =
+    requireString(
+      deviceId,
+      "deviceId"
+    );
+
   try {
     const response =
       await eliminarCierreCajaFunction({
@@ -2150,6 +2335,11 @@ export async function deleteCashSessionCloud(
 
         cajaId:
           cleanCajaId,
+
+        operadorSesion,
+
+        deviceId:
+          cleanDeviceId,
       });
 
     const data =
@@ -2273,6 +2463,7 @@ export async function closeCashSessionCloud(
     sessionId,
     counted,
     deviceId = null,
+    operadorSesion = null,
   }
 ) {
   const cleanClienteId =
@@ -2286,6 +2477,22 @@ export async function closeCashSessionCloud(
       sessionId,
       "sessionId"
     );
+
+  const cleanDeviceId =
+    requireString(
+      deviceId,
+      "deviceId"
+    );
+
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
 
   const countedAmount =
     roundMoney(
@@ -2307,230 +2514,145 @@ export async function closeCashSessionCloud(
     );
   }
 
-  const configRef =
-    configuracionRef(
-      cleanClienteId
-    );
+  try {
+    const response =
+      await cerrarCajaFunction({
+        clienteId:
+          cleanClienteId,
 
-  const sessionRef =
-    cajaRef(
-      cleanClienteId,
-      cleanSessionId
-    );
-
-  return runTransaction(
-    db,
-
-    async (
-      transaction
-    ) => {
-      /*
-       * Las dos lecturas ocurren
-       * antes de escribir.
-       */
-      const configSnap =
-        await transaction.get(
-          configRef
-        );
-
-      const sessionSnap =
-        await transaction.get(
-          sessionRef
-        );
-
-      if (
-        !sessionSnap.exists()
-      ) {
-        fail(
-          "cash-session-not-found",
-          "No encontramos la caja"
-        );
-      }
-
-      const session =
-        sessionSnap.data();
-
-      if (
-        session.status !==
-        "open"
-      ) {
-        fail(
-          "cash-already-closed",
-          "La caja ya está cerrada"
-        );
-      }
-
-      const activeSessionId =
-        String(
-          configSnap.data()
-            ?.openCashSessionId ||
-          ""
-        ).trim();
-
-      if (
-        activeSessionId !==
-        cleanSessionId
-      ) {
-        fail(
-          "cash-session-mismatch",
-          "Esta caja ya no es la caja activa"
-        );
-      }
-
-      /*
-       * Los totales ya fueron
-       * acumulados atómicamente
-       * durante cada venta.
-       */
-      const paymentTotals = {
-        efectivo:
-          roundMoney(
-            session
-              .paymentTotals
-              ?.efectivo ||
-            0
-          ),
-
-        transferencia:
-          roundMoney(
-            session
-              .paymentTotals
-              ?.transferencia ||
-            0
-          ),
-
-        qr:
-          roundMoney(
-            session
-              .paymentTotals
-              ?.qr ||
-            0
-          ),
-
-        tarjeta:
-          roundMoney(
-            session
-              .paymentTotals
-              ?.tarjeta ||
-            0
-          ),
-      };
-
-      const totalSales =
-        roundMoney(
-          toNumber(
-            session.totalSales
-          )
-        );
-
-      const salesCount =
-        Math.max(
-          0,
-          Math.trunc(
-            toNumber(
-              session.salesCount
-            )
-          )
-        );
-
-      /*
-       * Solo el efectivo forma
-       * parte físicamente de caja.
-       */
-      const expectedAmount =
-        roundMoney(
-          toNumber(
-            session.openAmount
-          ) +
-          paymentTotals.efectivo
-        );
-
-      const diff =
-        roundMoney(
-          countedAmount -
-          expectedAmount
-        );
-
-      const closeTime =
-        new Date()
-          .toISOString();
-
-      transaction.update(
-        sessionRef,
-        {
-          closeTime,
-
-          closeAmount:
-            countedAmount,
-
-          expectedAmount,
-
-          counted:
-            countedAmount,
-
-          diff,
-
-          totalSales,
-
-          salesCount,
-
-          paymentTotals,
-
-          status:
-            "closed",
-
-          closedByDeviceId:
-            deviceId || null,
-
-          updatedAt:
-            serverTimestamp(),
-        }
-      );
-
-      transaction.set(
-        configRef,
-        {
-          openCashSessionId:
-            null,
-
-          updatedAt:
-            serverTimestamp(),
-        },
-        {
-          merge: true,
-        }
-      );
-
-      return {
-        id:
+        sessionId:
           cleanSessionId,
-
-        ...session,
-
-        closeTime,
-
-        closeAmount:
-          countedAmount,
-
-        expectedAmount,
 
         counted:
           countedAmount,
 
-        diff,
+        deviceId:
+          cleanDeviceId,
 
-        totalSales,
+        operadorSesion,
+      });
 
-        salesCount,
+    const data =
+      response?.data || {};
 
-        paymentTotals,
-
-        status:
-          "closed",
-
-        closedByDeviceId:
-          deviceId || null,
-      };
+    if (
+      !data.ok ||
+      !data.session
+    ) {
+      fail(
+        "close-cash-session-failed",
+        "No se pudo cerrar la caja"
+      );
     }
-  );
+
+    return data.session;
+  } catch (error) {
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    const serverMessage =
+      String(
+        error?.details?.mensaje ||
+        error?.details?.message ||
+        error?.message ||
+        ""
+      ).trim();
+
+    const motivo =
+      String(
+        error?.details?.motivo ||
+        ""
+      );
+
+    if (
+      code ===
+      "unauthenticated"
+    ) {
+      fail(
+        "unauthenticated",
+        "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+      );
+    }
+
+    if (
+      code ===
+      "permission-denied"
+    ) {
+      fail(
+        "permission-denied",
+        serverMessage ||
+        "No tenés permisos para cerrar la caja."
+      );
+    }
+
+    if (
+      code ===
+      "not-found" ||
+      motivo ===
+      "cash-session-not-found"
+    ) {
+      fail(
+        "cash-session-not-found",
+        serverMessage ||
+        "No encontramos la caja"
+      );
+    }
+
+    if (
+      code ===
+      "failed-precondition"
+    ) {
+      if (
+        motivo ===
+        "cash-already-closed"
+      ) {
+        fail(
+          "cash-already-closed",
+          serverMessage ||
+          "La caja ya está cerrada"
+        );
+      }
+
+      if (
+        motivo ===
+        "cash-session-mismatch"
+      ) {
+        fail(
+          "cash-session-mismatch",
+          serverMessage ||
+          "Esta caja ya no es la caja activa"
+        );
+      }
+    }
+
+    if (
+      code ===
+      "invalid-argument"
+    ) {
+      fail(
+        "invalid-counted-amount",
+        serverMessage ||
+        "Ingresá un efectivo contado válido"
+      );
+    }
+
+    fail(
+      "close-cash-session-failed",
+      serverMessage ||
+      "No se pudo cerrar la caja"
+    );
+  }
 }
+

@@ -347,6 +347,31 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+
+      /* ===================================================
+         AUDITORÍA / ACTIVIDAD
+      =================================================== */
+
+      match /auditoria/{eventoId} {
+
+        /*
+         * El cliente puede leer únicamente la auditoría
+         * perteneciente a su propia cuenta.
+         *
+         * Necesario para la pantalla Actividad y su
+         * listener en tiempo real.
+         */
+        allow get, list: if perteneceAlCliente(
+          clienteId
+        );
+
+        /*
+         * La auditoría sólo puede ser escrita desde
+         * Cloud Functions / Admin SDK.
+         */
+        allow create, update, delete: if false;
+      }
+
       /* ===================================================
          DISPOSITIVOS
       =================================================== */
@@ -371,12 +396,49 @@ service cloud.firestore {
         /*
          * Contiene información interna de:
          *
-         * - sesiones
+         * - sesiones de dispositivos
+         * - configuración de operadores internos
          * - deviceId
          * - sessionId
          * - lastSeen
          *
          * Sólo Cloud Functions puede gestionarlo.
+         */
+        allow read, write: if false;
+      }
+
+      /* ===================================================
+         OPERADORES INTERNOS
+      =================================================== */
+
+      match /operadores/{operadorId} {
+
+        /*
+         * Contiene datos internos del personal del comercio:
+         *
+         * - nombre
+         * - rol
+         * - estado
+         * - hash/salt de la clave
+         *
+         * El navegador no puede leer ni escribir estos documentos
+         * directamente. Toda operación pasa por Cloud Functions,
+         * que devuelve únicamente los campos públicos necesarios.
+         */
+        allow read, write: if false;
+      }
+
+      /* ===================================================
+         SESIONES DE OPERADOR
+      =================================================== */
+
+      match /sesionesOperador/{sesionId} {
+
+        /*
+         * Contiene tokens hasheados y metadatos de la sesión
+         * interna del administrador/encargado.
+         *
+         * Nunca se expone directamente al frontend.
          */
         allow read, write: if false;
       }

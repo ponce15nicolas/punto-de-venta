@@ -389,6 +389,7 @@ function mapCloudError(
 export function usePosData({
   clienteId = null,
   deviceId = null,
+  operadorSesion = null,
 } = {}) {
   const cleanClienteId =
     String(
@@ -1454,6 +1455,20 @@ export function usePosData({
 
         try {
           if (
+            isEdit &&
+            cloudRequested &&
+            !cloudActiveRef
+              .current
+          ) {
+            showToast(
+              "Necesitás conexión con la nube para editar productos",
+              true
+            );
+
+            return false;
+          }
+
+          if (
             cloudActiveRef
               .current
           ) {
@@ -1464,6 +1479,21 @@ export function usePosData({
                 previousBarcode:
                   previousCode ||
                   undefined,
+
+                auditEdit:
+                  Boolean(
+                    isEdit
+                  ),
+
+                operadorSesion:
+                  isEdit
+                    ? operadorSesion
+                    : null,
+
+                deviceId:
+                  isEdit
+                    ? cleanDeviceId
+                    : null,
               }
             );
           }
@@ -1523,6 +1553,9 @@ export function usePosData({
       },
       [
         cleanClienteId,
+        cleanDeviceId,
+        cloudRequested,
+        operadorSesion,
         persistCatalog,
         showToast,
       ]
@@ -1705,8 +1738,23 @@ export function usePosData({
               await restockProductCloud(
                 cleanClienteId,
                 code,
-                amount
+                amount,
+                {
+                  operadorSesion,
+
+                  deviceId:
+                    cleanDeviceId,
+                }
               );
+          } else if (
+            cloudRequested
+          ) {
+            showToast(
+              "Necesitás conexión con la nube para reponer stock",
+              true
+            );
+
+            return false;
           } else {
             const currentStock =
               toNumber(
@@ -1778,6 +1826,9 @@ export function usePosData({
       },
       [
         cleanClienteId,
+        cleanDeviceId,
+        cloudRequested,
+        operadorSesion,
         persistCatalog,
         showToast,
       ]
@@ -3330,8 +3381,19 @@ export function usePosData({
 
                   deviceId:
                     cleanDeviceId,
+
+                  operadorSesion,
                 }
               );
+          } else if (
+            cloudRequested
+          ) {
+            showToast(
+              "Necesitás conexión con la nube para abrir la caja",
+              true
+            );
+
+            return false;
           } else {
             session = {
               id:
@@ -3427,6 +3489,8 @@ export function usePosData({
       [
         cleanClienteId,
         cleanDeviceId,
+        cloudRequested,
+        operadorSesion,
         persistCashSessions,
         showToast,
       ]
@@ -3510,8 +3574,19 @@ export function usePosData({
 
                   deviceId:
                     cleanDeviceId,
+
+                  operadorSesion,
                 }
               );
+          } else if (
+            cloudRequested
+          ) {
+            showToast(
+              "Necesitás conexión con la nube para cerrar la caja",
+              true
+            );
+
+            return false;
           } else {
             const {
               sessSales,
@@ -3636,6 +3711,8 @@ export function usePosData({
       [
         cleanClienteId,
         cleanDeviceId,
+        cloudRequested,
+        operadorSesion,
         paymentBreakdown,
         persistCashSessions,
         showToast,
@@ -3734,7 +3811,13 @@ export function usePosData({
           const result =
             await deleteCashSessionCloud(
               cleanClienteId,
-              cleanSessionId
+              cleanSessionId,
+              {
+                operadorSesion,
+
+                deviceId:
+                  cleanDeviceId,
+              }
             );
 
           /*
@@ -3800,6 +3883,8 @@ export function usePosData({
       },
       [
         cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
         persistSales,
         persistCashSessions,
         showToast,

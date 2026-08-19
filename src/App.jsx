@@ -14,12 +14,14 @@ import Header from "./components/Header";
 import BottomNav from "./components/BottomNav";
 import Toast from "./components/Toast";
 import LicenseGate from "./components/LicenseGate";
+import { useOperator } from "./components/OperatorGate";
 import AdminRoute from "./components/AdminRoute";
 
 import Vender from "./pages/Vender";
 import Inventario from "./pages/Inventario";
 import Caja from "./pages/Caja";
 import Historial from "./pages/Historial";
+import Actividad from "./pages/Actividad";
 
 /* =========================================================
    APP
@@ -64,18 +66,25 @@ function PosRoute() {
 
 function PosApp({ license }) {
   /*
-   * Pasamos clienteId al POS para que todos los datos
-   * operativos queden aislados por cliente en Firestore.
+   * OperatorGate ya validó la sesión interna antes de renderizar
+   * este componente. Reutilizamos esa identidad para autorizar
+   * operaciones sensibles en backend.
+   */
+  const {
+    sesion: operadorSesion,
+    cerrarSesionInterna,
+  } = useOperator();
+
+  /*
+   * Pasamos clienteId, deviceId y la sesión interna al POS.
    *
-   * deviceId queda disponible para migraciones, auditoría
-   * y futuras funciones multidispositivo.
-   *
-   * usePosData actualmente puede ignorar este objeto sin
-   * romper compatibilidad. Lo utilizaremos en el siguiente paso.
+   * La sesión interna no contiene la clave del operador:
+   * sólo el id/token temporal emitido por Cloud Functions.
    */
   const pos = usePosData({
     clienteId: license.clienteId,
     deviceId: license.deviceId,
+    operadorSesion,
   });
 
   const [tab, setTab] = useState("vender");
@@ -104,6 +113,8 @@ function PosApp({ license }) {
     }
 
     try {
+      await cerrarSesionInterna();
+
       await license.cerrarSesion();
     } catch (error) {
       console.error(
@@ -197,6 +208,7 @@ function PosApp({ license }) {
           shopName={pos.shopName}
           openSession={pos.openSession}
           onRename={handleRename}
+          deviceId={license.deviceId}
         />
       </div>
 
@@ -321,6 +333,12 @@ function PosApp({ license }) {
             {tab === "historial" && (
               <Historial pos={pos} />
             )}
+
+            {tab === "actividad" && (
+              <Actividad
+                clienteId={license.clienteId}
+              />
+            )}
           </motion.div>
         </AnimatePresence>
       </main>
@@ -374,6 +392,12 @@ function PageLabel({ tab }) {
       eyebrow: "Reportes",
       label: "Historial",
       icon: HistoryIcon,
+    },
+
+    actividad: {
+      eyebrow: "Control",
+      label: "Actividad",
+      icon: ActivityIcon,
     },
   };
 
@@ -696,6 +720,30 @@ function HistoryIcon({
       <path d="M3 12a9 9 0 1 0 3-6.7" />
       <path d="M3 4v5h5" />
       <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+function ActivityIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 5h16" />
+      <path d="M4 12h16" />
+      <path d="M4 19h16" />
+      <circle cx="7" cy="5" r="1.5" />
+      <circle cx="12" cy="12" r="1.5" />
+      <circle cx="17" cy="19" r="1.5" />
     </svg>
   );
 }

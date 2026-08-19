@@ -11,10 +11,14 @@
 //
 // Mantiene la identidad visual del POS.
 // No requiere librerías de iconos externas.
+//
+// IMPORTANTE:
+// La instancia de useLicenseCheck se crea en App.jsx y se recibe
+// mediante la prop "license". No se crea una segunda instancia acá.
 
 import { motion } from "motion/react";
-import { useLicenseCheck } from "../hooks/useLicenseCheck";
 import Login from "./Login";
+import OperatorGate from "./OperatorGate";
 
 /* =========================================================
    MENSAJES
@@ -88,6 +92,7 @@ const MENSAJES = {
 
 export default function LicenseGate({
     children,
+    license,
 }) {
     const {
         estado,
@@ -99,7 +104,7 @@ export default function LicenseGate({
 
         dispositivosActivos,
         maxDispositivos,
-    } = useLicenseCheck();
+    } = license || {};
 
     /* =========================================================
        CARGANDO
@@ -162,7 +167,13 @@ export default function LicenseGate({
        LICENCIA + DISPOSITIVO AUTORIZADOS
     ========================================================= */
 
-    return children;
+    return (
+        <OperatorGate
+            license={license}
+        >
+            {children}
+        </OperatorGate>
+    );
 }
 
 /* =========================================================

@@ -1834,6 +1834,31 @@ export function useLicenseCheck() {
         );
 
     /* =======================================================
+       SESSION ID ACTUAL
+    ======================================================= */
+
+    /*
+     * Exponemos únicamente el identificador de la sesión principal
+     * ya creada por este mismo hook.
+     *
+     * No generamos una sesión nueva aquí y no duplicamos lógica:
+     * sólo leemos la sesión asociada al usuario autenticado.
+     *
+     * Esto permite que flujos sensibles (por ejemplo, recuperación
+     * del único Administrador interno) puedan validar en backend
+     * deviceId + sessionId contra la sesión principal activa.
+     */
+    const sessionId =
+        usuario
+            ? storeGet(
+                getSessionKey(
+                    usuario
+                ),
+                null
+            )
+            : null;
+
+    /* =======================================================
        ESTADO FINAL
     ======================================================= */
 
@@ -1924,5 +1949,6 @@ export function useLicenseCheck() {
         mensajeBloqueo,
 
         deviceId,
+        sessionId,
     };
 }

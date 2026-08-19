@@ -68,6 +68,31 @@ const CALLABLE_OPTIONS = {
 };
 
 /* =========================================================
+   OPERADORES INTERNOS DEL CLIENTE
+========================================================= */
+
+/*
+ * Estos roles pertenecen únicamente al comercio que utiliza
+ * el POS. No tienen relación con la colección global "admins",
+ * que continúa reservada para el proveedor del sistema.
+ */
+const OPERATOR_ROLES = Object.freeze([
+    "administrador",
+    "encargado",
+]);
+
+const OPERATOR_SESSION_TTL_MS =
+    12 * 60 * 60 * 1000;
+
+const OPERATOR_PASSWORD_MIN_LENGTH = 6;
+const OPERATOR_PASSWORD_MAX_LENGTH = 72;
+
+const OPERATOR_PASSWORD_ITERATIONS = 210000;
+const OPERATOR_PASSWORD_KEY_LENGTH = 32;
+const OPERATOR_PASSWORD_DIGEST = "sha256";
+
+
+/* =========================================================
    HELPERS GENERALES
 ========================================================= */
 
@@ -756,6 +781,1031 @@ function getDeviceRef(
 }
 
 /* =========================================================
+   OPERADORES — HELPERS
+========================================================= */
+
+function normalizarNombreOperador(
+    value
+) {
+    return textoSeguro(
+        value,
+        80
+    );
+}
+
+function normalizarNombreOperadorKey(
+    value
+) {
+    return normalizarNombreOperador(
+        value
+    )
+        .normalize("NFD")
+        .replace(
+            /[\u0300-\u036f]/g,
+            ""
+        )
+        .toLowerCase()
+        .replace(
+            /\s+/g,
+            " "
+        )
+        .trim();
+}
+
+function validarRolOperador(
+    value
+) {
+    const rol =
+        textoSeguro(
+            value,
+            40
+        ).toLowerCase();
+
+    if (
+        !OPERATOR_ROLES.includes(
+            rol
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Rol de operador inválido."
+        );
+    }
+
+    return rol;
+}
+
+function validarClaveOperador(
+    value
+) {
+    const clave =
+        String(
+            value || ""
+        );
+
+    if (
+        clave.length <
+            OPERATOR_PASSWORD_MIN_LENGTH ||
+        clave.length >
+            OPERATOR_PASSWORD_MAX_LENGTH
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            `La clave debe tener entre ${OPERATOR_PASSWORD_MIN_LENGTH} y ${OPERATOR_PASSWORD_MAX_LENGTH} caracteres.`
+        );
+    }
+
+    return clave;
+}
+
+function pbkdf2Async(
+    password,
+    salt
+) {
+    return new Promise(
+        (
+            resolve,
+            reject
+        ) => {
+            crypto.pbkdf2(
+                password,
+                salt,
+                OPERATOR_PASSWORD_ITERATIONS,
+                OPERATOR_PASSWORD_KEY_LENGTH,
+                OPERATOR_PASSWORD_DIGEST,
+                (
+                    error,
+                    derivedKey
+                ) => {
+                    if (error) {
+                        reject(error);
+
+                        return;
+                    }
+
+                    resolve(
+                        derivedKey
+                    );
+                }
+            );
+        }
+    );
+}
+
+async function generarHashClaveOperador(
+    clave
+) {
+    const salt =
+        crypto
+            .randomBytes(16)
+            .toString("hex");
+
+    const derivedKey =
+        await pbkdf2Async(
+            clave,
+            salt
+        );
+
+    return {
+        salt,
+        hash:
+            derivedKey.toString(
+                "hex"
+            ),
+        iterations:
+            OPERATOR_PASSWORD_ITERATIONS,
+        keyLength:
+            OPERATOR_PASSWORD_KEY_LENGTH,
+        digest:
+            OPERATOR_PASSWORD_DIGEST,
+        version: 1,
+    };
+}
+
+async function verificarClaveOperador(
+    clave,
+    passwordData
+) {
+    try {
+        if (
+            !passwordData ||
+            typeof passwordData !==
+                "object"
+        ) {
+            return false;
+        }
+
+        const salt =
+            String(
+                passwordData.salt ||
+                ""
+            );
+
+        const storedHash =
+            String(
+                passwordData.hash ||
+                ""
+            );
+
+        const iterations =
+            enteroSeguro(
+                passwordData.iterations,
+                OPERATOR_PASSWORD_ITERATIONS
+            );
+
+        const keyLength =
+            enteroSeguro(
+                passwordData.keyLength,
+                OPERATOR_PASSWORD_KEY_LENGTH
+            );
+
+        const digest =
+            textoSeguro(
+                passwordData.digest,
+                30
+            ) ||
+            OPERATOR_PASSWORD_DIGEST;
+
+        if (
+            !salt ||
+            !storedHash ||
+            iterations < 100000 ||
+            keyLength < 16
+        ) {
+            return false;
+        }
+
+        const derivedKey =
+            await new Promise(
+                (
+                    resolve,
+                    reject
+                ) => {
+                    crypto.pbkdf2(
+                        clave,
+                        salt,
+                        iterations,
+                        keyLength,
+                        digest,
+                        (
+                            error,
+                            key
+                        ) => {
+                            if (error) {
+                                reject(
+                                    error
+                                );
+
+                                return;
+                            }
+
+                            resolve(
+                                key
+                            );
+                        }
+                    );
+                }
+            );
+
+        const expected =
+            Buffer.from(
+                storedHash,
+                "hex"
+            );
+
+        if (
+            expected.length !==
+            derivedKey.length
+        ) {
+            return false;
+        }
+
+        return crypto.timingSafeEqual(
+            expected,
+            derivedKey
+        );
+    } catch (error) {
+        console.error(
+            "Error verificando clave de operador:",
+            error
+        );
+
+        return false;
+    }
+}
+
+
+/* =========================================================
+   OPERADORES — SEMILLA DE RECUPERACIÓN
+========================================================= */
+
+/*
+ * La semilla se genera con 128 bits aleatorios.
+ * Se muestra una sola vez al crear/recuperar un Administrador.
+ *
+ * Firestore guarda únicamente SHA-256 de la semilla normalizada.
+ * La semilla no sirve para iniciar sesión: sólo para recuperar
+ * la clave de ese Administrador específico.
+ */
+function normalizarSemillaRecuperacion(
+    value
+) {
+    return String(
+        value || ""
+    )
+        .toUpperCase()
+        .replace(
+            /[^A-Z0-9]/g,
+            ""
+        );
+}
+
+function generarSemillaRecuperacion() {
+    const raw =
+        crypto
+            .randomBytes(16)
+            .toString("hex")
+            .toUpperCase();
+
+    return raw
+        .match(/.{1,4}/g)
+        .join("-");
+}
+
+function hashSemillaRecuperacion(
+    semilla
+) {
+    const normalized =
+        normalizarSemillaRecuperacion(
+            semilla
+        );
+
+    return crypto
+        .createHash("sha256")
+        .update(normalized)
+        .digest("hex");
+}
+
+function crearDatosSemillaRecuperacion() {
+    const semilla =
+        generarSemillaRecuperacion();
+
+    return {
+        semilla,
+
+        data: {
+            hash:
+                hashSemillaRecuperacion(
+                    semilla
+                ),
+
+            version: 1,
+
+            creadaEn:
+                admin.firestore.FieldValue.serverTimestamp(),
+        },
+    };
+}
+
+function verificarSemillaRecuperacion(
+    semilla,
+    stored
+) {
+    const normalized =
+        normalizarSemillaRecuperacion(
+            semilla
+        );
+
+    const expectedHash =
+        String(
+            stored?.hash ||
+            ""
+        );
+
+    if (
+        normalized.length !== 32 ||
+        !/^[A-F0-9]{32}$/.test(
+            normalized
+        ) ||
+        !/^[a-f0-9]{64}$/i.test(
+            expectedHash
+        )
+    ) {
+        return false;
+    }
+
+    const receivedHash =
+        hashSemillaRecuperacion(
+            normalized
+        );
+
+    const expectedBuffer =
+        Buffer.from(
+            expectedHash,
+            "hex"
+        );
+
+    const receivedBuffer =
+        Buffer.from(
+            receivedHash,
+            "hex"
+        );
+
+    return (
+        expectedBuffer.length ===
+            receivedBuffer.length &&
+        crypto.timingSafeEqual(
+            expectedBuffer,
+            receivedBuffer
+        )
+    );
+}
+
+
+function getOperatorsConfigRef(
+    clienteRef
+) {
+    return clienteRef
+        .collection(
+            "seguridad"
+        )
+        .doc(
+            "operadores"
+        );
+}
+
+function getOperatorRef(
+    clienteRef,
+    operadorId
+) {
+    return clienteRef
+        .collection(
+            "operadores"
+        )
+        .doc(
+            operadorId
+        );
+}
+
+function getOperatorSessionRef(
+    clienteRef,
+    sesionId
+) {
+    return clienteRef
+        .collection(
+            "sesionesOperador"
+        )
+        .doc(
+            sesionId
+        );
+}
+
+function hashOperatorSessionToken(
+    token
+) {
+    return crypto
+        .createHash(
+            "sha256"
+        )
+        .update(
+            String(
+                token || ""
+            )
+        )
+        .digest(
+            "hex"
+        );
+}
+
+function operadorPublico(
+    operadorId,
+    data
+) {
+    return {
+        id:
+            operadorId,
+
+        nombre:
+            textoSeguro(
+                data?.nombre,
+                80
+            ),
+
+        rol:
+            OPERATOR_ROLES.includes(
+                data?.rol
+            )
+                ? data.rol
+                : "encargado",
+
+        activo:
+            data?.activo !==
+            false,
+    };
+}
+
+async function crearSesionOperador(
+    clienteRef,
+    operadorId,
+    rol,
+    deviceId = null
+) {
+    const sesionId =
+        crypto.randomUUID();
+
+    const token =
+        crypto
+            .randomBytes(32)
+            .toString(
+                "base64url"
+            );
+
+    const ahora =
+        Date.now();
+
+    const expiresAt =
+        admin.firestore.Timestamp.fromMillis(
+            ahora +
+            OPERATOR_SESSION_TTL_MS
+        );
+
+    await getOperatorSessionRef(
+        clienteRef,
+        sesionId
+    ).set({
+        operadorId,
+
+        rol,
+
+        deviceId:
+            textoSeguro(
+                deviceId,
+                180
+            ) ||
+            null,
+
+        tokenHash:
+            hashOperatorSessionToken(
+                token
+            ),
+
+        activo: true,
+
+        creadaEn:
+            admin.firestore.FieldValue.serverTimestamp(),
+
+        ultimaActividadEn:
+            admin.firestore.FieldValue.serverTimestamp(),
+
+        expiraEn:
+            expiresAt,
+    });
+
+    return {
+        id:
+            sesionId,
+
+        token,
+
+        expiraEn:
+            expiresAt
+                .toDate()
+                .toISOString(),
+    };
+}
+
+async function validarSesionOperadorInterna(
+    clienteRef,
+    sessionData,
+    {
+        requireRole = null,
+        deviceId = null,
+    } = {}
+) {
+    const sesionId =
+        validarId(
+            sessionData?.id,
+            "operadorSesion.id"
+        );
+
+    const token =
+        String(
+            sessionData?.token ||
+            ""
+        );
+
+    if (!token) {
+        throw new HttpsError(
+            "unauthenticated",
+            "Ingresá nuevamente con tu usuario interno."
+        );
+    }
+
+    const sessionRef =
+        getOperatorSessionRef(
+            clienteRef,
+            sesionId
+        );
+
+    const sessionSnap =
+        await sessionRef.get();
+
+    if (!sessionSnap.exists) {
+        throw new HttpsError(
+            "unauthenticated",
+            "La sesión interna ya no es válida."
+        );
+    }
+
+    const session =
+        sessionSnap.data() ||
+        {};
+
+    if (
+        session.activo ===
+        false
+    ) {
+        throw new HttpsError(
+            "unauthenticated",
+            "La sesión interna fue cerrada."
+        );
+    }
+
+    const expiraEnMs =
+        session.expiraEn
+            ?.toMillis?.() ||
+        0;
+
+    if (
+        !expiraEnMs ||
+        expiraEnMs <
+            Date.now()
+    ) {
+        await sessionRef.set(
+            {
+                activo: false,
+
+                cerradaEn:
+                    admin.firestore.FieldValue.serverTimestamp(),
+
+                motivoCierre:
+                    "expirada",
+            },
+            {
+                merge: true,
+            }
+        );
+
+        throw new HttpsError(
+            "unauthenticated",
+            "La sesión interna venció. Ingresá nuevamente."
+        );
+    }
+
+    const expectedHash =
+        String(
+            session.tokenHash ||
+            ""
+        );
+
+    const receivedHash =
+        hashOperatorSessionToken(
+            token
+        );
+
+    const expectedBuffer =
+        Buffer.from(
+            expectedHash,
+            "hex"
+        );
+
+    const receivedBuffer =
+        Buffer.from(
+            receivedHash,
+            "hex"
+        );
+
+    if (
+        expectedBuffer.length === 0 ||
+        expectedBuffer.length !==
+            receivedBuffer.length ||
+        !crypto.timingSafeEqual(
+            expectedBuffer,
+            receivedBuffer
+        )
+    ) {
+        throw new HttpsError(
+            "unauthenticated",
+            "La sesión interna no es válida."
+        );
+    }
+
+    const expectedDeviceId =
+        textoSeguro(
+            session.deviceId,
+            180
+        );
+
+    const receivedDeviceId =
+        textoSeguro(
+            deviceId,
+            180
+        );
+
+    if (
+        expectedDeviceId &&
+        receivedDeviceId &&
+        expectedDeviceId !==
+            receivedDeviceId
+    ) {
+        throw new HttpsError(
+            "permission-denied",
+            "Esta sesión interna pertenece a otro dispositivo."
+        );
+    }
+
+    const operadorId =
+        validarId(
+            session.operadorId,
+            "operadorId"
+        );
+
+    const operadorSnap =
+        await getOperatorRef(
+            clienteRef,
+            operadorId
+        ).get();
+
+    if (!operadorSnap.exists) {
+        throw new HttpsError(
+            "unauthenticated",
+            "El operador ya no existe."
+        );
+    }
+
+    const operador =
+        operadorSnap.data() ||
+        {};
+
+    if (
+        operador.activo ===
+        false
+    ) {
+        throw new HttpsError(
+            "permission-denied",
+            "El operador está desactivado."
+        );
+    }
+
+    const rol =
+        validarRolOperador(
+            operador.rol
+        );
+
+    if (
+        requireRole &&
+        rol !==
+            requireRole
+    ) {
+        throw new HttpsError(
+            "permission-denied",
+            "Esta operación requiere un administrador del negocio."
+        );
+    }
+
+    await sessionRef.set(
+        {
+            ultimaActividadEn:
+                admin.firestore.FieldValue.serverTimestamp(),
+
+            rol,
+        },
+        {
+            merge: true,
+        }
+    );
+
+    return {
+        ref:
+            operadorSnap.ref,
+
+        id:
+            operadorId,
+
+        data:
+            operador,
+
+        rol,
+
+        sessionRef,
+
+        session:
+            session,
+    };
+}
+
+
+
+/* =========================================================
+   AUDITORÍA OPERATIVA — HELPERS
+========================================================= */
+
+/*
+ * La auditoría pertenece exclusivamente al cliente del POS.
+ *
+ * Colección:
+ * clientes/{clienteId}/auditoria/{eventoId}
+ *
+ * En esta primera etapa sólo dejamos la infraestructura común.
+ * Las acciones concretas se conectarán una por una para evitar
+ * regresiones en caja, inventario e historial.
+ */
+const AUDIT_ACTIONS = Object.freeze({
+    APERTURA_CAJA:
+        "apertura-caja",
+
+    CIERRE_CAJA:
+        "cierre-caja",
+
+    REPOSICION_STOCK:
+        "reposicion-stock",
+
+    EDICION_PRODUCTO:
+        "edicion-producto",
+
+    ELIMINACION_CIERRE_HISTORICO:
+        "eliminacion-cierre-historico",
+});
+
+const AUDIT_ACTION_VALUES =
+    Object.freeze(
+        Object.values(
+            AUDIT_ACTIONS
+        )
+    );
+
+const AUDIT_DETAIL_MAX_KEYS = 20;
+const AUDIT_DETAIL_MAX_TEXT_LENGTH = 300;
+
+function validarAccionAuditoria(
+    value
+) {
+    const accion =
+        textoSeguro(
+            value,
+            80
+        );
+
+    if (
+        !AUDIT_ACTION_VALUES.includes(
+            accion
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Acción de auditoría inválida."
+        );
+    }
+
+    return accion;
+}
+
+/*
+ * Acepta sólo datos simples y acotados.
+ *
+ * Esto evita guardar objetos arbitrarios, credenciales,
+ * sesiones completas o estructuras demasiado grandes dentro
+ * de los eventos de auditoría.
+ */
+function normalizarDetalleAuditoria(
+    value
+) {
+    if (
+        !esObjetoPlano(
+            value
+        )
+    ) {
+        return {};
+    }
+
+    const result = {};
+
+    const entries =
+        Object.entries(
+            value
+        ).slice(
+            0,
+            AUDIT_DETAIL_MAX_KEYS
+        );
+
+    for (
+        const [
+            rawKey,
+            rawValue,
+        ] of entries
+    ) {
+        const key =
+            textoSeguro(
+                rawKey,
+                80
+            );
+
+        if (!key) {
+            continue;
+        }
+
+        if (
+            typeof rawValue ===
+                "string"
+        ) {
+            result[key] =
+                textoSeguro(
+                    rawValue,
+                    AUDIT_DETAIL_MAX_TEXT_LENGTH
+                );
+
+            continue;
+        }
+
+        if (
+            typeof rawValue ===
+                "number" &&
+            Number.isFinite(
+                rawValue
+            )
+        ) {
+            result[key] =
+                rawValue;
+
+            continue;
+        }
+
+        if (
+            typeof rawValue ===
+                "boolean"
+        ) {
+            result[key] =
+                rawValue;
+
+            continue;
+        }
+
+        if (
+            rawValue ===
+            null
+        ) {
+            result[key] =
+                null;
+        }
+    }
+
+    return result;
+}
+
+function crearEventoAuditoria(
+    {
+        clienteRef,
+        operador,
+        accion,
+        detalle = {},
+        deviceId = null,
+    }
+) {
+    if (
+        !clienteRef ||
+        !operador?.id
+    ) {
+        throw new HttpsError(
+            "failed-precondition",
+            "No se pudo determinar el contexto de auditoría."
+        );
+    }
+
+    const accionValidada =
+        validarAccionAuditoria(
+            accion
+        );
+
+    const eventoRef =
+        clienteRef
+            .collection(
+                "auditoria"
+            )
+            .doc();
+
+    const operadorNombre =
+        textoSeguro(
+            operador
+                ?.data
+                ?.nombre,
+            80
+        );
+
+    const operadorRol =
+        validarRolOperador(
+            operador.rol
+        );
+
+    return {
+        ref:
+            eventoRef,
+
+        data: {
+            accion:
+                accionValidada,
+
+            operadorId:
+                operador.id,
+
+            operadorNombre,
+
+            operadorRol,
+
+            fecha:
+                admin.firestore.FieldValue.serverTimestamp(),
+
+            detalle:
+                normalizarDetalleAuditoria(
+                    detalle
+                ),
+
+            deviceId:
+                textoSeguro(
+                    deviceId,
+                    180
+                ) ||
+                null,
+        },
+    };
+}
+
+/*
+ * Para operaciones simples.
+ *
+ * En las operaciones sensibles que ya utilizan batch o
+ * transaction se usará crearEventoAuditoria() y el evento
+ * se escribirá dentro del MISMO commit que la mutación real.
+ * Así evitamos registrar una acción que finalmente haya fallado.
+ */
+async function registrarAuditoria(
+    options
+) {
+    const evento =
+        crearEventoAuditoria(
+            options
+        );
+
+    await evento
+        .ref
+        .set(
+            evento.data
+        );
+
+    return evento.ref.id;
+}
+
+
+/* =========================================================
    REVOCAR TOKENS AUTH
 ========================================================= */
 
@@ -803,6 +1853,1174 @@ async function revocarAuthUids(
         promises
     );
 }
+
+/* =========================================================
+   OPERADORES — ESTADO
+========================================================= */
+
+exports.obtenerEstadoOperadores =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const configSnap =
+                await getOperatorsConfigRef(
+                    clienteRef
+                ).get();
+
+            const config =
+                configSnap.data() ||
+                {};
+
+            return {
+                configurado:
+                    config.configurado ===
+                    true,
+            };
+        }
+    );
+
+
+/* =========================================================
+   OPERADORES — CONFIGURAR ADMINISTRADOR INICIAL
+========================================================= */
+
+exports.configurarAdministradorInicial =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const nombre =
+                normalizarNombreOperador(
+                    request.data?.nombre
+                );
+
+            const nombreKey =
+                normalizarNombreOperadorKey(
+                    nombre
+                );
+
+            const clave =
+                validarClaveOperador(
+                    request.data?.clave
+                );
+
+            const deviceId =
+                textoSeguro(
+                    request.data?.deviceId,
+                    180
+                );
+
+            if (
+                !nombre ||
+                !nombreKey
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá el nombre del administrador."
+                );
+            }
+
+            const password =
+                await generarHashClaveOperador(
+                    clave
+                );
+
+            const recoverySeed =
+                crearDatosSemillaRecuperacion();
+
+            const operadorId =
+                crypto.randomUUID();
+
+            const operadorRef =
+                getOperatorRef(
+                    clienteRef,
+                    operadorId
+                );
+
+            const configRef =
+                getOperatorsConfigRef(
+                    clienteRef
+                );
+
+            await db.runTransaction(
+                async (
+                    transaction
+                ) => {
+                    const configSnap =
+                        await transaction.get(
+                            configRef
+                        );
+
+                    if (
+                        configSnap.exists &&
+                        configSnap.data()
+                            ?.configurado ===
+                            true
+                    ) {
+                        throw new HttpsError(
+                            "already-exists",
+                            "El acceso interno ya fue configurado para este negocio."
+                        );
+                    }
+
+                    transaction.set(
+                        operadorRef,
+                        {
+                            nombre,
+
+                            nombreKey,
+
+                            rol:
+                                "administrador",
+
+                            activo:
+                                true,
+
+                            password,
+
+                            recoverySeed:
+                                recoverySeed.data,
+
+                            creadoEn:
+                                admin.firestore.FieldValue.serverTimestamp(),
+
+                            actualizadoEn:
+                                admin.firestore.FieldValue.serverTimestamp(),
+
+                            creadoPor:
+                                "configuracion-inicial",
+                        }
+                    );
+
+                    transaction.set(
+                        configRef,
+                        {
+                            configurado:
+                                true,
+
+                            administradorInicialId:
+                                operadorId,
+
+                            configuradoEn:
+                                admin.firestore.FieldValue.serverTimestamp(),
+
+                            actualizadoEn:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                        },
+                        {
+                            merge: true,
+                        }
+                    );
+                }
+            );
+
+            const sesion =
+                await crearSesionOperador(
+                    clienteRef,
+                    operadorId,
+                    "administrador",
+                    deviceId
+                );
+
+            return {
+                ok: true,
+
+                operador:
+                    operadorPublico(
+                        operadorId,
+                        {
+                            nombre,
+                            rol:
+                                "administrador",
+                            activo:
+                                true,
+                        }
+                    ),
+
+                sesion,
+
+                semillaRecuperacion:
+                    recoverySeed.semilla,
+            };
+        }
+    );
+
+
+/* =========================================================
+   OPERADORES — LISTAR PARA ACCESO
+========================================================= */
+
+exports.listarOperadoresInternos =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const snapshot =
+                await clienteRef
+                    .collection(
+                        "operadores"
+                    )
+                    .where(
+                        "activo",
+                        "==",
+                        true
+                    )
+                    .get();
+
+            const operadores =
+                snapshot.docs
+                    .map(
+                        (doc) =>
+                            operadorPublico(
+                                doc.id,
+                                doc.data()
+                            )
+                    )
+                    .sort(
+                        (
+                            a,
+                            b
+                        ) =>
+                            a.nombre.localeCompare(
+                                b.nombre,
+                                "es",
+                                {
+                                    sensitivity:
+                                        "base",
+                                }
+                            )
+                    );
+
+            return {
+                operadores,
+            };
+        }
+    );
+
+
+/* =========================================================
+   OPERADORES — INICIAR SESIÓN
+========================================================= */
+
+exports.iniciarSesionOperador =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const operadorId =
+                validarId(
+                    request.data?.operadorId,
+                    "operadorId"
+                );
+
+            const clave =
+                validarClaveOperador(
+                    request.data?.clave
+                );
+
+            const deviceId =
+                textoSeguro(
+                    request.data?.deviceId,
+                    180
+                );
+
+            const operadorSnap =
+                await getOperatorRef(
+                    clienteRef,
+                    operadorId
+                ).get();
+
+            if (!operadorSnap.exists) {
+                throw new HttpsError(
+                    "not-found",
+                    "Operador no encontrado."
+                );
+            }
+
+            const operador =
+                operadorSnap.data() ||
+                {};
+
+            if (
+                operador.activo ===
+                false
+            ) {
+                throw new HttpsError(
+                    "permission-denied",
+                    "Este operador está desactivado."
+                );
+            }
+
+            const claveCorrecta =
+                await verificarClaveOperador(
+                    clave,
+                    operador.password
+                );
+
+            if (!claveCorrecta) {
+                throw new HttpsError(
+                    "permission-denied",
+                    "Clave incorrecta."
+                );
+            }
+
+            const rol =
+                validarRolOperador(
+                    operador.rol
+                );
+
+            const sesion =
+                await crearSesionOperador(
+                    clienteRef,
+                    operadorId,
+                    rol,
+                    deviceId
+                );
+
+            return {
+                ok: true,
+
+                operador:
+                    operadorPublico(
+                        operadorId,
+                        operador
+                    ),
+
+                sesion,
+            };
+        }
+    );
+
+
+/* =========================================================
+   OPERADORES — VALIDAR SESIÓN
+========================================================= */
+
+exports.validarSesionOperador =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const result =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId:
+                            request.data
+                                ?.deviceId,
+                    }
+                );
+
+            return {
+                ok: true,
+
+                operador:
+                    operadorPublico(
+                        result.id,
+                        result.data
+                    ),
+            };
+        }
+    );
+
+
+/* =========================================================
+   OPERADORES — CERRAR SESIÓN
+========================================================= */
+
+exports.cerrarSesionOperador =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const result =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId:
+                            request.data
+                                ?.deviceId,
+                    }
+                );
+
+            await result
+                .sessionRef
+                .set(
+                    {
+                        activo:
+                            false,
+
+                        cerradaEn:
+                            admin.firestore.FieldValue.serverTimestamp(),
+
+                        motivoCierre:
+                            "logout",
+                    },
+                    {
+                        merge: true,
+                    }
+                );
+
+            return {
+                ok: true,
+            };
+        }
+    );
+
+
+/* =========================================================
+   OPERADORES — CREAR OPERADOR
+========================================================= */
+
+exports.crearOperadorInterno =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            await validarSesionOperadorInterna(
+                clienteRef,
+                request.data
+                    ?.operadorSesion,
+                {
+                    requireRole:
+                        "administrador",
+
+                    deviceId:
+                        request.data
+                            ?.deviceId,
+                }
+            );
+
+            const nombre =
+                normalizarNombreOperador(
+                    request.data?.nombre
+                );
+
+            const nombreKey =
+                normalizarNombreOperadorKey(
+                    nombre
+                );
+
+            const rol =
+                validarRolOperador(
+                    request.data?.rol
+                );
+
+            const clave =
+                validarClaveOperador(
+                    request.data?.clave
+                );
+
+            if (
+                !nombre ||
+                !nombreKey
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá el nombre del operador."
+                );
+            }
+
+            const existentes =
+                await clienteRef
+                    .collection(
+                        "operadores"
+                    )
+                    .where(
+                        "nombreKey",
+                        "==",
+                        nombreKey
+                    )
+                    .limit(1)
+                    .get();
+
+            if (!existentes.empty) {
+                throw new HttpsError(
+                    "already-exists",
+                    "Ya existe un operador con ese nombre."
+                );
+            }
+
+            const password =
+                await generarHashClaveOperador(
+                    clave
+                );
+
+            const recoverySeed =
+                rol ===
+                "administrador"
+                    ? crearDatosSemillaRecuperacion()
+                    : null;
+
+            const operadorRef =
+                clienteRef
+                    .collection(
+                        "operadores"
+                    )
+                    .doc();
+
+            const operadorData = {
+                nombre,
+
+                nombreKey,
+
+                rol,
+
+                activo:
+                    true,
+
+                password,
+
+                creadoEn:
+                    admin.firestore.FieldValue.serverTimestamp(),
+
+                actualizadoEn:
+                    admin.firestore.FieldValue.serverTimestamp(),
+            };
+
+            if (recoverySeed) {
+                operadorData.recoverySeed =
+                    recoverySeed.data;
+            }
+
+            await operadorRef.set(
+                operadorData
+            );
+
+            return {
+                ok: true,
+
+                operador:
+                    operadorPublico(
+                        operadorRef.id,
+                        {
+                            nombre,
+                            rol,
+                            activo:
+                                true,
+                        }
+                    ),
+
+                semillaRecuperacion:
+                    recoverySeed
+                        ?.semilla ||
+                    null,
+            };
+        }
+    );
+
+
+
+/* =========================================================
+   OPERADORES — RESTABLECER CLAVE
+========================================================= */
+
+exports.restablecerClaveOperadorInterno =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            /*
+             * Esta operación sólo puede realizarla un
+             * Administrador interno autenticado.
+             *
+             * El rol nunca se toma del navegador: se resuelve
+             * nuevamente desde Firestore mediante la sesión interna.
+             */
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const administrador =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        requireRole:
+                            "administrador",
+
+                        deviceId,
+                    }
+                );
+
+            const operadorId =
+                validarId(
+                    request.data?.operadorId,
+                    "operadorId"
+                );
+
+            const nuevaClave =
+                validarClaveOperador(
+                    request.data?.nuevaClave
+                );
+
+            const operadorRef =
+                getOperatorRef(
+                    clienteRef,
+                    operadorId
+                );
+
+            const operadorSnap =
+                await operadorRef.get();
+
+            if (!operadorSnap.exists) {
+                throw new HttpsError(
+                    "not-found",
+                    "Operador no encontrado."
+                );
+            }
+
+            const operadorData =
+                operadorSnap.data() ||
+                {};
+
+            if (
+                operadorData.rol ===
+                "administrador"
+            ) {
+                throw new HttpsError(
+                    "failed-precondition",
+                    "La clave de un Administrador sólo puede recuperarse con su clave semilla."
+                );
+            }
+
+            /*
+             * La clave anterior nunca se lee ni se devuelve.
+             * Generamos un hash completamente nuevo con salt aleatorio.
+             */
+            const password =
+                await generarHashClaveOperador(
+                    nuevaClave
+                );
+
+            /*
+             * Revocamos todas las sesiones internas del operador.
+             *
+             * Esto evita que una sesión ya abierta continúe siendo
+             * válida después de cambiar la clave.
+             */
+            const sesionesSnap =
+                await clienteRef
+                    .collection(
+                        "sesionesOperador"
+                    )
+                    .where(
+                        "operadorId",
+                        "==",
+                        operadorId
+                    )
+                    .get();
+
+            /*
+             * Firestore limita los batch writes a 500 operaciones.
+             * Dejamos margen para la actualización del operador.
+             *
+             * En una instalación normal, con sesiones de 12 horas,
+             * este límite no debería alcanzarse; si ocurriera,
+             * preferimos fallar de forma segura antes que dejar
+             * sesiones antiguas activas.
+             */
+            if (
+                sesionesSnap.size >
+                450
+            ) {
+                throw new HttpsError(
+                    "resource-exhausted",
+                    "Hay demasiadas sesiones internas para restablecer la clave de forma segura."
+                );
+            }
+
+            const batch =
+                db.batch();
+
+            batch.update(
+                operadorRef,
+                {
+                    password,
+
+                    claveActualizadaEn:
+                        admin.firestore.FieldValue.serverTimestamp(),
+
+                    claveActualizadaPor:
+                        administrador.id,
+
+                    actualizadoEn:
+                        admin.firestore.FieldValue.serverTimestamp(),
+                }
+            );
+
+            sesionesSnap.docs.forEach(
+                (sesionDoc) => {
+                    batch.set(
+                        sesionDoc.ref,
+                        {
+                            activo:
+                                false,
+
+                            cerradaEn:
+                                admin.firestore.FieldValue.serverTimestamp(),
+
+                            motivoCierre:
+                                "clave-restablecida",
+                        },
+                        {
+                            merge: true,
+                        }
+                    );
+                }
+            );
+
+            await batch.commit();
+
+            const sesionActualRevocada =
+                administrador.id ===
+                operadorId;
+
+            return {
+                ok: true,
+
+                operador:
+                    operadorPublico(
+                        operadorId,
+                        operadorData
+                    ),
+
+                sesionActualRevocada,
+            };
+        }
+    );
+
+
+
+/* =========================================================
+   OPERADORES — RECUPERAR ADMINISTRADOR CON SEMILLA
+========================================================= */
+
+/*
+ * Recuperación de clave de un Administrador interno.
+ *
+ * La autorización especial de esta operación es la semilla de
+ * recuperación generada para ESE Administrador.
+ *
+ * Además mantenemos la validación de la cuenta principal,
+ * licencia y sesión activa del dispositivo para que el endpoint
+ * sólo sea utilizable desde una instalación válida del POS.
+ *
+ * Al recuperarse la clave:
+ * - se reemplaza el password;
+ * - se invalidan todas las sesiones internas del Administrador;
+ * - la semilla usada queda invalidada;
+ * - se genera y devuelve UNA NUEVA SEMILLA para guardar.
+ */
+exports.recuperarAdministradorPrincipal =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const sessionId =
+                validarId(
+                    request.data?.sessionId,
+                    "sessionId"
+                );
+
+            const operadorId =
+                validarId(
+                    request.data?.operadorId,
+                    "operadorId"
+                );
+
+            const nuevaClave =
+                validarClaveOperador(
+                    request.data?.nuevaClave
+                );
+
+            const semillaRecuperacion =
+                String(
+                    request.data
+                        ?.semillaRecuperacion ||
+                    ""
+                );
+
+            const controlSnap =
+                await getControlRef(
+                    clienteRef
+                ).get();
+
+            const nowMs =
+                Date.now();
+
+            const sesionesDispositivo =
+                limpiarSesionesActivas(
+                    controlSnap.exists
+                        ? controlSnap.data()
+                            ?.sessions
+                        : {},
+                    nowMs
+                );
+
+            const sesionDispositivo =
+                sesionesDispositivo[
+                    deviceId
+                ];
+
+            if (
+                !sesionDispositivo ||
+                sesionDispositivo.sessionId !==
+                    sessionId ||
+                sesionDispositivo.authUid !==
+                    request.auth.uid
+            ) {
+                throw new HttpsError(
+                    "permission-denied",
+                    "Este dispositivo no tiene una sesión principal válida para recuperar el acceso administrativo."
+                );
+            }
+
+            const administradorRef =
+                getOperatorRef(
+                    clienteRef,
+                    operadorId
+                );
+
+            const administradorSnap =
+                await administradorRef.get();
+
+            if (!administradorSnap.exists) {
+                throw new HttpsError(
+                    "not-found",
+                    "Administrador no encontrado."
+                );
+            }
+
+            const administradorData =
+                administradorSnap.data() ||
+                {};
+
+            if (
+                administradorData.activo ===
+                    false ||
+                administradorData.rol !==
+                    "administrador"
+            ) {
+                throw new HttpsError(
+                    "failed-precondition",
+                    "El usuario seleccionado no es un Administrador activo."
+                );
+            }
+
+            if (
+                !verificarSemillaRecuperacion(
+                    semillaRecuperacion,
+                    administradorData
+                        .recoverySeed
+                )
+            ) {
+                throw new HttpsError(
+                    "permission-denied",
+                    "La clave semilla no es válida."
+                );
+            }
+
+            const password =
+                await generarHashClaveOperador(
+                    nuevaClave
+                );
+
+            const nuevaRecoverySeed =
+                crearDatosSemillaRecuperacion();
+
+            const sesionesOperadorSnap =
+                await clienteRef
+                    .collection(
+                        "sesionesOperador"
+                    )
+                    .where(
+                        "operadorId",
+                        "==",
+                        operadorId
+                    )
+                    .get();
+
+            if (
+                sesionesOperadorSnap.size >
+                450
+            ) {
+                throw new HttpsError(
+                    "resource-exhausted",
+                    "Hay demasiadas sesiones internas para recuperar la cuenta de forma segura."
+                );
+            }
+
+            const batch =
+                db.batch();
+
+            batch.update(
+                administradorRef,
+                {
+                    password,
+
+                    recoverySeed:
+                        nuevaRecoverySeed.data,
+
+                    claveActualizadaEn:
+                        admin.firestore.FieldValue.serverTimestamp(),
+
+                    claveActualizadaPor:
+                        "semilla-recuperacion",
+
+                    semillaRotadaEn:
+                        admin.firestore.FieldValue.serverTimestamp(),
+
+                    actualizadoEn:
+                        admin.firestore.FieldValue.serverTimestamp(),
+                }
+            );
+
+            sesionesOperadorSnap.docs.forEach(
+                (sesionDoc) => {
+                    batch.set(
+                        sesionDoc.ref,
+                        {
+                            activo:
+                                false,
+
+                            cerradaEn:
+                                admin.firestore.FieldValue.serverTimestamp(),
+
+                            motivoCierre:
+                                "recuperacion-con-semilla",
+                        },
+                        {
+                            merge: true,
+                        }
+                    );
+                }
+            );
+
+            batch.set(
+                getOperatorsConfigRef(
+                    clienteRef
+                ),
+                {
+                    ultimaRecuperacionAdminEn:
+                        admin.firestore.FieldValue.serverTimestamp(),
+
+                    ultimaRecuperacionAdminId:
+                        operadorId,
+
+                    ultimaRecuperacionDeviceId:
+                        deviceId,
+
+                    actualizadoEn:
+                        admin.firestore.FieldValue.serverTimestamp(),
+                },
+                {
+                    merge: true,
+                }
+            );
+
+            await batch.commit();
+
+            return {
+                ok: true,
+
+                operador:
+                    operadorPublico(
+                        operadorId,
+                        administradorData
+                    ),
+
+                nuevaSemillaRecuperacion:
+                    nuevaRecoverySeed.semilla,
+            };
+        }
+    );
+
 
 /* =========================================================
    LISTAR CLIENTES
@@ -2959,6 +5177,1479 @@ exports.cerrarTodasLasSesiones =
  * interrumpe antes de terminar, el documento de caja permanece
  * y la operación puede reintentarse de forma segura.
  */
+
+/* =========================================================
+   ABRIR CAJA + AUDITORÍA
+========================================================= */
+
+/*
+ * La apertura pasa por backend para que:
+ *
+ * - la licencia sea validada;
+ * - la sesión interna sea validada;
+ * - Administrador y Encargado puedan abrir caja;
+ * - la identidad del operador se resuelva desde Firestore;
+ * - la caja, la configuración y la auditoría se escriban
+ *   dentro de la misma transacción.
+ */
+
+/* =========================================================
+   REPONER STOCK + AUDITORÍA
+========================================================= */
+
+/*
+ * La reposición pasa por backend para que:
+ *
+ * - la licencia sea validada;
+ * - la sesión interna sea validada;
+ * - Administrador y Encargado puedan reponer;
+ * - la identidad del operador se resuelva desde Firestore;
+ * - el cambio de stock y la auditoría se escriban
+ *   dentro de la misma transacción.
+ */
+
+/* =========================================================
+   EDITAR PRODUCTO + AUDITORÍA
+========================================================= */
+
+/*
+ * Sólo la EDICIÓN pasa por esta callable.
+ *
+ * El alta de un producto sigue fuera de esta auditoría porque
+ * la acción definida es "edicion-producto".
+ *
+ * La edición y el evento de auditoría se escriben en la misma
+ * transacción. Administrador y Encargado pueden editar.
+ */
+exports.editarProducto =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const productoEntrada =
+                request.data?.product;
+
+            if (
+                !productoEntrada ||
+                typeof productoEntrada !==
+                    "object" ||
+                Array.isArray(
+                    productoEntrada
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Datos del producto inválidos."
+                );
+            }
+
+            const previousBarcode =
+                textoSeguro(
+                    request.data
+                        ?.previousBarcode,
+                    180
+                );
+
+            const barcode =
+                textoSeguro(
+                    productoEntrada
+                        ?.barcode,
+                    180
+                );
+
+            const name =
+                textoSeguro(
+                    productoEntrada
+                        ?.name,
+                    180
+                );
+
+            if (
+                !previousBarcode ||
+                !barcode ||
+                !name
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El producto, su código anterior y su nombre son obligatorios."
+                );
+            }
+
+            const tiposPermitidos =
+                new Set([
+                    "unidad",
+                    "peso",
+                    "precio-libre",
+                ]);
+
+            const tipoVenta =
+                tiposPermitidos.has(
+                    productoEntrada
+                        ?.tipoVenta
+                )
+                    ? productoEntrada
+                        .tipoVenta
+                    : "unidad";
+
+            const roundMoney =
+                (value) =>
+                    Math.round(
+                        (
+                            Number(value) +
+                            Number.EPSILON
+                        ) *
+                        100
+                    ) /
+                    100;
+
+            const roundQuantity =
+                (value) =>
+                    Math.round(
+                        (
+                            Number(value) +
+                            Number.EPSILON
+                        ) *
+                        1000
+                    ) /
+                    1000;
+
+            const price =
+                tipoVenta ===
+                    "precio-libre"
+                    ? 0
+                    : roundMoney(
+                        productoEntrada
+                            ?.price
+                    );
+
+            let stock = 0;
+
+            if (
+                tipoVenta ===
+                "peso"
+            ) {
+                stock =
+                    roundQuantity(
+                        productoEntrada
+                            ?.stock
+                    );
+            } else if (
+                tipoVenta ===
+                "unidad"
+            ) {
+                stock =
+                    Math.trunc(
+                        Number(
+                            productoEntrada
+                                ?.stock
+                        )
+                    );
+            }
+
+            if (
+                tipoVenta !==
+                    "precio-libre" &&
+                (
+                    !Number.isFinite(
+                        price
+                    ) ||
+                    price < 0
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El precio del producto no es válido."
+                );
+            }
+
+            if (
+                tipoVenta !==
+                    "precio-libre" &&
+                (
+                    !Number.isFinite(
+                        stock
+                    ) ||
+                    stock < 0
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El stock del producto no es válido."
+                );
+            }
+
+            const expiry =
+                textoSeguro(
+                    productoEntrada
+                        ?.expiry,
+                    120
+                ) ||
+                null;
+
+            const unidadMedida =
+                tipoVenta ===
+                    "peso"
+                    ? (
+                        textoSeguro(
+                            productoEntrada
+                                ?.unidadMedida,
+                            40
+                        ) ||
+                        "kg"
+                    )
+                    : null;
+
+            const previousRef =
+                clienteRef
+                    .collection(
+                        "productos"
+                    )
+                    .doc(
+                        previousBarcode
+                    );
+
+            const nextRef =
+                clienteRef
+                    .collection(
+                        "productos"
+                    )
+                    .doc(
+                        barcode
+                    );
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const previousSnap =
+                            await transaction.get(
+                                previousRef
+                            );
+
+                        if (
+                            !previousSnap.exists
+                        ) {
+                            throw new HttpsError(
+                                "not-found",
+                                "Producto no encontrado.",
+                                {
+                                    motivo:
+                                        "product-not-found",
+                                }
+                            );
+                        }
+
+                        let nextSnap =
+                            null;
+
+                        if (
+                            previousBarcode !==
+                            barcode
+                        ) {
+                            nextSnap =
+                                await transaction.get(
+                                    nextRef
+                                );
+
+                            if (
+                                nextSnap.exists
+                            ) {
+                                throw new HttpsError(
+                                    "already-exists",
+                                    "Ya existe otro producto con ese código.",
+                                    {
+                                        motivo:
+                                            "product-barcode-conflict",
+                                    }
+                                );
+                            }
+                        }
+
+                        const anterior =
+                            previousSnap.data() ||
+                            {};
+
+                        const productoActualizado = {
+                            ...anterior,
+
+                            barcode,
+
+                            name,
+
+                            tipoVenta,
+
+                            unidadMedida,
+
+                            price,
+
+                            stock,
+
+                            expiry,
+
+                            updatedAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                        };
+
+                        if (
+                            previousBarcode !==
+                            barcode
+                        ) {
+                            /*
+                             * Conservamos el comportamiento previo:
+                             * cuando cambia el código se crea un
+                             * documento nuevo y se elimina el anterior.
+                             */
+                            productoActualizado
+                                .createdAt =
+                                admin.firestore.FieldValue.serverTimestamp();
+
+                            transaction.set(
+                                nextRef,
+                                productoActualizado,
+                                {
+                                    merge:
+                                        true,
+                                }
+                            );
+
+                            transaction.delete(
+                                previousRef
+                            );
+                        } else {
+                            transaction.set(
+                                previousRef,
+                                productoActualizado,
+                                {
+                                    merge:
+                                        true,
+                                }
+                            );
+                        }
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+
+                                operador:
+                                    operadorAutorizado,
+
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .EDICION_PRODUCTO,
+
+                                deviceId,
+
+                                detalle: {
+                                    barcodeAnterior:
+                                        previousBarcode,
+
+                                    barcodeNuevo:
+                                        barcode,
+
+                                    nombreAnterior:
+                                        textoSeguro(
+                                            anterior.name,
+                                            180
+                                        ),
+
+                                    nombreNuevo:
+                                        name,
+
+                                    tipoVentaAnterior:
+                                        textoSeguro(
+                                            anterior.tipoVenta,
+                                            40
+                                        ) ||
+                                        "unidad",
+
+                                    tipoVentaNuevo:
+                                        tipoVenta,
+
+                                    precioAnterior:
+                                        Number(
+                                            anterior.price ||
+                                            0
+                                        ),
+
+                                    precioNuevo:
+                                        price,
+
+                                    stockAnterior:
+                                        Number(
+                                            anterior.stock ||
+                                            0
+                                        ),
+
+                                    stockNuevo:
+                                        stock,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            barcode,
+
+                            name,
+
+                            tipoVenta,
+
+                            unidadMedida,
+
+                            price,
+
+                            stock,
+
+                            expiry,
+                        };
+                    }
+                );
+
+            return {
+                ok:
+                    true,
+
+                product:
+                    result,
+            };
+        }
+    );
+
+
+exports.reponerStock =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const barcode =
+                textoSeguro(
+                    request.data?.barcode,
+                    180
+                );
+
+            if (!barcode) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "barcode es obligatorio."
+                );
+            }
+
+            const addRaw =
+                Number(
+                    request.data?.add
+                );
+
+            if (
+                !Number.isFinite(
+                    addRaw
+                ) ||
+                addRaw <= 0
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá una cantidad válida."
+                );
+            }
+
+            const productoRef =
+                clienteRef
+                    .collection(
+                        "productos"
+                    )
+                    .doc(
+                        barcode
+                    );
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const productoSnap =
+                            await transaction.get(
+                                productoRef
+                            );
+
+                        if (
+                            !productoSnap.exists
+                        ) {
+                            throw new HttpsError(
+                                "not-found",
+                                "Producto no encontrado.",
+                                {
+                                    motivo:
+                                        "product-not-found",
+                                }
+                            );
+                        }
+
+                        const producto =
+                            productoSnap.data() ||
+                            {};
+
+                        const tipoVenta =
+                            textoSeguro(
+                                producto.tipoVenta,
+                                40
+                            ) ||
+                            "unidad";
+
+                        if (
+                            tipoVenta ===
+                            "precio-libre"
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Este producto no utiliza stock.",
+                                {
+                                    motivo:
+                                        "product-without-stock",
+                                }
+                            );
+                        }
+
+                        let cantidadAgregada;
+
+                        if (
+                            tipoVenta ===
+                            "peso"
+                        ) {
+                            cantidadAgregada =
+                                Math.round(
+                                    (
+                                        addRaw +
+                                        Number.EPSILON
+                                    ) *
+                                    1000
+                                ) /
+                                1000;
+                        } else {
+                            cantidadAgregada =
+                                Math.trunc(
+                                    addRaw
+                                );
+                        }
+
+                        if (
+                            !Number.isFinite(
+                                cantidadAgregada
+                            ) ||
+                            cantidadAgregada <= 0
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                tipoVenta ===
+                                    "peso"
+                                    ? "Ingresá un peso válido."
+                                    : "Ingresá una cantidad válida."
+                            );
+                        }
+
+                        const stockAnteriorRaw =
+                            Number(
+                                producto.stock ||
+                                0
+                            );
+
+                        const stockAnterior =
+                            Number.isFinite(
+                                stockAnteriorRaw
+                            )
+                                ? stockAnteriorRaw
+                                : 0;
+
+                        const stockNuevo =
+                            tipoVenta ===
+                            "peso"
+                                ? Math.round(
+                                    (
+                                        stockAnterior +
+                                        cantidadAgregada +
+                                        Number.EPSILON
+                                    ) *
+                                    1000
+                                ) /
+                                1000
+                                : Math.trunc(
+                                    stockAnterior +
+                                    cantidadAgregada
+                                );
+
+                        transaction.update(
+                            productoRef,
+                            {
+                                stock:
+                                    stockNuevo,
+
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+
+                                operador:
+                                    operadorAutorizado,
+
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .REPOSICION_STOCK,
+
+                                deviceId,
+
+                                detalle: {
+                                    barcode,
+
+                                    productoNombre:
+                                        textoSeguro(
+                                            producto.name,
+                                            120
+                                        ),
+
+                                    tipoVenta,
+
+                                    cantidadAgregada,
+
+                                    stockAnterior,
+
+                                    stockNuevo,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            barcode,
+
+                            tipoVenta,
+
+                            cantidadAgregada,
+
+                            stockAnterior,
+
+                            stockNuevo,
+                        };
+                    }
+                );
+
+            return {
+                ok:
+                    true,
+
+                ...result,
+            };
+        }
+    );
+
+
+exports.abrirCaja =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const sessionId =
+                validarId(
+                    request.data?.sessionId,
+                    "sessionId"
+                );
+
+            const openAmountRaw =
+                Number(
+                    request.data?.openAmount
+                );
+
+            if (
+                !Number.isFinite(
+                    openAmountRaw
+                ) ||
+                openAmountRaw < 0
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá un monto inicial válido."
+                );
+            }
+
+            const openAmount =
+                Math.round(
+                    (
+                        openAmountRaw +
+                        Number.EPSILON
+                    ) *
+                    100
+                ) /
+                100;
+
+            const configRef =
+                clienteRef
+                    .collection(
+                        "configuracion"
+                    )
+                    .doc(
+                        "pos"
+                    );
+
+            const sessionRef =
+                clienteRef
+                    .collection(
+                        "cajas"
+                    )
+                    .doc(
+                        sessionId
+                    );
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const configSnap =
+                            await transaction.get(
+                                configRef
+                            );
+
+                        const existingOpenId =
+                            textoSeguro(
+                                configSnap.data()
+                                    ?.openCashSessionId,
+                                180
+                            );
+
+                        if (
+                            existingOpenId
+                        ) {
+                            const existingRef =
+                                clienteRef
+                                    .collection(
+                                        "cajas"
+                                    )
+                                    .doc(
+                                        existingOpenId
+                                    );
+
+                            const existingSnap =
+                                await transaction.get(
+                                    existingRef
+                                );
+
+                            if (
+                                existingSnap.exists &&
+                                existingSnap.data()
+                                    ?.status ===
+                                    "open"
+                            ) {
+                                if (
+                                    existingOpenId ===
+                                    sessionId
+                                ) {
+                                    return {
+                                        created:
+                                            false,
+
+                                        session: {
+                                            id:
+                                                existingSnap.id,
+
+                                            ...existingSnap.data(),
+                                        },
+                                    };
+                                }
+
+                                throw new HttpsError(
+                                    "already-exists",
+                                    "Ya hay una caja abierta.",
+                                    {
+                                        motivo:
+                                            "cash-already-open",
+
+                                        sessionId:
+                                            existingOpenId,
+                                    }
+                                );
+                            }
+                        }
+
+                        const targetSnap =
+                            await transaction.get(
+                                sessionRef
+                            );
+
+                        if (
+                            targetSnap.exists
+                        ) {
+                            const existing = {
+                                id:
+                                    targetSnap.id,
+
+                                ...targetSnap.data(),
+                            };
+
+                            if (
+                                existing.status ===
+                                "open"
+                            ) {
+                                transaction.set(
+                                    configRef,
+                                    {
+                                        openCashSessionId:
+                                            sessionId,
+
+                                        updatedAt:
+                                            admin.firestore.FieldValue.serverTimestamp(),
+                                    },
+                                    {
+                                        merge:
+                                            true,
+                                    }
+                                );
+
+                                return {
+                                    created:
+                                        false,
+
+                                    session:
+                                        existing,
+                                };
+                            }
+
+                            throw new HttpsError(
+                                "already-exists",
+                                "El identificador de caja ya fue utilizado.",
+                                {
+                                    motivo:
+                                        "cash-session-id-used",
+                                }
+                            );
+                        }
+
+                        const openTime =
+                            new Date()
+                                .toISOString();
+
+                        const session = {
+                            id:
+                                sessionId,
+
+                            openTime,
+
+                            openAmount,
+
+                            closeTime:
+                                null,
+
+                            closeAmount:
+                                null,
+
+                            expectedAmount:
+                                null,
+
+                            counted:
+                                null,
+
+                            diff:
+                                null,
+
+                            totalSales:
+                                0,
+
+                            salesCount:
+                                0,
+
+                            paymentTotals: {
+                                efectivo:
+                                    0,
+
+                                transferencia:
+                                    0,
+
+                                qr:
+                                    0,
+
+                                tarjeta:
+                                    0,
+                            },
+
+                            status:
+                                "open",
+
+                            openedByDeviceId:
+                                deviceId,
+
+                            createdAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+
+                            updatedAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                        };
+
+                        transaction.set(
+                            sessionRef,
+                            session
+                        );
+
+                        transaction.set(
+                            configRef,
+                            {
+                                openCashSessionId:
+                                    sessionId,
+
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            },
+                            {
+                                merge:
+                                    true,
+                            }
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+
+                                operador:
+                                    operadorAutorizado,
+
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .APERTURA_CAJA,
+
+                                deviceId,
+
+                                detalle: {
+                                    cajaId:
+                                        sessionId,
+
+                                    montoInicial:
+                                        openAmount,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            created:
+                                true,
+
+                            session,
+                        };
+                    }
+                );
+
+            return {
+                ok:
+                    true,
+
+                created:
+                    result.created,
+
+                session: {
+                    ...result.session,
+
+                    createdAt:
+                        null,
+
+                    updatedAt:
+                        null,
+                },
+            };
+        }
+    );
+
+
+
+/* =========================================================
+   CERRAR CAJA + AUDITORÍA
+========================================================= */
+
+/*
+ * El cierre pasa por backend para que:
+ *
+ * - la licencia sea validada;
+ * - la sesión interna sea validada;
+ * - Administrador y Encargado puedan cerrar caja;
+ * - la identidad del operador se resuelva desde Firestore;
+ * - el cierre, la configuración y la auditoría se escriban
+ *   dentro de la misma transacción.
+ */
+exports.cerrarCaja =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const sessionId =
+                validarId(
+                    request.data?.sessionId,
+                    "sessionId"
+                );
+
+            const countedRaw =
+                Number(
+                    request.data?.counted
+                );
+
+            if (
+                !Number.isFinite(
+                    countedRaw
+                ) ||
+                countedRaw < 0
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá un efectivo contado válido."
+                );
+            }
+
+            const roundMoney =
+                (value) =>
+                    Math.round(
+                        (
+                            Number(value || 0) +
+                            Number.EPSILON
+                        ) *
+                        100
+                    ) /
+                    100;
+
+            const counted =
+                roundMoney(
+                    countedRaw
+                );
+
+            const configRef =
+                clienteRef
+                    .collection(
+                        "configuracion"
+                    )
+                    .doc(
+                        "pos"
+                    );
+
+            const sessionRef =
+                clienteRef
+                    .collection(
+                        "cajas"
+                    )
+                    .doc(
+                        sessionId
+                    );
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const configSnap =
+                            await transaction.get(
+                                configRef
+                            );
+
+                        const sessionSnap =
+                            await transaction.get(
+                                sessionRef
+                            );
+
+                        if (
+                            !sessionSnap.exists
+                        ) {
+                            throw new HttpsError(
+                                "not-found",
+                                "No encontramos la caja.",
+                                {
+                                    motivo:
+                                        "cash-session-not-found",
+                                }
+                            );
+                        }
+
+                        const session =
+                            sessionSnap.data() ||
+                            {};
+
+                        if (
+                            session.status !==
+                            "open"
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La caja ya está cerrada.",
+                                {
+                                    motivo:
+                                        "cash-already-closed",
+                                }
+                            );
+                        }
+
+                        const activeSessionId =
+                            textoSeguro(
+                                configSnap.data()
+                                    ?.openCashSessionId,
+                                180
+                            );
+
+                        if (
+                            activeSessionId !==
+                            sessionId
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Esta caja ya no es la caja activa.",
+                                {
+                                    motivo:
+                                        "cash-session-mismatch",
+                                }
+                            );
+                        }
+
+                        const paymentTotals = {
+                            efectivo:
+                                roundMoney(
+                                    session
+                                        ?.paymentTotals
+                                        ?.efectivo
+                                ),
+
+                            transferencia:
+                                roundMoney(
+                                    session
+                                        ?.paymentTotals
+                                        ?.transferencia
+                                ),
+
+                            qr:
+                                roundMoney(
+                                    session
+                                        ?.paymentTotals
+                                        ?.qr
+                                ),
+
+                            tarjeta:
+                                roundMoney(
+                                    session
+                                        ?.paymentTotals
+                                        ?.tarjeta
+                                ),
+                        };
+
+                        const totalSales =
+                            roundMoney(
+                                session.totalSales
+                            );
+
+                        const salesCount =
+                            Math.max(
+                                0,
+                                Math.trunc(
+                                    Number(
+                                        session.salesCount ||
+                                        0
+                                    )
+                                )
+                            );
+
+                        const expectedAmount =
+                            roundMoney(
+                                Number(
+                                    session.openAmount ||
+                                    0
+                                ) +
+                                paymentTotals.efectivo
+                            );
+
+                        const diff =
+                            roundMoney(
+                                counted -
+                                expectedAmount
+                            );
+
+                        const closeTime =
+                            new Date()
+                                .toISOString();
+
+                        transaction.update(
+                            sessionRef,
+                            {
+                                closeTime,
+
+                                closeAmount:
+                                    counted,
+
+                                expectedAmount,
+
+                                counted,
+
+                                diff,
+
+                                totalSales,
+
+                                salesCount,
+
+                                paymentTotals,
+
+                                status:
+                                    "closed",
+
+                                closedByDeviceId:
+                                    deviceId,
+
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        transaction.set(
+                            configRef,
+                            {
+                                openCashSessionId:
+                                    null,
+
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            },
+                            {
+                                merge:
+                                    true,
+                            }
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+
+                                operador:
+                                    operadorAutorizado,
+
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .CIERRE_CAJA,
+
+                                deviceId,
+
+                                detalle: {
+                                    cajaId:
+                                        sessionId,
+
+                                    montoInicial:
+                                        roundMoney(
+                                            session.openAmount
+                                        ),
+
+                                    efectivoEsperado:
+                                        expectedAmount,
+
+                                    efectivoContado:
+                                        counted,
+
+                                    diferencia:
+                                        diff,
+
+                                    totalVentas:
+                                        totalSales,
+
+                                    cantidadVentas:
+                                        salesCount,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            id:
+                                sessionId,
+
+                            ...session,
+
+                            closeTime,
+
+                            closeAmount:
+                                counted,
+
+                            expectedAmount,
+
+                            counted,
+
+                            diff,
+
+                            totalSales,
+
+                            salesCount,
+
+                            paymentTotals,
+
+                            status:
+                                "closed",
+
+                            closedByDeviceId:
+                                deviceId,
+                        };
+                    }
+                );
+
+            return {
+                ok:
+                    true,
+
+                session:
+                    result,
+            };
+        }
+    );
+
+
 exports.eliminarCierreCaja =
     onCall(
         CALLABLE_OPTIONS,
@@ -2995,6 +6686,40 @@ exports.eliminarCierreCaja =
                 request.auth,
                 clienteData
             );
+
+            /*
+             * La eliminación de un cierre histórico es una acción
+             * sensible y queda reservada al Administrador interno
+             * del comercio.
+             *
+             * No confiamos en un rol enviado por el navegador:
+             * validarSesionOperadorInterna resuelve nuevamente el
+             * operador real desde Firestore y verifica:
+             *
+             * - token de sesión interna
+             * - vencimiento
+             * - operador activo
+             * - dispositivo
+             * - rol administrador
+             */
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        requireRole:
+                            "administrador",
+
+                        deviceId,
+                    }
+                );
 
             const cajaRef =
                 clienteRef
@@ -3092,12 +6817,51 @@ exports.eliminarCierreCaja =
             /*
              * La caja se elimina al final.
              *
-             * De esta forma nunca dejamos ventas huérfanas por
-             * haber eliminado primero el cierre. Si una tanda de
-             * ventas falla, el cierre sigue existiendo y se puede
-             * reintentar la operación.
+             * La eliminación del cierre y su evento de auditoría
+             * se escriben en el MISMO batch. De esta forma nunca
+             * registramos como exitosa una eliminación que no llegó
+             * a borrar realmente el cierre.
+             *
+             * Las ventas asociadas ya fueron eliminadas en lotes.
+             * Si alguno de esos lotes falla, este bloque no se ejecuta
+             * y el cierre permanece disponible para reintentar.
              */
-            await cajaRef.delete();
+            const eventoAuditoria =
+                crearEventoAuditoria({
+                    clienteRef,
+
+                    operador:
+                        operadorAutorizado,
+
+                    accion:
+                        AUDIT_ACTIONS
+                            .ELIMINACION_CIERRE_HISTORICO,
+
+                    deviceId,
+
+                    detalle: {
+                        cajaId,
+
+                        ventasEliminadas,
+
+                        statusAnterior:
+                            cajaData.status,
+                    },
+                });
+
+            const finalBatch =
+                db.batch();
+
+            finalBatch.delete(
+                cajaRef
+            );
+
+            finalBatch.set(
+                eventoAuditoria.ref,
+                eventoAuditoria.data
+            );
+
+            await finalBatch.commit();
 
             console.info(
                 "Cierre de caja eliminado:",
@@ -3108,6 +6872,14 @@ exports.eliminarCierreCaja =
                     ventasEliminadas,
                     authUid:
                         request.auth.uid,
+
+                    operadorId:
+                        operadorAutorizado.id,
+
+                    operadorRol:
+                        operadorAutorizado.rol,
+
+                    deviceId,
                 }
             );
 
@@ -3222,6 +6994,18 @@ exports.eliminarCliente =
                 borrarColeccion(
                     clienteRef.collection(
                         "seguridad"
+                    )
+                ),
+
+                borrarColeccion(
+                    clienteRef.collection(
+                        "operadores"
+                    )
+                ),
+
+                borrarColeccion(
+                    clienteRef.collection(
+                        "sesionesOperador"
                     )
                 ),
             ]);
