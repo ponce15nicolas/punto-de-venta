@@ -292,12 +292,16 @@ export default function Header({
             mt-3
             flex
             max-w-[520px]
-            items-center
-            justify-between
-            gap-3
+            flex-col
+            items-stretch
+            gap-2
             border-t
             border-white/[0.06]
             pt-2.5
+            min-[480px]:flex-row
+            min-[480px]:items-center
+            min-[480px]:justify-between
+            min-[480px]:gap-3
           "
         >
           <div
@@ -361,9 +365,11 @@ export default function Header({
           <div
             className="
               flex
-              shrink-0
+              w-full
               items-center
               gap-2
+              min-[480px]:w-auto
+              min-[480px]:shrink-0
             "
           >
             {esAdministrador && (
@@ -376,9 +382,12 @@ export default function Header({
                 }
                 className="
                   inline-flex
-                  shrink-0
+                  min-w-0
+                  flex-1
                   items-center
+                  justify-center
                   gap-1.5
+                  min-[480px]:flex-none
                   rounded-xl
                   border
                   border-[#FFC61A]/20
@@ -419,9 +428,12 @@ export default function Header({
               }
               className="
                 inline-flex
-                shrink-0
+                min-w-0
+                flex-1
                 items-center
+                justify-center
                 gap-1.5
+                min-[480px]:flex-none
                 rounded-xl
                 border
                 border-white/10
