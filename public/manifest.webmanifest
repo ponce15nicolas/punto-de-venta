@@ -1,0 +1,25 @@
+{
+  "name": "Punto de Venta",
+  "short_name": "POS",
+  "description": "Gestioná ventas, caja, stock y cuentas por cobrar desde un punto de venta simple, rápido y seguro.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#111318",
+  "theme_color": "#111318",
+  "lang": "es-AR",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
