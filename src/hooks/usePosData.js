@@ -41,6 +41,7 @@ import {
 } from "../services/pos/posFirestore";
 
 import {
+  markLocalPosMigrationHandled,
   migrateLocalPosToFirestore,
 } from "../services/pos/posMigration";
 
@@ -65,14 +66,26 @@ const DEFAULT_SHOP_NAME =
   "Mi Negocio";
 
 /*
- * Identifica a qué cliente pertenece
- * la caché local actual.
+ * Identifica a qué cliente pertenecen
+ * las claves planas heredadas.
  *
- * Evita migrar datos de un comercio
- * hacia otro si utilizan el mismo navegador.
+ * La caché Cloud nueva se publica como un único sobre con
+ * owner propio, para que snapshots parciales nunca mezclen
+ * datos de dos comercios en el mismo navegador.
  */
 const LOCAL_OWNER_KEY =
   "cloudOwnerClienteId";
+
+const LOCAL_CLOUD_CACHE_KEY =
+  "cloudCacheV1";
+
+const LOCAL_CLOUD_CACHE_VERSION =
+  1;
+
+const MIGRATION_SAFE_DISCARD_REASONS =
+  new Set([
+    "migration-multiple-open-cash-sessions",
+  ]);
 
 /* =========================================================
    HELPERS
@@ -88,6 +101,35 @@ function toNumber(
   return Number.isFinite(number)
     ? number
     : fallback;
+}
+
+function readOwnedCloudCache(
+  clienteId
+) {
+  const cache =
+    storeGet(
+      LOCAL_CLOUD_CACHE_KEY,
+      null
+    );
+
+  if (
+    !cache ||
+    typeof cache !==
+      "object" ||
+    Array.isArray(cache) ||
+    cache.version !==
+      LOCAL_CLOUD_CACHE_VERSION ||
+    cache.complete !== true ||
+    String(
+      cache.owner ||
+      ""
+    ).trim() !==
+      clienteId
+  ) {
+    return null;
+  }
+
+  return cache;
 }
 
 function roundMoney(value) {
@@ -392,7 +434,9 @@ function mapCloudError(
 export function usePosData({
   clienteId = null,
   deviceId = null,
+  deviceSessionId = null,
   operadorSesion = null,
+  operadorEsAdministrador = false,
 } = {}) {
   const cleanClienteId =
     String(
@@ -406,10 +450,31 @@ export function usePosData({
         ""
     ).trim();
 
+  const cleanDeviceSessionId =
+    String(
+      deviceSessionId ||
+        ""
+    ).trim();
+
+  const operadorSesionId =
+    String(
+      operadorSesion?.id ||
+        ""
+    ).trim();
+
+  const operadorSesionToken =
+    String(
+      operadorSesion?.token ||
+        ""
+    ).trim();
+
   const cloudRequested =
     Boolean(
       cleanClienteId &&
-      cleanDeviceId
+      cleanDeviceId &&
+      cleanDeviceSessionId &&
+      operadorSesionId &&
+      operadorSesionToken
     );
 
   /* =========================================================
@@ -463,6 +528,11 @@ export function usePosData({
   );
 
   const [
+    migrationNeedsAdmin,
+    setMigrationNeedsAdmin,
+  ] = useState(false);
+
+  const [
     toastMsg,
     setToastMsg,
   ] = useState(null);
@@ -480,10 +550,18 @@ export function usePosData({
   const cashSessionsRef =
     useRef([]);
 
+  const shopNameRef =
+    useRef(
+      DEFAULT_SHOP_NAME
+    );
+
   const accountsReceivableRef =
     useRef([]);
 
   const cloudActiveRef =
+    useRef(false);
+
+  const cloudCacheCompleteRef =
     useRef(false);
 
   const syncErrorShownRef =
@@ -564,6 +642,46 @@ export function usePosData({
      CACHÉ LOCAL
   ========================================================= */
 
+  const persistCompleteCloudCache =
+    useCallback(() => {
+      if (
+        !cleanClienteId
+      ) {
+        return false;
+      }
+
+      return storeSet(
+        LOCAL_CLOUD_CACHE_KEY,
+        {
+          version:
+            LOCAL_CLOUD_CACHE_VERSION,
+
+          owner:
+            cleanClienteId,
+
+          complete: true,
+
+          catalog:
+            catalogRef.current,
+
+          sales:
+            salesRef.current,
+
+          cashSessions:
+            cashSessionsRef.current,
+
+          shopName:
+            shopNameRef.current,
+
+          updatedAt:
+            new Date()
+              .toISOString(),
+        }
+      );
+    }, [
+      cleanClienteId,
+    ]);
+
   const persistCatalog =
     useCallback(
       (next) => {
@@ -579,12 +697,28 @@ export function usePosData({
           normalized
         );
 
-        storeSet(
-          "catalog",
-          normalized
-        );
+        if (
+          cloudRequested
+        ) {
+          if (
+            cloudActiveRef
+              .current &&
+            cloudCacheCompleteRef
+              .current
+          ) {
+            persistCompleteCloudCache();
+          }
+        } else {
+          storeSet(
+            "catalog",
+            normalized
+          );
+        }
       },
-      []
+      [
+        cloudRequested,
+        persistCompleteCloudCache,
+      ]
     );
 
   const persistSales =
@@ -602,12 +736,28 @@ export function usePosData({
           normalized
         );
 
-        storeSet(
-          "sales",
-          normalized
-        );
+        if (
+          cloudRequested
+        ) {
+          if (
+            cloudActiveRef
+              .current &&
+            cloudCacheCompleteRef
+              .current
+          ) {
+            persistCompleteCloudCache();
+          }
+        } else {
+          storeSet(
+            "sales",
+            normalized
+          );
+        }
       },
-      []
+      [
+        cloudRequested,
+        persistCompleteCloudCache,
+      ]
     );
 
   const persistCashSessions =
@@ -627,12 +777,28 @@ export function usePosData({
           normalized
         );
 
-        storeSet(
-          "cashSessions",
-          normalized
-        );
+        if (
+          cloudRequested
+        ) {
+          if (
+            cloudActiveRef
+              .current &&
+            cloudCacheCompleteRef
+              .current
+          ) {
+            persistCompleteCloudCache();
+          }
+        } else {
+          storeSet(
+            "cashSessions",
+            normalized
+          );
+        }
       },
-      []
+      [
+        cloudRequested,
+        persistCompleteCloudCache,
+      ]
     );
 
   const persistShopName =
@@ -649,12 +815,31 @@ export function usePosData({
           cleanName
         );
 
-        storeSet(
-          "shopName",
-          cleanName
-        );
+        shopNameRef.current =
+          cleanName;
+
+        if (
+          cloudRequested
+        ) {
+          if (
+            cloudActiveRef
+              .current &&
+            cloudCacheCompleteRef
+              .current
+          ) {
+            persistCompleteCloudCache();
+          }
+        } else {
+          storeSet(
+            "shopName",
+            cleanName
+          );
+        }
       },
-      []
+      [
+        cloudRequested,
+        persistCompleteCloudCache,
+      ]
     );
 
   /* =========================================================
@@ -663,37 +848,86 @@ export function usePosData({
 
   useEffect(() => {
     try {
+      const ownedCloudCache =
+        cloudRequested
+          ? readOwnedCloudCache(
+              cleanClienteId
+            )
+          : null;
+
+      const flatOwner =
+        String(
+          storeGet(
+            LOCAL_OWNER_KEY,
+            ""
+          ) ||
+          ""
+        ).trim();
+
+      const canReadFlatCache =
+        !cloudRequested ||
+        !flatOwner ||
+        flatOwner ===
+          cleanClienteId;
+
       const savedCatalog =
         normalizeCatalog(
-          storeGet(
-            "catalog",
-            {}
-          ) || {}
+          ownedCloudCache
+            ?.catalog ||
+          (
+            canReadFlatCache
+              ? storeGet(
+                  "catalog",
+                  {}
+                )
+              : {}
+          ) ||
+          {}
         );
 
       const savedSales =
         normalizeArray(
-          storeGet(
-            "sales",
-            []
-          ) || []
+          ownedCloudCache
+            ?.sales ||
+          (
+            canReadFlatCache
+              ? storeGet(
+                  "sales",
+                  []
+                )
+              : []
+          ) ||
+          []
         );
 
       const savedCashSessions =
         sortCashSessions(
           normalizeArray(
-            storeGet(
-              "cashSessions",
-              []
-            ) || []
+            ownedCloudCache
+              ?.cashSessions ||
+            (
+              canReadFlatCache
+                ? storeGet(
+                    "cashSessions",
+                    []
+                  )
+                : []
+            ) ||
+            []
           )
         );
 
       const savedShopName =
         String(
-          storeGet(
-            "shopName",
-            DEFAULT_SHOP_NAME
+          ownedCloudCache
+            ?.shopName ||
+          (
+            canReadFlatCache
+              ? storeGet(
+                  "shopName",
+                  DEFAULT_SHOP_NAME
+                )
+              : DEFAULT_SHOP_NAME
           ) ||
             DEFAULT_SHOP_NAME
         ).trim() ||
@@ -707,6 +941,12 @@ export function usePosData({
 
       cashSessionsRef.current =
         savedCashSessions;
+
+      shopNameRef.current =
+        savedShopName;
+
+      accountsReceivableRef.current =
+        [];
 
       setCatalog(
         savedCatalog
@@ -723,6 +963,9 @@ export function usePosData({
       setShopNameState(
         savedShopName
       );
+
+      setAccountsReceivable([]);
+      setCart([]);
     } catch (error) {
       console.error(
         "Error cargando datos locales del POS:",
@@ -738,9 +981,17 @@ export function usePosData({
       cashSessionsRef.current =
         [];
 
+      shopNameRef.current =
+        DEFAULT_SHOP_NAME;
+
+      accountsReceivableRef.current =
+        [];
+
       setCatalog({});
       setSales([]);
       setCashSessions([]);
+      setAccountsReceivable([]);
+      setCart([]);
 
       setShopNameState(
         DEFAULT_SHOP_NAME
@@ -760,6 +1011,7 @@ export function usePosData({
     }
   }, [
     cloudRequested,
+    cleanClienteId,
   ]);
 
     /* =========================================================
@@ -772,6 +1024,13 @@ export function usePosData({
     ) {
       cloudActiveRef.current =
         false;
+
+      cloudCacheCompleteRef.current =
+        false;
+
+      setMigrationNeedsAdmin(
+        false
+      );
 
       setSyncStatus(
         "local"
@@ -793,8 +1052,15 @@ export function usePosData({
     cloudActiveRef.current =
       false;
 
+    cloudCacheCompleteRef.current =
+      false;
+
     syncErrorShownRef.current =
       false;
+
+    setMigrationNeedsAdmin(
+      false
+    );
 
     setLoaded(
       false
@@ -814,6 +1080,11 @@ export function usePosData({
             ) ||
               ""
           ).trim();
+
+        const ownedCloudCache =
+          readOwnedCloudCache(
+            cleanClienteId
+          );
 
         const cacheBelongsToClient =
           !cachedOwner ||
@@ -844,24 +1115,53 @@ export function usePosData({
           cachedOwner &&
           !cacheBelongsToClient
         ) {
-          catalogRef.current =
-            {};
+          if (
+            !ownedCloudCache
+          ) {
+            catalogRef.current =
+              {};
 
-          salesRef.current =
+            salesRef.current =
+              [];
+
+            cashSessionsRef.current =
+              [];
+
+            shopNameRef.current =
+              DEFAULT_SHOP_NAME;
+
+            setCatalog({});
+            setSales([]);
+            setCashSessions([]);
+            setAccountsReceivable([]);
+            setCart([]);
+
+            setShopNameState(
+              DEFAULT_SHOP_NAME
+            );
+          }
+
+          accountsReceivableRef.current =
             [];
 
-          cashSessionsRef.current =
-            [];
-
-          setCatalog({});
-          setSales([]);
-          setCashSessions([]);
           setAccountsReceivable([]);
           setCart([]);
 
-          setShopNameState(
-            DEFAULT_SHOP_NAME
-          );
+          /*
+           * La caché descartada pertenece a otro comercio. Marcamos
+           * este par cliente/dispositivo para que los snapshots Cloud
+           * que siguen no se confundan con datos legacy al reiniciar.
+           */
+          markLocalPosMigrationHandled({
+            clienteId:
+              cleanClienteId,
+
+            deviceId:
+              cleanDeviceId,
+
+            reason:
+              "foreign-cache-discarded",
+          });
         }
 
         /*
@@ -870,29 +1170,220 @@ export function usePosData({
         if (
           cacheBelongsToClient
         ) {
-          const migrationResult =
-            await migrateLocalPosToFirestore({
-              clienteId:
-                cleanClienteId,
+          try {
+            let migrationResult =
+              await migrateLocalPosToFirestore({
+                clienteId:
+                  cleanClienteId,
 
-              deviceId:
-                cleanDeviceId,
-            });
+                deviceId:
+                  cleanDeviceId,
 
-          if (
-            cancelled
+                deviceSessionId:
+                  cleanDeviceSessionId,
+
+                operadorSesion: {
+                  id:
+                    operadorSesionId,
+
+                  token:
+                    operadorSesionToken,
+                },
+
+                cacheWasPreviouslyOwned:
+                  Boolean(
+                    cachedOwner
+                  ),
+              });
+
+            if (
+              cancelled
+            ) {
+              return;
+            }
+
+            if (
+              migrationResult
+                ?.reason ===
+              "migration-review-required"
+            ) {
+              if (
+                !operadorEsAdministrador
+              ) {
+                const reviewError =
+                  new Error(
+                    "Un administrador debe revisar la copia local de esta versión anterior antes de activar la nube."
+                  );
+
+                reviewError.code =
+                  "migration-admin-required";
+
+                setMigrationNeedsAdmin(
+                  true
+                );
+
+                throw reviewError;
+              }
+
+              const importLegacy =
+                window.confirm(
+                  "Se encontró una copia local de una versión anterior sin estado verificable.\n\nAceptar: importar sólo los registros que falten en Cloud.\nCancelar: descartar esta copia local y usar el estado actual de Cloud.\n\nSi no sabés que hay datos sin sincronizar, elegí Cancelar."
+                );
+
+              if (importLegacy) {
+                migrationResult =
+                  await migrateLocalPosToFirestore({
+                    clienteId:
+                      cleanClienteId,
+
+                    deviceId:
+                      cleanDeviceId,
+
+                    deviceSessionId:
+                      cleanDeviceSessionId,
+
+                    operadorSesion: {
+                      id:
+                        operadorSesionId,
+
+                      token:
+                        operadorSesionToken,
+                    },
+
+                    cacheWasPreviouslyOwned:
+                      true,
+
+                    allowOwnedLegacyImport:
+                      true,
+                  });
+              } else {
+                markLocalPosMigrationHandled({
+                  clienteId:
+                    cleanClienteId,
+
+                  deviceId:
+                    cleanDeviceId,
+
+                  reason:
+                    "legacy-cache-discarded",
+                });
+
+                migrationResult = {
+                  ok: true,
+                  migrated: false,
+                  reason:
+                    "legacy-cache-discarded",
+                };
+              }
+            }
+
+            if (
+              migrationResult
+                ?.reason ===
+              "admin-required"
+            ) {
+              const adminError =
+                new Error(
+                  "Un administrador del negocio debe migrar los datos locales antes de activar la nube en este dispositivo."
+                );
+
+              adminError.code =
+                "migration-admin-required";
+
+              setMigrationNeedsAdmin(
+                true
+              );
+
+              throw adminError;
+            }
+
+          } catch (
+            migrationError
           ) {
-            return;
-          }
+            let migrationConflictResolved =
+              false;
 
-          if (
-            migrationResult
-              ?.reason ===
-            "migration-in-progress"
-          ) {
-            setSyncStatus(
-              "syncing"
+            const migrationReason =
+              String(
+                migrationError
+                  ?.details
+                  ?.motivo ||
+                migrationError
+                  ?.code ||
+                ""
+              );
+
+            if (
+              migrationError
+                ?.details
+                ?.safeToDiscard ===
+                true &&
+              MIGRATION_SAFE_DISCARD_REASONS.has(
+                migrationReason
+              )
+            ) {
+              if (
+                !operadorEsAdministrador
+              ) {
+                setMigrationNeedsAdmin(
+                  true
+                );
+
+                const adminError =
+                  new Error(
+                    "Un administrador debe revisar el conflicto de la copia local antes de activar la nube."
+                  );
+
+                adminError.code =
+                  "migration-admin-required";
+
+                throw adminError;
+              }
+
+              const discardLocalCopy =
+                window.confirm(
+                  "La copia local no puede importarse de forma segura porque entra en conflicto con Cloud.\n\nAceptar: conservar Cloud y descartar esta copia como fuente de migración.\nCancelar: mantener la copia local y dejar la sincronización bloqueada para revisarla."
+                );
+
+              if (
+                discardLocalCopy
+              ) {
+                markLocalPosMigrationHandled({
+                  clienteId:
+                    cleanClienteId,
+
+                  deviceId:
+                    cleanDeviceId,
+
+                  reason:
+                    "migration-conflict-discarded",
+                });
+
+                console.warn(
+                  "La migración local fue descartada por un administrador:",
+                  migrationReason
+                );
+
+                migrationConflictResolved =
+                  true;
+              }
+            }
+
+            if (
+              !migrationConflictResolved
+            ) {
+            /*
+             * No montamos listeners si la migración pendiente
+             * falla: esos listeners reemplazarían la caché y
+             * podrían destruir el único dato legacy disponible.
+             */
+            console.error(
+              "No se pudieron migrar los datos locales del POS:",
+              migrationError
             );
+
+            throw migrationError;
+            }
           }
         }
 
@@ -942,10 +1433,10 @@ export function usePosData({
             ready &&
             !cancelled
           ) {
-            storeSet(
-              LOCAL_OWNER_KEY,
-              cleanClienteId
-            );
+            cloudCacheCompleteRef.current =
+              true;
+
+            persistCompleteCloudCache();
 
             setSyncStatus(
               "synced"
@@ -1130,12 +1621,10 @@ export function usePosData({
         }
 
         /*
-         * Si Firestore todavía no puede
-         * inicializarse, conservamos el
-         * funcionamiento local.
-         *
-         * Esto es útil si temporalmente
-         * Cloud no está disponible.
+         * Si Firestore todavía no puede inicializarse,
+         * conservamos la caché sólo para consulta. Mientras
+         * exista identidad Cloud, todas las mutaciones quedan
+         * bloqueadas para evitar divergencias o pérdida de datos.
          */
         cloudActiveRef.current =
           false;
@@ -1187,11 +1676,19 @@ export function usePosData({
 
       cloudActiveRef.current =
         false;
+
+      cloudCacheCompleteRef.current =
+        false;
     };
   }, [
     cloudRequested,
     cleanClienteId,
     cleanDeviceId,
+    cleanDeviceSessionId,
+    operadorSesionId,
+    operadorSesionToken,
+    operadorEsAdministrador,
+    persistCompleteCloudCache,
     persistCatalog,
     persistSales,
     persistCashSessions,
@@ -1222,6 +1719,17 @@ export function usePosData({
           !cloudActiveRef
             .current
         ) {
+          if (
+            cloudRequested
+          ) {
+            showToast(
+              "Necesitás conexión con la nube para cambiar el nombre del negocio",
+              true
+            );
+
+            return false;
+          }
+
           persistShopName(
             cleanName
           );
@@ -1232,7 +1740,22 @@ export function usePosData({
         try {
           await saveShopNameCloud(
             cleanClienteId,
-            cleanName
+            cleanName,
+            {
+              operadorSesion: {
+                id:
+                  operadorSesionId,
+
+                token:
+                  operadorSesionToken,
+              },
+
+              deviceId:
+                cleanDeviceId,
+
+              sessionId:
+                cleanDeviceSessionId,
+            }
           );
 
           persistShopName(
@@ -1258,6 +1781,11 @@ export function usePosData({
       },
       [
         cleanClienteId,
+        cleanDeviceId,
+        cleanDeviceSessionId,
+        cloudRequested,
+        operadorSesionId,
+        operadorSesionToken,
         persistShopName,
         showToast,
       ]
@@ -1527,14 +2055,6 @@ export function usePosData({
                   previousCode ||
                   undefined,
 
-                auditEdit:
-                  Boolean(
-                    isEdit
-                  ),
-
-                auditCreate:
-                  !isEdit,
-
                 operadorSesion,
 
                 deviceId:
@@ -1641,9 +2161,6 @@ export function usePosData({
 
                 deviceId:
                   cleanDeviceId,
-
-                auditDelete:
-                  true,
               }
             );
           } else if (
@@ -3337,6 +3854,15 @@ export function usePosData({
                 sale,
               ]);
             }
+          } else if (
+            cloudRequested
+          ) {
+            showToast(
+              "Necesitás conexión con la nube para registrar la venta",
+              true
+            );
+
+            return false;
           } else {
             /* -------------------------------------------------
                MODO LOCAL
@@ -3459,6 +3985,7 @@ export function usePosData({
         cart,
         cleanClienteId,
         cleanDeviceId,
+        cloudRequested,
         operadorSesion,
         persistCatalog,
         persistSales,
@@ -4214,6 +4741,8 @@ export function usePosData({
     loaded,
 
     syncStatus,
+
+    migrationNeedsAdmin,
 
     cloudEnabled:
       cloudRequested &&

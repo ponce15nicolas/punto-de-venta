@@ -4,14 +4,10 @@
 
 import {
   collection,
-  deleteDoc,
   doc,
   getDoc,
   getDocs,
   onSnapshot,
-  serverTimestamp,
-  setDoc,
-  writeBatch,
 } from "firebase/firestore";
 
 import { httpsCallable } from "firebase/functions";
@@ -19,11 +15,9 @@ import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase/config";
 
 import {
-  cajaPath,
   cajasPath,
   configuracionPosPath,
   cuentasPorCobrarPath,
-  productoPath,
   productosPath,
   ventasPath,
 } from "./posPaths";
@@ -105,6 +99,12 @@ const registrarPagoCuentaPorCobrarFunction =
   httpsCallable(
     functions,
     "registrarPagoCuentaPorCobrar"
+  );
+
+const guardarNombreNegocioFunction =
+  httpsCallable(
+    functions,
+    "guardarNombreNegocio"
   );
 
 /* =========================================================
@@ -236,9 +236,8 @@ function isPlainObject(value) {
 /*
  * Firestore no admite undefined.
  *
- * Quitamos undefined sin destruir
- * objetos especiales de Firebase
- * como serverTimestamp().
+ * Quitamos undefined antes de enviar
+ * los datos normalizados al backend.
  */
 function removeUndefined(value) {
   if (value === undefined) {
@@ -496,9 +495,6 @@ function normalizeProductForCloud(
     expiry:
       product.expiry ||
       null,
-
-    updatedAt:
-      serverTimestamp(),
   });
 }
 
@@ -985,19 +981,6 @@ function productosRef(
   );
 }
 
-function productoRef(
-  clienteId,
-  barcode
-) {
-  return doc(
-    db,
-    ...productoPath(
-      clienteId,
-      barcode
-    )
-  );
-}
-
 function ventasRef(
   clienteId
 ) {
@@ -1027,19 +1010,6 @@ function cuentasPorCobrarRef(
     db,
     ...cuentasPorCobrarPath(
       clienteId
-    )
-  );
-}
-
-function cajaRef(
-  clienteId,
-  cajaId
-) {
-  return doc(
-    db,
-    ...cajaPath(
-      clienteId,
-      cajaId
     )
   );
 }
@@ -1879,7 +1849,12 @@ export async function registerReceivablePaymentCloud(
 
 export async function saveShopNameCloud(
   clienteId,
-  shopName
+  shopName,
+  {
+    operadorSesion = null,
+    deviceId = null,
+    sessionId = null,
+  } = {}
 ) {
   const cleanClienteId =
     requireString(
@@ -1893,23 +1868,122 @@ export async function saveShopNameCloud(
       "shopName"
     );
 
-  await setDoc(
-    configuracionRef(
-      cleanClienteId
-    ),
-    {
-      shopName:
-        cleanShopName,
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
 
-      updatedAt:
-        serverTimestamp(),
-    },
-    {
-      merge: true,
+  const cleanDeviceId =
+    requireString(
+      deviceId,
+      "deviceId"
+    );
+
+  const cleanSessionId =
+    requireString(
+      sessionId,
+      "sessionId"
+    );
+
+  try {
+    const response =
+      await guardarNombreNegocioFunction({
+        clienteId:
+          cleanClienteId,
+
+        shopName:
+          cleanShopName,
+
+        operadorSesion,
+
+        deviceId:
+          cleanDeviceId,
+
+        sessionId:
+          cleanSessionId,
+      });
+
+    const data =
+      response?.data || {};
+
+    if (
+      !data.ok ||
+      !data.shopName
+    ) {
+      fail(
+        "save-shop-name-failed",
+        "No se pudo guardar el nombre del negocio"
+      );
     }
-  );
 
-  return true;
+    return data.shopName;
+  } catch (error) {
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    const serverMessage =
+      String(
+        error?.details?.mensaje ||
+        error?.details?.message ||
+        error?.message ||
+        ""
+      ).trim();
+
+    if (
+      code ===
+      "unauthenticated"
+    ) {
+      fail(
+        "unauthenticated",
+        "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+      );
+    }
+
+    if (
+      code ===
+      "permission-denied"
+    ) {
+      fail(
+        "permission-denied",
+        serverMessage ||
+        "No tenés permisos para cambiar el nombre del negocio."
+      );
+    }
+
+    if (
+      code ===
+      "invalid-argument"
+    ) {
+      fail(
+        "invalid-shop-name",
+        serverMessage ||
+        "El nombre del negocio no es válido."
+      );
+    }
+
+    fail(
+      "save-shop-name-failed",
+      serverMessage ||
+      "No se pudo guardar el nombre del negocio"
+    );
+  }
 }
 
 /* =========================================================
@@ -1938,42 +2012,13 @@ export async function upsertProductCloud(
       ""
     ).trim();
 
-  const auditEdit =
-    Boolean(
-      options.auditEdit
-    );
-
-  const auditCreate =
-    Boolean(
-      options.auditCreate
-    );
-
-  if (
-    auditEdit &&
-    auditCreate
-  ) {
-    fail(
-      "invalid-argument",
-      "La operación no puede ser alta y edición al mismo tiempo"
-    );
-  }
-
   /*
    * EDICIÓN:
    *
    * pasa por backend para validar al operador y guardar
    * producto + auditoría en la misma transacción.
    */
-  if (auditEdit) {
-    if (
-      !previousBarcode
-    ) {
-      fail(
-        "invalid-argument",
-        "previousBarcode es obligatorio al editar"
-      );
-    }
-
+  if (previousBarcode) {
     if (
       !options.operadorSesion?.id ||
       !options.operadorSesion?.token
@@ -2120,12 +2165,12 @@ export async function upsertProductCloud(
   }
 
   /*
-   * ALTA AUDITADA:
+   * ALTA:
    *
    * pasa por backend para validar al operador y guardar
    * producto + auditoría en la misma transacción.
    */
-  if (auditCreate) {
+  {
     if (
       !options.operadorSesion?.id ||
       !options.operadorSesion?.token
@@ -2256,77 +2301,6 @@ export async function upsertProductCloud(
       );
     }
   }
-
-  /*
-   * ALTA LEGACY:
-   *
-   * Se conserva únicamente para compatibilidad con llamadas
-   * internas antiguas que no soliciten auditoría.
-   */
-  const nextRef =
-    productoRef(
-      cleanClienteId,
-      normalized.barcode
-    );
-
-  if (
-    previousBarcode &&
-    previousBarcode !==
-      normalized.barcode
-  ) {
-    const batch =
-      writeBatch(db);
-
-    batch.set(
-      nextRef,
-      {
-        ...normalized,
-
-        createdAt:
-          serverTimestamp(),
-      },
-      {
-        merge: true,
-      }
-    );
-
-    batch.delete(
-      productoRef(
-        cleanClienteId,
-        previousBarcode
-      )
-    );
-
-    await batch.commit();
-
-    return normalized;
-  }
-
-  const existing =
-    await getDoc(
-      nextRef
-    );
-
-  await setDoc(
-    nextRef,
-    {
-      ...normalized,
-
-      ...(
-        existing.exists()
-          ? {}
-          : {
-              createdAt:
-                serverTimestamp(),
-            }
-      ),
-    },
-    {
-      merge: true,
-    }
-  );
-
-  return normalized;
 }
 
 export async function deleteProductCloud(
@@ -2335,7 +2309,6 @@ export async function deleteProductCloud(
   {
     operadorSesion = null,
     deviceId = null,
-    auditDelete = false,
   } = {}
 ) {
   const cleanClienteId =
@@ -2349,17 +2322,6 @@ export async function deleteProductCloud(
       barcode,
       "barcode"
     );
-
-  if (!auditDelete) {
-    await deleteDoc(
-      productoRef(
-        cleanClienteId,
-        cleanBarcode
-      )
-    );
-
-    return true;
-  }
 
   if (
     !operadorSesion?.id ||
@@ -3507,4 +3469,3 @@ export async function closeCashSessionCloud(
     );
   }
 }
-

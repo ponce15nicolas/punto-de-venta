@@ -186,38 +186,10 @@ service cloud.firestore {
         );
 
         /*
-         * Crear productos.
-         *
-         * También se utiliza durante la
-         * migración desde localStorage.
+         * Altas, cambios, bajas y migraciones se ejecutan
+         * exclusivamente mediante Cloud Functions / Admin SDK.
          */
-        allow create: if perteneceAlCliente(
-            clienteId
-          )
-          && productoValido(
-            request.resource.data
-          );
-
-        /*
-         * Editar producto, reponer stock
-         * y descontar stock durante ventas.
-         */
-        allow update: if perteneceAlCliente(
-            clienteId
-          )
-          && productoValido(
-            request.resource.data
-          );
-
-        /*
-         * Necesario para eliminar productos
-         * y para cambiar un código de barras,
-         * donde se crea el nuevo documento
-         * y se elimina el anterior.
-         */
-        allow delete: if perteneceAlCliente(
-          clienteId
-        );
+        allow create, update, delete: if false;
       }
 
       /* ===================================================
@@ -235,23 +207,11 @@ service cloud.firestore {
         );
 
         /*
-         * Una venta puede crearse desde
-         * checkoutCloud o desde la migración.
+         * El alta normal y la migración de ventas se ejecutan
+         * exclusivamente mediante Cloud Functions / Admin SDK.
+         * Desde el navegador no se admiten escrituras directas.
          */
-        allow create: if perteneceAlCliente(
-            clienteId
-          )
-          && ventaValida(
-            request.resource.data
-          );
-
-        /*
-         * Las ventas quedan inmutables.
-         *
-         * Evitamos que un navegador pueda
-         * alterar importes o tickets ya registrados.
-         */
-        allow update, delete: if false;
+        allow create, update, delete: if false;
       }
 
       /* ===================================================
@@ -268,37 +228,11 @@ service cloud.firestore {
         );
 
         /*
-         * Apertura de caja y migración.
+         * Aperturas, cierres, acumulación de ventas y migraciones
+         * se ejecutan exclusivamente mediante Cloud Functions /
+         * Admin SDK.
          */
-        allow create: if perteneceAlCliente(
-            clienteId
-          )
-          && cajaValida(
-            request.resource.data
-          );
-
-        /*
-         * Se necesita actualizar la caja para:
-         *
-         * - acumular ventas
-         * - métodos de pago
-         * - cerrar turno
-         */
-        allow update: if perteneceAlCliente(
-            clienteId
-          )
-          && cajaValida(
-            request.resource.data
-          );
-
-        /*
-         * Por ahora no permitimos borrar
-         * cierres desde el navegador.
-         *
-         * Lo habilitaremos de forma controlada
-         * cuando implementemos "eliminar historial".
-         */
-        allow delete: if false;
+        allow create, update, delete: if false;
       }
 
       /* ===================================================
@@ -328,23 +262,11 @@ service cloud.firestore {
         allow list: if false;
 
         /*
-         * Permite:
-         *
-         * - nombre del negocio
-         * - openCashSessionId
-         * - estado de migración
-         *
-         * Esta colección está aislada de los
-         * datos sensibles de licencia.
+         * El nombre del negocio, la caja abierta y el estado de
+         * migración se escriben exclusivamente mediante
+         * Cloud Functions / Admin SDK.
          */
-        allow create, update: if perteneceAlCliente(
-            clienteId
-          )
-          && configuracionPosPermitida(
-            configId
-          );
-
-        allow delete: if false;
+        allow create, update, delete: if false;
       }
 
 

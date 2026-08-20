@@ -73,6 +73,8 @@ function PosApp({ license }) {
    */
   const {
     sesion: operadorSesion,
+    esAdministrador:
+      operadorEsAdministrador,
     cerrarSesionInterna,
   } = useOperator();
 
@@ -85,7 +87,10 @@ function PosApp({ license }) {
   const pos = usePosData({
     clienteId: license.clienteId,
     deviceId: license.deviceId,
+    deviceSessionId:
+      license.sessionId,
     operadorSesion,
+    operadorEsAdministrador,
   });
 
   const [tab, setTab] = useState("vender");
@@ -210,6 +215,9 @@ function PosApp({ license }) {
           openSession={pos.openSession}
           onRename={handleRename}
           deviceId={license.deviceId}
+          allowOperatorChangeWithOpenSession={
+            pos.migrationNeedsAdmin
+          }
         />
       </div>
 

@@ -8,45 +8,29 @@
 // - Cloud conserva prioridad si ya existe un documento;
 // - cada dispositivo migra como máximo una vez por versión;
 // - una migración de otro dispositivo no bloquea para siempre;
-// - las inserciones de datos históricos se hacen con transacciones
-//   para no sobrescribir datos creados simultáneamente;
+// - todas las escrituras pasan por Cloud Functions;
+// - el backend revalida y reconstruye cada documento por lista blanca;
 // - una caja abierta legacy sólo se recupera si Cloud no tiene
 //   otra caja activa;
 // - las cajas legacy se enriquecen con sus ventas cuando es posible.
 
 import {
-  arrayUnion,
-  doc,
-  getDoc,
-  runTransaction,
-  serverTimestamp,
-} from "firebase/firestore";
-
-import { db } from "../../firebase/config";
-import { storeGet } from "../../lib/storage";
+  httpsCallable,
+} from "firebase/functions";
 
 import {
-  cajaPath,
-  configuracionPosPath,
-  migracionPosPath,
-  productoPath,
-  ventaPath,
-} from "./posPaths";
+  functions,
+} from "../../firebase/config";
+import {
+  storeGet,
+  storeSet,
+} from "../../lib/storage";
 
 /* =========================================================
    CONFIGURACIÓN
 ========================================================= */
 
 export const POS_MIGRATION_VERSION = 1;
-
-const MIGRATION_LOCK_MS =
-  10 * 60 * 1000;
-
-/*
- * Cada transacción procesa pocos documentos para mantener
- * margen frente a límites de Firestore y reducir reintentos.
- */
-const TRANSACTION_CHUNK_SIZE = 80;
 
 const PRODUCT_TYPES = Object.freeze([
   "unidad",
@@ -120,12 +104,18 @@ function requireString(
 }
 
 function optionalString(
-  value
+  value,
+  maxLength = 180
 ) {
   const clean =
     String(
       value ?? ""
-    ).trim();
+    )
+      .trim()
+      .slice(
+        0,
+        maxLength
+      );
 
   return clean || null;
 }
@@ -287,28 +277,6 @@ function safeIsoDate(
   return date.toISOString();
 }
 
-function chunkArray(
-  items,
-  size
-) {
-  const chunks = [];
-
-  for (
-    let index = 0;
-    index < items.length;
-    index += size
-  ) {
-    chunks.push(
-      items.slice(
-        index,
-        index + size
-      )
-    );
-  }
-
-  return chunks;
-}
-
 /* =========================================================
    IDS LEGACY DETERMINÍSTICOS
 ========================================================= */
@@ -392,13 +360,17 @@ function normalizeLocalProduct(
       product.barcode ||
       fallbackBarcode ||
       ""
-    ).trim();
+    )
+      .trim()
+      .slice(0, 180);
 
   const name =
     String(
       product.name ||
       ""
-    ).trim();
+    )
+      .trim()
+      .slice(0, 180);
 
   if (
     !barcode ||
@@ -459,8 +431,6 @@ function normalizeLocalProduct(
   }
 
   return removeUndefined({
-    ...product,
-
     barcode,
     name,
     tipoVenta,
@@ -468,16 +438,20 @@ function normalizeLocalProduct(
     unidadMedida:
       tipoVenta ===
       "peso"
-        ? product.unidadMedida ||
-          "kg"
+        ? optionalString(
+            product.unidadMedida,
+            20
+          ) || "kg"
         : null,
 
     price,
     stock,
 
     expiry:
-      product.expiry ||
-      null,
+      optionalString(
+        product.expiry,
+        120
+      ),
   });
 }
 
@@ -501,7 +475,9 @@ function normalizeLocalSaleItem(
     String(
       item.name ||
       ""
-    ).trim();
+    )
+      .trim()
+      .slice(0, 180);
 
   if (!name) {
     return null;
@@ -511,7 +487,9 @@ function normalizeLocalSaleItem(
     String(
       item.barcode ||
       ""
-    ).trim() ||
+    )
+      .trim()
+      .slice(0, 180) ||
     `legacy-item-${itemIndex}`;
 
   const tipoVenta =
@@ -572,32 +550,12 @@ function normalizeLocalSaleItem(
       )
     );
 
-  const storedSubtotal =
-    item.subtotal !==
-      null &&
-    item.subtotal !==
-      "" &&
-    Number.isFinite(
-      Number(
-        item.subtotal
-      )
-    )
-      ? roundMoney(
-          item.subtotal
-        )
-      : null;
-
   const subtotal =
-    storedSubtotal !==
-      null
-      ? storedSubtotal
-      : roundMoney(
-          qty * price
-        );
+    roundMoney(
+      qty * price
+    );
 
   return removeUndefined({
-    ...item,
-
     barcode,
     name,
     tipoVenta,
@@ -605,8 +563,10 @@ function normalizeLocalSaleItem(
     unidadMedida:
       tipoVenta ===
       "peso"
-        ? item.unidadMedida ||
-          "kg"
+        ? optionalString(
+            item.unidadMedida,
+            20
+          ) || "kg"
         : null,
 
     price,
@@ -679,17 +639,7 @@ function normalizeLocalSale(
     );
 
   const total =
-    sale.total !== null &&
-    sale.total !== "" &&
-    Number.isFinite(
-      Number(
-        sale.total
-      )
-    )
-      ? roundMoney(
-          sale.total
-        )
-      : calculatedTotal;
+    calculatedTotal;
 
   const method =
     normalizePaymentMethod(
@@ -700,10 +650,13 @@ function normalizeLocalSale(
     method ===
     "efectivo"
       ? roundMoney(
-          toNumber(
-            sale.payment
-              ?.received,
-            total
+          Math.max(
+            total,
+            toNumber(
+              sale.payment
+                ?.received,
+              total
+            )
           )
         )
       : total;
@@ -712,21 +665,15 @@ function normalizeLocalSale(
     method ===
     "efectivo"
       ? roundMoney(
-          toNumber(
-            sale.payment
-              ?.change,
-            Math.max(
-              0,
-              received -
-                total
-            )
+          Math.max(
+            0,
+            received -
+              total
           )
         )
       : 0;
 
   return removeUndefined({
-    ...sale,
-
     id,
 
     timestamp:
@@ -830,9 +777,94 @@ function normalizeLocalCashSession(
       ? "open"
       : "closed";
 
-  return removeUndefined({
-    ...session,
+  const openAmount =
+    roundMoney(
+      Math.max(
+        0,
+        toNumber(
+          session.openAmount
+        )
+      )
+    );
 
+  const paymentTotals =
+    normalizePaymentTotals(
+      session.paymentTotals
+    );
+
+  const paymentTotal =
+    roundMoney(
+      Object.values(
+        paymentTotals
+      ).reduce(
+        (
+          total,
+          amount
+        ) =>
+          total +
+          amount,
+        0
+      )
+    );
+
+  const declaredTotal =
+    roundMoney(
+      Math.max(
+        0,
+        toNumber(
+          session.totalSales
+        )
+      )
+    );
+
+  if (
+    paymentTotal === 0 &&
+    declaredTotal > 0
+  ) {
+    paymentTotals.efectivo =
+      declaredTotal;
+  }
+
+  const totalSales =
+    paymentTotal > 0
+      ? paymentTotal
+      : declaredTotal;
+
+  const counted =
+    status ===
+    "closed"
+      ? session.counted != null
+        ? roundMoney(
+            Math.max(
+              0,
+              toNumber(
+                session.counted
+              )
+            )
+          )
+        : session.closeAmount !=
+            null
+          ? roundMoney(
+              Math.max(
+                0,
+                toNumber(
+                  session.closeAmount
+                )
+              )
+            )
+          : null
+      : null;
+
+  const expectedAmount =
+    status ===
+    "closed"
+      ? roundMoney(
+          openAmount +
+          paymentTotals.efectivo
+        )
+      : null;
+
+  return removeUndefined({
     id,
 
     openTime:
@@ -843,14 +875,7 @@ function normalizeLocalCashSession(
       ),
 
     openAmount:
-      roundMoney(
-        Math.max(
-          0,
-          toNumber(
-            session.openAmount
-          )
-        )
-      ),
+      openAmount,
 
     closeTime:
       status ===
@@ -862,63 +887,24 @@ function normalizeLocalCashSession(
         : null,
 
     closeAmount:
-      status ===
-        "closed" &&
-      session.closeAmount !=
-        null
-        ? roundMoney(
-            Math.max(
-              0,
-              toNumber(
-                session.closeAmount
-              )
-            )
-          )
-        : null,
+      counted,
 
     expectedAmount:
-      status ===
-        "closed" &&
-      session.expectedAmount !=
-        null
-        ? roundMoney(
-            toNumber(
-              session.expectedAmount
-            )
-          )
-        : null,
+      expectedAmount,
 
     counted:
-      status ===
-        "closed" &&
-      session.counted != null
-        ? roundMoney(
-            toNumber(
-              session.counted
-            )
-          )
-        : null,
+      counted,
 
     diff:
-      status ===
-        "closed" &&
-      session.diff != null
+      counted !== null
         ? roundMoney(
-            toNumber(
-              session.diff
-            )
+            counted -
+            expectedAmount
           )
         : null,
 
     totalSales:
-      roundMoney(
-        Math.max(
-          0,
-          toNumber(
-            session.totalSales
-          )
-        )
-      ),
+      totalSales,
 
     salesCount:
       Math.max(
@@ -931,9 +917,7 @@ function normalizeLocalCashSession(
       ),
 
     paymentTotals:
-      normalizePaymentTotals(
-        session.paymentTotals
-      ),
+      paymentTotals,
 
     status,
   });
@@ -1196,7 +1180,9 @@ export function getLocalPosSnapshot() {
     String(
       rawShopName ||
       "Mi Negocio"
-    ).trim() ||
+    )
+      .trim()
+      .slice(0, 120) ||
     "Mi Negocio";
 
   return {
@@ -1242,718 +1228,515 @@ export function hasLocalPosData() {
 }
 
 /* =========================================================
-   REFERENCIAS
+   MIGRACIÓN MEDIANTE CLOUD FUNCTIONS
 ========================================================= */
 
-function productoRef(
+const MIGRATION_CALL_TIMEOUT_MS =
+  3 * 60 * 1000 +
+  10 * 1000;
+
+const DEFAULT_BATCH_MAX_ITEMS = 80;
+const DEFAULT_BATCH_MAX_BYTES =
+  700 * 1024;
+
+const MIGRATION_CLIENT_STATE_KEY =
+  "migrationPosLegacyV1";
+
+const migrarPosLegacyFunction =
+  httpsCallable(
+    functions,
+    "migrarPosLegacy",
+    {
+      timeout:
+        MIGRATION_CALL_TIMEOUT_MS,
+    }
+  );
+
+function getMigrationClientState(
   clienteId,
-  barcode
+  deviceId
 ) {
-  return doc(
-    db,
-    ...productoPath(
-      clienteId,
-      barcode
+  const state =
+    storeGet(
+      MIGRATION_CLIENT_STATE_KEY,
+      null
+    );
+
+  if (
+    !isPlainObject(
+      state
+    ) ||
+    state.version !==
+      POS_MIGRATION_VERSION ||
+    !isPlainObject(
+      state.entries
     )
-  );
+  ) {
+    return null;
+  }
+
+  const key =
+    clienteId +
+    "::" +
+    deviceId;
+
+  const entry =
+    state.entries[
+      key
+    ];
+
+  return isPlainObject(
+    entry
+  )
+    ? entry
+    : null;
 }
 
-function ventaRef(
+function writeMigrationClientState(
   clienteId,
-  ventaId
+  deviceId,
+  entry
 ) {
-  return doc(
-    db,
-    ...ventaPath(
-      clienteId,
-      ventaId
+  const previous =
+    storeGet(
+      MIGRATION_CLIENT_STATE_KEY,
+      null
+    );
+
+  const previousEntries =
+    isPlainObject(
+      previous
+    ) &&
+    previous.version ===
+      POS_MIGRATION_VERSION &&
+    isPlainObject(
+      previous.entries
     )
+      ? previous.entries
+      : {};
+
+  const key =
+    clienteId +
+    "::" +
+    deviceId;
+
+  /*
+   * Acotamos el marcador local: sólo evita confundir una caché
+   * Cloud con datos legacy y nunca concede permisos de backend.
+   */
+  const recentEntries =
+    Object.fromEntries(
+      Object.entries(
+        previousEntries
+      ).slice(-19)
+    );
+
+  storeSet(
+    MIGRATION_CLIENT_STATE_KEY,
+    {
+      version:
+        POS_MIGRATION_VERSION,
+
+      entries: {
+        ...recentEntries,
+
+        [key]: {
+          ...entry,
+
+          updatedAt:
+            new Date()
+              .toISOString(),
+        },
+      },
+    }
   );
 }
 
-function cajaRef(
+function markMigrationHandled(
   clienteId,
-  cajaId
+  deviceId,
+  reason
 ) {
-  return doc(
-    db,
-    ...cajaPath(
-      clienteId,
-      cajaId
-    )
+  writeMigrationClientState(
+    clienteId,
+    deviceId,
+    {
+      completed: true,
+      pendingLegacy: false,
+      reason,
+    }
   );
 }
 
-function configuracionRef(
-  clienteId
+function markMigrationPending(
+  clienteId,
+  deviceId
 ) {
-  return doc(
-    db,
-    ...configuracionPosPath(
-      clienteId
-    )
+  writeMigrationClientState(
+    clienteId,
+    deviceId,
+    {
+      completed: false,
+      pendingLegacy: true,
+      reason:
+        "legacy-detected",
+    }
   );
 }
 
-function migracionRef(
-  clienteId
-) {
-  return doc(
-    db,
-    ...migracionPosPath(
-      clienteId
-    )
-  );
-}
-
-/* =========================================================
-   ESTADO DE MIGRACIÓN
-========================================================= */
-
-export async function getPosMigrationStatus(
-  clienteId
-) {
-  const cleanClienteId =
+export function markLocalPosMigrationHandled({
+  clienteId,
+  deviceId,
+  reason = "cloud-cache",
+} = {}) {
+  markMigrationHandled(
     requireString(
       clienteId,
       "clienteId"
-    );
+    ),
+    requireString(
+      deviceId,
+      "deviceId"
+    ),
+    String(
+      reason ||
+      "cloud-cache"
+    ).slice(0, 80)
+  );
+}
 
-  const snapshot =
-    await getDoc(
-      migracionRef(
-        cleanClienteId
+function requireOperatorSession(
+  operadorSesion
+) {
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
+
+  return {
+    id:
+      requireString(
+        operadorSesion.id,
+        "operadorSesion.id"
+      ),
+
+    token:
+      requireString(
+        operadorSesion.token,
+        "operadorSesion.token"
+      ),
+  };
+}
+
+function callableErrorCode(
+  error
+) {
+  return String(
+    error?.code ||
+    "unknown"
+  )
+    .split("/")
+    .pop();
+}
+
+async function callMigrationBackend(
+  payload
+) {
+  try {
+    const response =
+      await migrarPosLegacyFunction(
+        payload
+      );
+
+    const data =
+      response?.data;
+
+    if (
+      !data ||
+      typeof data !==
+        "object"
+    ) {
+      fail(
+        "invalid-response",
+        "La migración devolvió una respuesta inválida"
+      );
+    }
+
+    return data;
+  } catch (error) {
+    if (
+      error instanceof
+      PosMigrationError
+    ) {
+      throw error;
+    }
+
+    const details =
+      isPlainObject(
+        error?.details
+      )
+        ? error.details
+        : {};
+
+    const message =
+      optionalString(
+        details.message
+      ) ||
+      optionalString(
+        details.mensaje
+      ) ||
+      optionalString(
+        error?.message
+      ) ||
+      "No se pudo migrar la información local";
+
+    throw new PosMigrationError(
+      callableErrorCode(
+        error
+      ),
+      message,
+      details
+    );
+  }
+}
+
+function positiveIntegerLimit(
+  value,
+  fallback,
+  maximum
+) {
+  const parsed =
+    Math.trunc(
+      toNumber(
+        value,
+        fallback
       )
     );
 
   if (
-    !snapshot.exists()
+    parsed <= 0
   ) {
-    return {
-      exists: false,
-      status: "pending",
-      version:
-        POS_MIGRATION_VERSION,
-      completedDeviceIds: [],
-    };
+    return fallback;
   }
 
-  return {
-    exists: true,
-    ...snapshot.data(),
-  };
-}
-
-/* =========================================================
-   TOMAR BLOQUEO
-========================================================= */
-
-async function claimMigration(
-  clienteId,
-  deviceId,
-  localCounts
-) {
-  const ref =
-    migracionRef(
-      clienteId
-    );
-
-  const now =
-    Date.now();
-
-  return runTransaction(
-    db,
-    async (
-      transaction
-    ) => {
-      const snapshot =
-        await transaction.get(
-          ref
-        );
-
-      const data =
-        snapshot.exists()
-          ? snapshot.data()
-          : {};
-
-      const completedDeviceIds =
-        Array.isArray(
-          data.completedDeviceIds
-        )
-          ? data.completedDeviceIds
-          : [];
-
-      /*
-       * IMPORTANTE:
-       * La migración es por dispositivo.
-       *
-       * Un primer dispositivo no debe impedir que otro
-       * navegador migre datos locales históricos distintos.
-       */
-      if (
-        toNumber(
-          data.version
-        ) >=
-          POS_MIGRATION_VERSION &&
-        completedDeviceIds.includes(
-          deviceId
-        )
-      ) {
-        return {
-          claimed: false,
-          reason:
-            "already-completed",
-          data,
-        };
-      }
-
-      const activeMigration =
-        isPlainObject(
-          data.activeMigration
-        )
-          ? data.activeMigration
-          : null;
-
-      const activeDeviceId =
-        optionalString(
-          activeMigration
-            ?.deviceId
-        );
-
-      const startedAtMs =
-        toNumber(
-          activeMigration
-            ?.startedAtMs
-        );
-
-      const lockIsFresh =
-        activeDeviceId &&
-        startedAtMs > 0 &&
-        now -
-          startedAtMs <
-          MIGRATION_LOCK_MS;
-
-      if (
-        lockIsFresh &&
-        activeDeviceId !==
-          deviceId
-      ) {
-        return {
-          claimed: false,
-          reason:
-            "locked",
-          data,
-        };
-      }
-
-      transaction.set(
-        ref,
-        {
-          version:
-            POS_MIGRATION_VERSION,
-
-          status:
-            "migrating",
-
-          activeMigration: {
-            deviceId,
-            startedAtMs:
-              now,
-          },
-
-          startedAt:
-            serverTimestamp(),
-
-          updatedAt:
-            serverTimestamp(),
-
-          localCounts,
-        },
-        {
-          merge: true,
-        }
-      );
-
-      return {
-        claimed: true,
-        reason: "claimed",
-      };
-    }
+  return Math.min(
+    parsed,
+    maximum
   );
 }
 
-/* =========================================================
-   CREAR DOCUMENTOS SIN SOBRESCRIBIR CLOUD
-========================================================= */
+function getMigrationBatches(
+  items,
+  {
+    maxItems =
+      DEFAULT_BATCH_MAX_ITEMS,
 
-/*
- * A diferencia de:
- *
- *   getDocs() -> writeBatch.set()
- *
- * cada bloque usa una transacción.
- *
- * Si otro dispositivo crea o modifica un documento entre
- * lectura y escritura, Firestore reintenta la transacción.
- * De este modo Cloud conserva prioridad y no sobrescribimos
- * accidentalmente datos recientes.
- */
-async function insertMissingDocuments(
-  operations
+    maxBytes =
+      DEFAULT_BATCH_MAX_BYTES,
+  } = {}
 ) {
-  const chunks =
-    chunkArray(
-      operations,
-      TRANSACTION_CHUNK_SIZE
+  const safeMaxItems =
+    positiveIntegerLimit(
+      maxItems,
+      DEFAULT_BATCH_MAX_ITEMS,
+      DEFAULT_BATCH_MAX_ITEMS
     );
 
-  let migrated = 0;
-  let skipped = 0;
+  /*
+   * Dejamos margen para el resto del payload callable.
+   */
+  const safeMaxBytes =
+    positiveIntegerLimit(
+      maxBytes,
+      DEFAULT_BATCH_MAX_BYTES,
+      DEFAULT_BATCH_MAX_BYTES
+    );
+
+  const encoder =
+    new TextEncoder();
+
+  const batches = [];
+  let current = [];
+  let currentBytes = 2;
 
   for (
-    const chunk of
-    chunks
+    let index = 0;
+    index < items.length;
+    index += 1
+  ) {
+    const item =
+      items[index];
+
+    const serialized =
+      JSON.stringify(
+        item
+      );
+
+    if (
+      serialized ===
+      undefined
+    ) {
+      fail(
+        "invalid-local-data",
+        "Hay un registro local que no se puede serializar",
+        {
+          index,
+        }
+      );
+    }
+
+    const itemBytes =
+      encoder.encode(
+        serialized
+      ).byteLength;
+
+    if (
+      itemBytes + 2 >
+      safeMaxBytes
+    ) {
+      fail(
+        "local-document-too-large",
+        "Un registro local supera el tamaño permitido para migrar",
+        {
+          index,
+          bytes:
+            itemBytes,
+        }
+      );
+    }
+
+    const wouldExceedItems =
+      current.length >=
+      safeMaxItems;
+
+    const wouldExceedBytes =
+      current.length > 0 &&
+      currentBytes +
+        itemBytes +
+        1 >
+        safeMaxBytes;
+
+    if (
+      wouldExceedItems ||
+      wouldExceedBytes
+    ) {
+      batches.push(
+        current
+      );
+
+      current = [];
+      currentBytes = 2;
+    }
+
+    current.push(
+      item
+    );
+
+    currentBytes +=
+      itemBytes +
+      (
+        current.length > 1
+          ? 1
+          : 0
+      );
+  }
+
+  if (
+    current.length > 0
+  ) {
+    batches.push(
+      current
+    );
+  }
+
+  return batches;
+}
+
+function localSnapshotHasData(
+  snapshot
+) {
+  return (
+    snapshot.products
+      .length > 0 ||
+    snapshot.sales.length >
+      0 ||
+    snapshot.cashSessions
+      .length > 0 ||
+    (
+      snapshot.shopName &&
+      snapshot.shopName !==
+        "Mi Negocio"
+    )
+  );
+}
+
+async function migrateKindBatches({
+  clienteId,
+  deviceId,
+  deviceSessionId,
+  operadorSesion,
+  attemptId,
+  kind,
+  items,
+  limits,
+}) {
+  const batches =
+    getMigrationBatches(
+      items,
+      limits
+    );
+
+  for (
+    let index = 0;
+    index < batches.length;
+    index += 1
   ) {
     const result =
-      await runTransaction(
-        db,
-        async (
-          transaction
-        ) => {
-          const pending = [];
+      await callMigrationBackend({
+        action:
+          "batch",
 
-          /*
-           * Todas las lecturas ocurren antes
-           * de cualquier escritura.
-           */
-          for (
-            const operation of
-            chunk
-          ) {
-            const snapshot =
-              await transaction.get(
-                operation.ref
-              );
+        version:
+          POS_MIGRATION_VERSION,
 
-            pending.push({
-              operation,
-              exists:
-                snapshot.exists(),
-            });
-          }
+        clienteId,
 
-          let chunkMigrated =
-            0;
+        deviceId,
 
-          let chunkSkipped =
-            0;
+        sessionId:
+          deviceSessionId,
 
-          for (
-            const item of
-            pending
-          ) {
-            if (
-              item.exists
-            ) {
-              chunkSkipped +=
-                1;
+        operadorSesion,
 
-              continue;
-            }
+        attemptId,
 
-            transaction.set(
-              item.operation.ref,
-              item.operation.data
-            );
+        kind,
 
-            chunkMigrated +=
-              1;
-          }
+        index,
 
-          return {
-            migrated:
-              chunkMigrated,
+        items:
+          batches[index],
+      });
 
-            skipped:
-              chunkSkipped,
-          };
-        }
-      );
-
-    migrated +=
-      result.migrated;
-
-    skipped +=
-      result.skipped;
-  }
-
-  return {
-    migrated,
-    skipped,
-  };
-}
-
-/* =========================================================
-   NOMBRE DEL NEGOCIO
-========================================================= */
-
-async function migrateShopName(
-  clienteId,
-  shopName,
-  deviceId
-) {
-  if (!shopName) {
-    return {
-      migrated: false,
-      skipped: true,
-    };
-  }
-
-  const ref =
-    configuracionRef(
-      clienteId
-    );
-
-  return runTransaction(
-    db,
-    async (
-      transaction
-    ) => {
-      const snapshot =
-        await transaction.get(
-          ref
-        );
-
-      const existingName =
-        optionalString(
-          snapshot.data()
-            ?.shopName
-        );
-
-      if (
-        existingName
-      ) {
-        return {
-          migrated: false,
-          skipped: true,
-        };
-      }
-
-      transaction.set(
-        ref,
+    if (
+      !result.ok
+    ) {
+      fail(
+        result.reason ||
+        "migration-batch-failed",
+        result.message ||
+        "No se pudo migrar un lote de datos",
         {
-          shopName,
-
-          migrationVersion:
-            POS_MIGRATION_VERSION,
-
-          migratedFromLocal:
-            true,
-
-          migratedByDeviceId:
-            deviceId,
-
-          updatedAt:
-            serverTimestamp(),
-
-          migratedAt:
-            serverTimestamp(),
-        },
-        {
-          merge: true,
-        }
-      );
-
-      return {
-        migrated: true,
-        skipped: false,
-      };
-    }
-  );
-}
-
-/* =========================================================
-   RECUPERAR CAJA ABIERTA LEGACY
-========================================================= */
-
-async function recoverLegacyOpenCashSession(
-  clienteId,
-  localOpenSession
-) {
-  if (
-    !localOpenSession
-  ) {
-    return false;
-  }
-
-  const configRef =
-    configuracionRef(
-      clienteId
-    );
-
-  const sessionRef =
-    cajaRef(
-      clienteId,
-      localOpenSession.id
-    );
-
-  return runTransaction(
-    db,
-    async (
-      transaction
-    ) => {
-      const configSnapshot =
-        await transaction.get(
-          configRef
-        );
-
-      const sessionSnapshot =
-        await transaction.get(
-          sessionRef
-        );
-
-      const activeSessionId =
-        optionalString(
-          configSnapshot.data()
-            ?.openCashSessionId
-        );
-
-      /*
-       * Si Cloud ya tiene una caja activa,
-       * nunca la reemplazamos con la local.
-       */
-      if (
-        activeSessionId
-      ) {
-        return false;
-      }
-
-      /*
-       * La sesión legacy debe existir realmente
-       * en Cloud y continuar abierta.
-       */
-      if (
-        !sessionSnapshot.exists() ||
-        sessionSnapshot.data()
-          ?.status !== "open"
-      ) {
-        return false;
-      }
-
-      transaction.set(
-        configRef,
-        {
-          openCashSessionId:
-            localOpenSession.id,
-
-          updatedAt:
-            serverTimestamp(),
-        },
-        {
-          merge: true,
-        }
-      );
-
-      return true;
-    }
-  );
-}
-
-/* =========================================================
-   COMPLETAR MIGRACIÓN
-========================================================= */
-
-async function completeMigration(
-  clienteId,
-  deviceId,
-  localCounts,
-  stats
-) {
-  const ref =
-    migracionRef(
-      clienteId
-    );
-
-  await runTransaction(
-    db,
-    async (
-      transaction
-    ) => {
-      const snapshot =
-        await transaction.get(
-          ref
-        );
-
-      const data =
-        snapshot.exists()
-          ? snapshot.data()
-          : {};
-
-      const activeDeviceId =
-        optionalString(
-          data.activeMigration
-            ?.deviceId
-        );
-
-      /*
-       * No permitimos que un dispositivo marque como
-       * completada la migración que actualmente pertenece
-       * a otro dispositivo.
-       */
-      if (
-        activeDeviceId &&
-        activeDeviceId !==
-          deviceId
-      ) {
-        fail(
-          "migration-lock-lost",
-          "La migración fue tomada por otro dispositivo"
-        );
-      }
-
-      transaction.set(
-        ref,
-        {
-          version:
-            POS_MIGRATION_VERSION,
-
-          status:
-            "completed",
-
-          activeMigration:
-            null,
-
-          completedDeviceIds:
-            arrayUnion(
-              deviceId
-            ),
-
-          completedAtMs:
-            Date.now(),
-
-          completedAt:
-            serverTimestamp(),
-
-          updatedAt:
-            serverTimestamp(),
-
-          localCounts,
-
-          lastResult:
-            stats,
-        },
-        {
-          merge: true,
+          kind,
+          index,
         }
       );
     }
-  );
-}
-
-/* =========================================================
-   REGISTRAR ERROR
-========================================================= */
-
-async function markMigrationError(
-  clienteId,
-  deviceId,
-  error
-) {
-  const ref =
-    migracionRef(
-      clienteId
-    );
-
-  try {
-    await runTransaction(
-      db,
-      async (
-        transaction
-      ) => {
-        const snapshot =
-          await transaction.get(
-            ref
-          );
-
-        const data =
-          snapshot.exists()
-            ? snapshot.data()
-            : {};
-
-        const activeDeviceId =
-          optionalString(
-            data.activeMigration
-              ?.deviceId
-          );
-
-        /*
-         * Si otro dispositivo ya tomó el lock,
-         * no tocamos su estado.
-         */
-        if (
-          activeDeviceId &&
-          activeDeviceId !==
-            deviceId
-        ) {
-          return;
-        }
-
-        transaction.set(
-          ref,
-          {
-            version:
-              POS_MIGRATION_VERSION,
-
-            status:
-              "error",
-
-            activeMigration:
-              null,
-
-            lastError: {
-              deviceId,
-
-              code:
-                String(
-                  error?.code ||
-                  "unknown"
-                ).slice(
-                  0,
-                  100
-                ),
-
-              message:
-                String(
-                  error?.message ||
-                  "Error desconocido"
-                ).slice(
-                  0,
-                  500
-                ),
-            },
-
-            failedAtMs:
-              Date.now(),
-
-            failedAt:
-              serverTimestamp(),
-
-            updatedAt:
-              serverTimestamp(),
-          },
-          {
-            merge: true,
-          }
-        );
-      }
-    );
-  } catch (
-    markerError
-  ) {
-    console.error(
-      "No se pudo registrar el fallo de migración:",
-      markerError
-    );
   }
 }
 
@@ -1964,6 +1747,10 @@ async function markMigrationError(
 export async function migrateLocalPosToFirestore({
   clienteId,
   deviceId,
+  deviceSessionId,
+  operadorSesion,
+  cacheWasPreviouslyOwned = false,
+  allowOwnedLegacyImport = false,
 } = {}) {
   const cleanClienteId =
     requireString(
@@ -1971,253 +1758,308 @@ export async function migrateLocalPosToFirestore({
       "clienteId"
     );
 
-  /*
-   * El deviceId es obligatorio.
-   *
-   * Permite distinguir migraciones de distintos navegadores
-   * y hace seguro el bloqueo temporal multidispositivo.
-   */
   const cleanDeviceId =
     requireString(
       deviceId,
       "deviceId"
     );
 
-  const local =
-    getLocalPosSnapshot();
+  const cleanDeviceSessionId =
+    requireString(
+      deviceSessionId,
+      "deviceSessionId"
+    );
 
-  const claim =
-    await claimMigration(
+  const cleanOperatorSession =
+    requireOperatorSession(
+      operadorSesion
+    );
+
+  const handledState =
+    getMigrationClientState(
       cleanClienteId,
-      cleanDeviceId,
-      local.counts
+      cleanDeviceId
     );
 
   if (
-    !claim.claimed
+    handledState
+      ?.completed ===
+    true
   ) {
-    if (
-      claim.reason ===
-      "already-completed"
-    ) {
-      return {
-        ok: true,
-        migrated: false,
-        reason:
-          "already-completed",
-
-        result:
-          claim.data
-            ?.lastResult ||
-          null,
-      };
-    }
-
-    if (
-      claim.reason ===
-      "locked"
-    ) {
-      return {
-        ok: false,
-        migrated: false,
-        reason:
-          "migration-in-progress",
-      };
-    }
+    return {
+      ok: true,
+      migrated: false,
+      reason:
+        "client-already-handled",
+      result: null,
+    };
   }
 
-  try {
-    /* =====================================================
-       PREPARAR OPERACIONES
-    ===================================================== */
+  const local =
+    getLocalPosSnapshot();
 
-    const productOperations =
-      local.products.map(
-        (product) => ({
-          ref:
-            productoRef(
-              cleanClienteId,
-              product.barcode
-            ),
+  const localOpenCashSessions =
+    local.cashSessions.filter(
+      (session) =>
+        session.status ===
+        "open"
+    );
 
-          data:
-            removeUndefined({
-              ...product,
+  if (
+    localOpenCashSessions.length >
+    1
+  ) {
+    fail(
+      "migration-multiple-open-cash-sessions",
+      "Hay más de una caja local abierta. Cerrá o corregí las cajas duplicadas antes de migrar.",
+      {
+        safeToDiscard:
+          handledState
+            ?.pendingLegacy !==
+          true,
+      }
+    );
+  }
 
-              migratedFromLocal:
-                true,
-
-              migrationVersion:
-                POS_MIGRATION_VERSION,
-
-              migratedByDeviceId:
-                cleanDeviceId,
-
-              createdAt:
-                serverTimestamp(),
-
-              updatedAt:
-                serverTimestamp(),
-
-              migratedAt:
-                serverTimestamp(),
-            }),
-        })
+  if (
+    !localSnapshotHasData(
+      local
+    )
+  ) {
+    if (
+      handledState
+        ?.pendingLegacy ===
+      true
+    ) {
+      fail(
+        "migration-pending-data-missing",
+        "La migración local quedó pendiente, pero su copia ya no está disponible. La sincronización se mantiene bloqueada para no aceptar una importación parcial."
       );
+    }
 
-    const saleOperations =
-      local.sales.map(
-        (sale) => ({
-          ref:
-            ventaRef(
-              cleanClienteId,
-              sale.id
-            ),
-
-          data:
-            removeUndefined({
-              ...sale,
-
-              migratedFromLocal:
-                true,
-
-              migrationVersion:
-                POS_MIGRATION_VERSION,
-
-              migratedByDeviceId:
-                cleanDeviceId,
-
-              createdAt:
-                serverTimestamp(),
-
-              migratedAt:
-                serverTimestamp(),
-            }),
-        })
-      );
-
-    const cashOperations =
-      local.cashSessions.map(
-        (session) => ({
-          ref:
-            cajaRef(
-              cleanClienteId,
-              session.id
-            ),
-
-          data:
-            removeUndefined({
-              ...session,
-
-              migratedFromLocal:
-                true,
-
-              migrationVersion:
-                POS_MIGRATION_VERSION,
-
-              migratedByDeviceId:
-                cleanDeviceId,
-
-              createdAt:
-                serverTimestamp(),
-
-              updatedAt:
-                serverTimestamp(),
-
-              migratedAt:
-                serverTimestamp(),
-            }),
-        })
-      );
-
-    /* =====================================================
-       ESCRIBIR SIN SOBRESCRIBIR
-    ===================================================== */
-
-    const productsResult =
-      await insertMissingDocuments(
-        productOperations
-      );
-
-    const salesResult =
-      await insertMissingDocuments(
-        saleOperations
-      );
-
-    const cashResult =
-      await insertMissingDocuments(
-        cashOperations
-      );
-
-    const shopNameResult =
-      await migrateShopName(
-        cleanClienteId,
-        local.shopName,
-        cleanDeviceId
-      );
-
-    /* =====================================================
-       CAJA ABIERTA LEGACY
-    ===================================================== */
-
-    const localOpenSession =
-      local.cashSessions.find(
-        (session) =>
-          session.status ===
-          "open"
-      ) || null;
-
-    const openCashRecovered =
-      await recoverLegacyOpenCashSession(
-        cleanClienteId,
-        localOpenSession
-      );
-
-    /* =====================================================
-       RESULTADO
-    ===================================================== */
-
-    const stats = {
-      products:
-        productsResult,
-
-      sales:
-        salesResult,
-
-      cashSessions:
-        cashResult,
-
-      shopName:
-        shopNameResult,
-
-      openCashRecovered,
-    };
-
-    await completeMigration(
+    markMigrationHandled(
       cleanClienteId,
       cleanDeviceId,
-      local.counts,
-      stats
+      "no-local-data"
     );
 
     return {
       ok: true,
-      migrated: true,
-      reason: "completed",
-      result: stats,
+      migrated: false,
+      reason:
+        "no-local-data",
+      result: null,
     };
-  } catch (error) {
-    console.error(
-      "Error migrando datos locales del POS:",
-      error
-    );
+  }
 
-    await markMigrationError(
+  const pendingLegacy =
+    handledState
+      ?.pendingLegacy ===
+    true;
+
+  if (
+    !cacheWasPreviouslyOwned ||
+    allowOwnedLegacyImport
+  ) {
+    markMigrationPending(
+      cleanClienteId,
+      cleanDeviceId
+    );
+  }
+
+  const start =
+    await callMigrationBackend({
+      action:
+        "start",
+
+      version:
+        POS_MIGRATION_VERSION,
+
+      clienteId:
+        cleanClienteId,
+
+      deviceId:
+        cleanDeviceId,
+
+      sessionId:
+        cleanDeviceSessionId,
+
+      operadorSesion:
+        cleanOperatorSession,
+
+      counts:
+        local.counts,
+
+      probeOnly:
+        cacheWasPreviouslyOwned ===
+          true &&
+        !pendingLegacy &&
+        !allowOwnedLegacyImport,
+    });
+
+  if (
+    start.reason ===
+    "already-completed"
+  ) {
+    markMigrationHandled(
       cleanClienteId,
       cleanDeviceId,
-      error
+      "already-completed"
     );
-
-    throw error;
   }
+
+  if (
+    start.reason ===
+    "migration-review-required"
+  ) {
+    return {
+      ok: false,
+      migrated: false,
+      reason:
+        "migration-review-required",
+      message:
+        start.message ||
+        "La caché anterior necesita revisión antes de migrarse",
+      result: null,
+    };
+  }
+
+  if (
+    start.reason ===
+      "admin-required" ||
+    start.reason ===
+      "already-completed"
+  ) {
+    return {
+      ok:
+        start.ok !==
+        false,
+
+      migrated: false,
+
+      reason:
+        start.reason,
+
+      result:
+        start.result ||
+        null,
+    };
+  }
+
+  if (
+    !start.ok ||
+    !start.attemptId
+  ) {
+    fail(
+      start.reason ||
+      "migration-start-failed",
+      start.message ||
+      "No se pudo iniciar la migración local"
+    );
+  }
+
+  const common = {
+    clienteId:
+      cleanClienteId,
+
+    deviceId:
+      cleanDeviceId,
+
+    deviceSessionId:
+      cleanDeviceSessionId,
+
+    operadorSesion:
+      cleanOperatorSession,
+
+    attemptId:
+      start.attemptId,
+
+    limits:
+      start.limits ||
+      {},
+  };
+
+  await migrateKindBatches({
+    ...common,
+    kind:
+      "products",
+    items:
+      local.products,
+  });
+
+  await migrateKindBatches({
+    ...common,
+    kind:
+      "sales",
+    items:
+      local.sales,
+  });
+
+  await migrateKindBatches({
+    ...common,
+    kind:
+      "cashSessions",
+    items:
+      local.cashSessions,
+  });
+
+  const localOpenSession =
+    local.cashSessions.find(
+      (session) =>
+        session.status ===
+        "open"
+    ) ||
+    null;
+
+  const completed =
+    await callMigrationBackend({
+      action:
+        "complete",
+
+      version:
+        POS_MIGRATION_VERSION,
+
+      clienteId:
+        cleanClienteId,
+
+      deviceId:
+        cleanDeviceId,
+
+      sessionId:
+        cleanDeviceSessionId,
+
+      operadorSesion:
+        cleanOperatorSession,
+
+      attemptId:
+        start.attemptId,
+
+      shopName:
+        local.shopName,
+
+      openCashSessionId:
+        localOpenSession
+          ?.id ||
+        null,
+    });
+
+  if (
+    !completed.ok
+  ) {
+    fail(
+      completed.reason ||
+      "migration-complete-failed",
+      completed.message ||
+      "No se pudo completar la migración local"
+    );
+  }
+
+  markMigrationHandled(
+    cleanClienteId,
+    cleanDeviceId,
+    completed.reason ||
+      "completed"
+  );
+
+  return completed;
 }

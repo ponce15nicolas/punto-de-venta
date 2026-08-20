@@ -163,23 +163,11 @@ service cloud.firestore {
           clienteId
         );
 
-        allow create: if perteneceAlCliente(
-            clienteId
-          )
-          && productoValido(
-            request.resource.data
-          );
-
-        allow update: if perteneceAlCliente(
-            clienteId
-          )
-          && productoValido(
-            request.resource.data
-          );
-
-        allow delete: if perteneceAlCliente(
-          clienteId
-        );
+        /*
+         * Altas, cambios, bajas y migraciones se ejecutan
+         * exclusivamente mediante Cloud Functions / Admin SDK.
+         */
+        allow create, update, delete: if false;
       }
 
       /* ===================================================
@@ -192,17 +180,12 @@ service cloud.firestore {
           clienteId
         );
 
-        allow create: if perteneceAlCliente(
-            clienteId
-          )
-          && ventaValida(
-            request.resource.data
-          );
-
         /*
-         * Una venta registrada queda inmutable.
+         * El alta normal y la migración de ventas se ejecutan
+         * exclusivamente mediante Cloud Functions / Admin SDK.
+         * Desde el navegador no se admiten escrituras directas.
          */
-        allow update, delete: if false;
+        allow create, update, delete: if false;
       }
 
       /* ===================================================
@@ -215,21 +198,12 @@ service cloud.firestore {
           clienteId
         );
 
-        allow create: if perteneceAlCliente(
-            clienteId
-          )
-          && cajaValida(
-            request.resource.data
-          );
-
-        allow update: if perteneceAlCliente(
-            clienteId
-          )
-          && cajaValida(
-            request.resource.data
-          );
-
-        allow delete: if false;
+        /*
+         * Aperturas, cierres, acumulación de ventas y migraciones
+         * se ejecutan exclusivamente mediante Cloud Functions /
+         * Admin SDK.
+         */
+        allow create, update, delete: if false;
       }
 
       /* ===================================================
@@ -247,14 +221,12 @@ service cloud.firestore {
 
         allow list: if false;
 
-        allow create, update: if perteneceAlCliente(
-            clienteId
-          )
-          && configuracionPosPermitida(
-            configId
-          );
-
-        allow delete: if false;
+        /*
+         * El nombre del negocio, la caja abierta y el estado de
+         * migración se escriben exclusivamente mediante
+         * Cloud Functions / Admin SDK.
+         */
+        allow create, update, delete: if false;
       }
 
       /* ===================================================

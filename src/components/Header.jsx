@@ -25,6 +25,7 @@ export default function Header({
   onRename,
   openSession,
   deviceId = null,
+  allowOperatorChangeWithOpenSession = false,
 }) {
   const {
     operador,
@@ -47,7 +48,10 @@ export default function Header({
       return;
     }
 
-    if (openSession) {
+    if (
+      openSession &&
+      !allowOperatorChangeWithOpenSession
+    ) {
       window.alert(
         "No es posible cambiar de usuario mientras la caja está abierta. Cerrá la caja primero."
       );

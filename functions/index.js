@@ -434,6 +434,34 @@ function validarId(
     return id;
 }
 
+function normalizarIdDocumentoSeguro(
+    value,
+    maxLength = 180
+) {
+    if (
+        typeof value !==
+        "string"
+    ) {
+        return null;
+    }
+
+    const id = value.trim();
+
+    if (
+        !id ||
+        id.length > maxLength ||
+        id === "." ||
+        id === ".." ||
+        !/^[a-zA-Z0-9._:-]+$/.test(
+            id
+        )
+    ) {
+        return null;
+    }
+
+    return id;
+}
+
 /* =========================================================
    ADMIN
 ========================================================= */
@@ -1593,6 +1621,12 @@ const AUDIT_ACTIONS = Object.freeze({
 
     CUENTA_POR_COBRAR_SALDADA:
         "cuenta-por-cobrar-saldada",
+
+    CAMBIO_NOMBRE_NEGOCIO:
+        "cambio-nombre-negocio",
+
+    MIGRACION_POS_LEGACY:
+        "migracion-pos-legacy",
 });
 
 const AUDIT_ACTION_VALUES =
@@ -1862,7 +1896,7 @@ async function obtenerSessionIdCajaAbiertaEnTransaccion(
         );
 
     const sessionId =
-        textoSeguro(
+        normalizarIdDocumentoSeguro(
             configSnap.data()
                 ?.openCashSessionId,
             180
@@ -1897,6 +1931,4354 @@ async function obtenerSessionIdCajaAbiertaEnTransaccion(
 
     return sessionId;
 }
+
+/* =========================================================
+   ESCRITURAS DE CONFIGURACION DEL POS
+========================================================= */
+
+function validarClienteIdSolicitado(
+    requestData,
+    clienteRef
+) {
+    if (
+        requestData?.clienteId == null
+    ) {
+        return;
+    }
+
+    const requestedId =
+        String(
+            requestData.clienteId
+        ).trim();
+
+    if (
+        requestedId !==
+        clienteRef.id
+    ) {
+        throw new HttpsError(
+            "permission-denied",
+            "La licencia indicada no coincide con la cuenta autenticada."
+        );
+    }
+}
+
+function validarTextoEstricto(
+    value,
+    fieldName,
+    {
+        minLength = 0,
+        maxLength = 180,
+        allowNull = false,
+    } = {}
+) {
+    if (
+        value == null &&
+        allowNull
+    ) {
+        return null;
+    }
+
+    if (
+        typeof value !==
+        "string"
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            fieldName +
+                " debe ser texto."
+        );
+    }
+
+    const clean =
+        value.trim();
+
+    if (
+        clean.length <
+            minLength ||
+        clean.length >
+            maxLength
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            fieldName +
+                " debe tener entre " +
+                minLength +
+                " y " +
+                maxLength +
+                " caracteres."
+        );
+    }
+
+    return clean;
+}
+
+async function validarSesionPrincipalPos(
+    clienteRef,
+    auth,
+    deviceId,
+    sessionId
+) {
+    const controlSnap =
+        await getControlRef(
+            clienteRef
+        ).get();
+
+    const sessions =
+        limpiarSesionesActivas(
+            controlSnap.exists
+                ? controlSnap.data()
+                    ?.sessions
+                : {},
+            Date.now()
+        );
+
+    const current =
+        sessions[
+            deviceId
+        ];
+
+    if (
+        !current ||
+        current.sessionId !==
+            sessionId ||
+        current.authUid !==
+            auth.uid
+    ) {
+        throw new HttpsError(
+            "permission-denied",
+            "Este dispositivo no tiene una sesión principal activa.",
+            {
+                motivo:
+                    "device-session-invalid",
+            }
+        );
+    }
+}
+
+async function resolverContextoEscrituraPos(
+    request,
+    {
+        requireRole = null,
+    } = {}
+) {
+    const {
+        ref: clienteRef,
+        snap: clienteSnap,
+    } =
+        await resolverClienteAutenticado(
+            request.auth
+        );
+
+    const clienteData =
+        clienteSnap.data();
+
+    validarLicencia(
+        clienteData
+    );
+
+    validarSesionNoRevocada(
+        request.auth,
+        clienteData
+    );
+
+    validarClienteIdSolicitado(
+        request.data,
+        clienteRef
+    );
+
+    const deviceId =
+        validarId(
+            request.data?.deviceId,
+            "deviceId"
+        );
+
+    const sessionId =
+        validarId(
+            request.data?.sessionId,
+            "sessionId"
+        );
+
+    await validarSesionPrincipalPos(
+        clienteRef,
+        request.auth,
+        deviceId,
+        sessionId
+    );
+
+    const operador =
+        await validarSesionOperadorInterna(
+            clienteRef,
+            request.data
+                ?.operadorSesion,
+            {
+                requireRole,
+                deviceId,
+            }
+        );
+
+    return {
+        clienteRef,
+        clienteData,
+        deviceId,
+        sessionId,
+        operador,
+    };
+}
+
+exports.guardarNombreNegocio =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                clienteRef,
+                deviceId,
+                operador,
+            } =
+                await resolverContextoEscrituraPos(
+                    request
+                );
+
+            const shopName =
+                validarTextoEstricto(
+                    request.data
+                        ?.shopName,
+                    "shopName",
+                    {
+                        minLength: 1,
+                        maxLength: 120,
+                    }
+                );
+
+            const configRef =
+                clienteRef
+                    .collection(
+                        "configuracion"
+                    )
+                    .doc(
+                        "pos"
+                    );
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const configSnap =
+                            await transaction.get(
+                                configRef
+                            );
+
+                        const previousName =
+                            textoSeguro(
+                                configSnap.data()
+                                    ?.shopName,
+                                120
+                            ) ||
+                            null;
+
+                        const possibleSessionId =
+                            normalizarIdDocumentoSeguro(
+                                configSnap.data()
+                                    ?.openCashSessionId,
+                                180
+                            );
+
+                        let sessionId =
+                            null;
+
+                        if (
+                            possibleSessionId
+                        ) {
+                            const cashSnap =
+                                await transaction.get(
+                                    clienteRef
+                                        .collection(
+                                            "cajas"
+                                        )
+                                        .doc(
+                                            possibleSessionId
+                                        )
+                                );
+
+                            if (
+                                cashSnap.exists &&
+                                cashSnap.data()
+                                    ?.status ===
+                                    "open"
+                            ) {
+                                sessionId =
+                                    possibleSessionId;
+                            }
+                        }
+
+                        transaction.set(
+                            configRef,
+                            {
+                                shopName,
+
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            },
+                            {
+                                merge: true,
+                            }
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador,
+
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .CAMBIO_NOMBRE_NEGOCIO,
+
+                                deviceId,
+                                sessionId,
+
+                                detalle: {
+                                    nombreAnterior:
+                                        previousName,
+
+                                    nombreNuevo:
+                                        shopName,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            previousName,
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+                shopName,
+
+                changed:
+                    result
+                        .previousName !==
+                    shopName,
+            };
+        }
+    );
+
+/* =========================================================
+   MIGRACION POS LEGACY — PROTOCOLO SEGURO POR LOTES
+========================================================= */
+
+const POS_LEGACY_MIGRATION_VERSION = 1;
+const POS_LEGACY_BATCH_MAX_ITEMS = 80;
+const POS_LEGACY_BATCH_MAX_BYTES =
+    750 * 1024;
+const POS_LEGACY_DOCUMENT_MAX_BYTES =
+    200 * 1024;
+const POS_LEGACY_DOCUMENT_METADATA_RESERVE_BYTES =
+    2 * 1024;
+const POS_LEGACY_LOCK_TIMEOUT_MS =
+    15 * 60 * 1000;
+const POS_LEGACY_MAX_MONEY =
+    1e12;
+const POS_LEGACY_MAX_QUANTITY =
+    1e9;
+
+const POS_LEGACY_KINDS =
+    Object.freeze([
+        "products",
+        "sales",
+        "cashSessions",
+    ]);
+
+const POS_LEGACY_MAX_COUNTS =
+    Object.freeze({
+        products: 5000,
+        sales: 20000,
+        cashSessions: 5000,
+    });
+
+const POS_LEGACY_PRODUCT_TYPES =
+    new Set([
+        "unidad",
+        "peso",
+        "precio-libre",
+    ]);
+
+const POS_LEGACY_PAYMENT_METHODS =
+    new Set([
+        "efectivo",
+        "transferencia",
+        "qr",
+        "tarjeta",
+    ]);
+
+const POS_LEGACY_CALLABLE_OPTIONS = {
+    ...CALLABLE_OPTIONS,
+    timeoutSeconds: 180,
+    memory: "512MiB",
+};
+
+function hashPosLegacy(
+    value
+) {
+    return crypto
+        .createHash(
+            "sha256"
+        )
+        .update(
+            String(value),
+            "utf8"
+        )
+        .digest(
+            "hex"
+        );
+}
+
+function serializarPosLegacyCanonico(
+    value
+) {
+    if (
+        value === null ||
+        typeof value !==
+            "object"
+    ) {
+        return JSON.stringify(
+            value
+        );
+    }
+
+    if (
+        Array.isArray(
+            value
+        )
+    ) {
+        return (
+            "[" +
+            value
+                .map(
+                    (
+                        item
+                    ) =>
+                        serializarPosLegacyCanonico(
+                            item
+                        )
+                )
+                .join(
+                    ","
+                ) +
+            "]"
+        );
+    }
+
+    const keys =
+        Object.keys(
+            value
+        ).sort();
+
+    return (
+        "{" +
+        keys
+            .map(
+                (
+                    key
+                ) =>
+                    JSON.stringify(
+                        key
+                    ) +
+                    ":" +
+                    serializarPosLegacyCanonico(
+                        value[
+                            key
+                        ]
+                    )
+            )
+            .join(
+                ","
+            ) +
+        "}"
+    );
+}
+
+function bytesPosLegacy(
+    value
+) {
+    return Buffer.byteLength(
+        typeof value ===
+            "string"
+            ? value
+            : serializarPosLegacyCanonico(
+                value
+            ),
+        "utf8"
+    );
+}
+
+function validarTamanoDocumentoPosLegacy(
+    value,
+    fieldName
+) {
+    if (
+        bytesPosLegacy(
+            value
+        ) >
+        POS_LEGACY_DOCUMENT_MAX_BYTES -
+            POS_LEGACY_DOCUMENT_METADATA_RESERVE_BYTES
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            fieldName +
+                " supera el limite de 200 KB."
+        );
+    }
+}
+
+function redondearPosLegacy(
+    value,
+    decimals
+) {
+    const factor =
+        10 ** decimals;
+
+    return (
+        Math.round(
+            (
+                Number(value) +
+                Number.EPSILON
+            ) *
+            factor
+        ) /
+        factor
+    );
+}
+
+function numeroPosLegacy(
+    value,
+    fieldName,
+    {
+        defaultValue = 0,
+        min = 0,
+        max =
+            POS_LEGACY_MAX_MONEY,
+        decimals = 2,
+        integer = false,
+        allowNull = false,
+    } = {}
+) {
+    if (
+        value != null &&
+        value !==
+            "" &&
+        typeof value !==
+            "number" &&
+        typeof value !==
+            "string"
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            fieldName +
+                " contiene un numero invalido."
+        );
+    }
+
+    if (
+        (
+            value == null ||
+            value ===
+                ""
+        ) &&
+        allowNull
+    ) {
+        return null;
+    }
+
+    const raw =
+        value == null ||
+        value ===
+            ""
+            ? defaultValue
+            : Number(value);
+
+    if (
+        !Number.isFinite(
+            raw
+        ) ||
+        raw < min ||
+        raw > max
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            fieldName +
+                " contiene un numero invalido."
+        );
+    }
+
+    return integer
+        ? Math.trunc(
+            raw
+        )
+        : redondearPosLegacy(
+            raw,
+            decimals
+        );
+}
+
+function textoPosLegacy(
+    value,
+    fieldName,
+    {
+        maxLength = 180,
+        required = false,
+        fallback = "",
+    } = {}
+) {
+    const source =
+        value == null
+            ? fallback
+            : value;
+
+    if (
+        typeof source !==
+            "string" &&
+        typeof source !==
+            "number"
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            fieldName +
+                " contiene texto invalido."
+        );
+    }
+
+    const clean =
+        String(
+            source
+        ).trim();
+
+    if (
+        (
+            required &&
+            !clean
+        ) ||
+        clean.length >
+            maxLength
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            fieldName +
+                " contiene texto invalido."
+        );
+    }
+
+    return clean;
+}
+
+function fechaIsoPosLegacy(
+    value,
+    fieldName,
+    {
+        allowNull = false,
+        fallback =
+            "1970-01-01T00:00:00.000Z",
+    } = {}
+) {
+    if (
+        (
+            value == null ||
+            value ===
+                ""
+        ) &&
+        allowNull
+    ) {
+        return null;
+    }
+
+    const date =
+        new Date(
+            value ||
+            fallback
+        );
+
+    if (
+        Number.isNaN(
+            date.getTime()
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            fieldName +
+                " contiene una fecha invalida."
+        );
+    }
+
+    return date.toISOString();
+}
+
+function normalizarIdPosLegacy(
+    value,
+    kind,
+    fallbackSeed = ""
+) {
+    if (
+        value != null &&
+        typeof value !==
+            "string" &&
+        typeof value !==
+            "number"
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "ID legacy invalido."
+        );
+    }
+
+    const raw =
+        value == null
+            ? ""
+            : String(
+                value
+            ).trim();
+
+    if (
+        raw.length >
+        1000
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "ID legacy demasiado extenso."
+        );
+    }
+
+    if (
+        raw.length >= 8 &&
+        raw.length <= 180 &&
+        raw !== "." &&
+        raw !== ".." &&
+        /^[a-zA-Z0-9._:-]+$/.test(
+            raw
+        )
+    ) {
+        return raw;
+    }
+
+    const prefixes = {
+        products:
+            "product",
+        sales:
+            "sale",
+        cashSessions:
+            "cash",
+    };
+
+    const prefix =
+        prefixes[
+            kind
+        ] ||
+        "document";
+
+    return (
+        "legacy-" +
+        prefix +
+        "-" +
+        hashPosLegacy(
+            kind +
+            "\u0000" +
+            raw +
+            (
+                raw
+                    ? ""
+                    : "\u0000" +
+                        fallbackSeed
+            )
+        ).slice(
+            0,
+            40
+        )
+    );
+}
+
+function idProductoPosLegacy(
+    barcode
+) {
+    try {
+        const encoded =
+            encodeURIComponent(
+                barcode
+            );
+
+        if (
+            encoded &&
+            encoded.length <=
+                1400 &&
+            encoded !== "." &&
+            encoded !== ".." &&
+            !encoded.includes(
+                "/"
+            )
+        ) {
+            return encoded;
+        }
+    } catch (error) {
+        console.error(
+            "Codigo legacy no codificable:",
+            error
+        );
+    }
+
+    return normalizarIdPosLegacy(
+        barcode,
+        "products"
+    );
+}
+
+function normalizarProductoPosLegacy(
+    rawProduct
+) {
+    if (
+        !esObjetoPlano(
+            rawProduct
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Producto legacy invalido."
+        );
+    }
+
+    const barcode =
+        textoPosLegacy(
+            rawProduct.barcode,
+            "product.barcode",
+            {
+                required: true,
+            }
+        );
+
+    const name =
+        textoPosLegacy(
+            rawProduct.name,
+            "product.name",
+            {
+                required: true,
+            }
+        );
+
+    const rawType =
+        textoPosLegacy(
+            rawProduct.tipoVenta,
+            "product.tipoVenta",
+            {
+                maxLength: 40,
+                fallback: "unidad",
+            }
+        );
+
+    const tipoVenta =
+        POS_LEGACY_PRODUCT_TYPES
+            .has(
+                rawType
+            )
+            ? rawType
+            : "unidad";
+
+    const price =
+        tipoVenta ===
+            "precio-libre"
+            ? 0
+            : numeroPosLegacy(
+                rawProduct.price,
+                "product.price"
+            );
+
+    const stock =
+        tipoVenta ===
+            "precio-libre"
+            ? 0
+            : numeroPosLegacy(
+                rawProduct.stock,
+                "product.stock",
+                {
+                    max:
+                        POS_LEGACY_MAX_QUANTITY,
+                    decimals:
+                        tipoVenta ===
+                        "peso"
+                            ? 3
+                            : 0,
+                    integer:
+                        tipoVenta ===
+                        "unidad",
+                }
+            );
+
+    const expiry =
+        rawProduct.expiry == null ||
+        rawProduct.expiry ===
+            ""
+            ? null
+            : textoPosLegacy(
+                rawProduct.expiry,
+                "product.expiry",
+                {
+                    maxLength: 120,
+                }
+            );
+
+    const product = {
+        barcode,
+        name,
+        tipoVenta,
+
+        unidadMedida:
+            tipoVenta ===
+            "peso"
+                ? (
+                    textoPosLegacy(
+                        rawProduct
+                            .unidadMedida,
+                        "product.unidadMedida",
+                        {
+                            maxLength: 40,
+                            fallback: "kg",
+                        }
+                    ) ||
+                    "kg"
+                )
+                : null,
+
+        price,
+        stock,
+        expiry,
+    };
+
+    validarTamanoDocumentoPosLegacy(
+        product,
+        "product"
+    );
+
+    return {
+        id:
+            idProductoPosLegacy(
+                barcode
+            ),
+        data: product,
+    };
+}
+
+function normalizarItemVentaPosLegacy(
+    rawItem,
+    itemIndex
+) {
+    if (
+        !esObjetoPlano(
+            rawItem
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Item de venta legacy invalido."
+        );
+    }
+
+    const name =
+        textoPosLegacy(
+            rawItem.name,
+            "sale.items.name",
+            {
+                required: true,
+            }
+        );
+
+    const barcode =
+        textoPosLegacy(
+            rawItem.barcode,
+            "sale.items.barcode",
+            {
+                fallback:
+                    "legacy-item-" +
+                    itemIndex,
+            }
+        ) ||
+        (
+            "legacy-item-" +
+            itemIndex
+        );
+
+    const rawType =
+        textoPosLegacy(
+            rawItem.tipoVenta,
+            "sale.items.tipoVenta",
+            {
+                maxLength: 40,
+                fallback: "unidad",
+            }
+        );
+
+    const tipoVenta =
+        POS_LEGACY_PRODUCT_TYPES
+            .has(
+                rawType
+            )
+            ? rawType
+            : "unidad";
+
+    const qty =
+        tipoVenta ===
+            "precio-libre"
+            ? 1
+            : numeroPosLegacy(
+                rawItem.qty,
+                "sale.items.qty",
+                {
+                    defaultValue: 1,
+                    min:
+                        tipoVenta ===
+                        "peso"
+                            ? 0.001
+                            : 1,
+                    max:
+                        POS_LEGACY_MAX_QUANTITY,
+                    decimals:
+                        tipoVenta ===
+                        "peso"
+                            ? 3
+                            : 0,
+                    integer:
+                        tipoVenta ===
+                        "unidad",
+                }
+            );
+
+    const price =
+        numeroPosLegacy(
+            rawItem.price,
+            "sale.items.price"
+        );
+
+    const calculatedSubtotal =
+        redondearPosLegacy(
+            qty * price,
+            2
+        );
+
+    /*
+     * El subtotal histórico se reconstruye en servidor. No se
+     * confía en un importe almacenado o manipulado en el browser.
+     */
+    const subtotal =
+        numeroPosLegacy(
+            calculatedSubtotal,
+            "sale.items.subtotal"
+        );
+
+    return {
+        barcode,
+        name,
+        tipoVenta,
+
+        unidadMedida:
+            tipoVenta ===
+            "peso"
+                ? (
+                    textoPosLegacy(
+                        rawItem
+                            .unidadMedida,
+                        "sale.items.unidadMedida",
+                        {
+                            maxLength: 40,
+                            fallback: "kg",
+                        }
+                    ) ||
+                    "kg"
+                )
+                : null,
+
+        price,
+        qty,
+        subtotal,
+    };
+}
+
+function normalizarVentaPosLegacy(
+    rawSale
+) {
+    if (
+        !esObjetoPlano(
+            rawSale
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Venta legacy invalida."
+        );
+    }
+
+    if (
+        !Array.isArray(
+            rawSale.items
+        ) ||
+        rawSale.items.length ===
+            0 ||
+        rawSale.items.length >
+            100
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Una venta legacy debe contener entre 1 y 100 lineas."
+        );
+    }
+
+    const items =
+        rawSale.items.map(
+            (
+                item,
+                index
+            ) =>
+                normalizarItemVentaPosLegacy(
+                    item,
+                    index
+                )
+        );
+
+    const calculatedTotal =
+        redondearPosLegacy(
+            items.reduce(
+                (
+                    total,
+                    item
+                ) =>
+                    total +
+                    item.subtotal,
+                0
+            ),
+            2
+        );
+
+    /*
+     * Igual que en una venta normal, el total es la suma de las
+     * líneas validadas y nunca un valor aportado por el cliente.
+     */
+    const total =
+        numeroPosLegacy(
+            calculatedTotal,
+            "sale.total"
+        );
+
+    const rawMethod =
+        textoPosLegacy(
+            rawSale.payment
+                ?.method,
+            "sale.payment.method",
+            {
+                maxLength: 40,
+                fallback: "efectivo",
+            }
+        );
+
+    const method =
+        POS_LEGACY_PAYMENT_METHODS
+            .has(
+                rawMethod
+            )
+            ? rawMethod
+            : "efectivo";
+
+    const received =
+        method ===
+            "efectivo"
+            ? numeroPosLegacy(
+                rawSale.payment
+                    ?.received,
+                "sale.payment.received",
+                {
+                    defaultValue:
+                        total,
+                    min:
+                        total,
+                }
+            )
+            : total;
+
+    const change =
+        method ===
+            "efectivo"
+            ? numeroPosLegacy(
+                received -
+                    total,
+                "sale.payment.change"
+            )
+            : 0;
+
+    const timestamp =
+        fechaIsoPosLegacy(
+            rawSale.timestamp,
+            "sale.timestamp"
+        );
+
+    const rawSessionId =
+        textoPosLegacy(
+            rawSale.sessionId,
+            "sale.sessionId",
+            {
+                maxLength: 1000,
+            }
+        );
+
+    const sessionId =
+        rawSessionId
+            ? normalizarIdPosLegacy(
+                rawSessionId,
+                "cashSessions"
+            )
+            : null;
+
+    const id =
+        normalizarIdPosLegacy(
+            rawSale.id,
+            "sales",
+            serializarPosLegacyCanonico({
+                timestamp,
+                items,
+                total,
+                sessionId,
+            })
+        );
+
+    const sale = {
+        id,
+        timestamp,
+        items,
+        total,
+        sessionId,
+
+        payment: {
+            method,
+            received,
+            change,
+        },
+    };
+
+    validarTamanoDocumentoPosLegacy(
+        sale,
+        "sale"
+    );
+
+    return {
+        id,
+        data: sale,
+    };
+}
+
+function normalizarTotalesPagoPosLegacy(
+    value,
+    fieldName
+) {
+    const source =
+        esObjetoPlano(
+            value
+        )
+            ? value
+            : {};
+
+    return {
+        efectivo:
+            numeroPosLegacy(
+                source.efectivo,
+                fieldName +
+                    ".efectivo"
+            ),
+
+        transferencia:
+            numeroPosLegacy(
+                source
+                    .transferencia,
+                fieldName +
+                    ".transferencia"
+            ),
+
+        qr:
+            numeroPosLegacy(
+                source.qr,
+                fieldName +
+                    ".qr"
+            ),
+
+        tarjeta:
+            numeroPosLegacy(
+                source.tarjeta,
+                fieldName +
+                    ".tarjeta"
+            ),
+    };
+}
+
+function normalizarCajaPosLegacy(
+    rawCash
+) {
+    if (
+        !esObjetoPlano(
+            rawCash
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Caja legacy invalida."
+        );
+    }
+
+    const status =
+        rawCash.status ===
+            "open"
+            ? "open"
+            : "closed";
+
+    const openTime =
+        fechaIsoPosLegacy(
+            rawCash.openTime,
+            "cashSession.openTime"
+        );
+
+    const id =
+        normalizarIdPosLegacy(
+            rawCash.id,
+            "cashSessions",
+            serializarPosLegacyCanonico({
+                openTime,
+
+                openAmount:
+                    rawCash
+                        .openAmount,
+            })
+        );
+
+    const openAmount =
+        numeroPosLegacy(
+            rawCash.openAmount,
+            "cashSession.openAmount"
+        );
+
+    const declaredTotalSales =
+        numeroPosLegacy(
+            rawCash.totalSales,
+            "cashSession.totalSales"
+        );
+
+    const paymentTotals =
+        normalizarTotalesPagoPosLegacy(
+            rawCash
+                .paymentTotals,
+            "cashSession.paymentTotals"
+        );
+
+    let calculatedTotalSales =
+        redondearPosLegacy(
+            Object.values(
+                paymentTotals
+            ).reduce(
+                (
+                    total,
+                    amount
+                ) =>
+                    total +
+                    amount,
+                0
+            ),
+            2
+        );
+
+    /*
+     * Algunas versiones muy antiguas sólo guardaban totalSales.
+     * En ese caso conservamos el total como efectivo. Si ya hay
+     * desglose, exigimos que sea consistente y reconstruimos el
+     * agregado en servidor.
+     */
+    if (
+        Math.abs(
+            calculatedTotalSales -
+            declaredTotalSales
+        ) >
+        0.02
+    ) {
+        if (
+            calculatedTotalSales ===
+                0 &&
+            declaredTotalSales >
+                0
+        ) {
+            paymentTotals.efectivo =
+                declaredTotalSales;
+
+            calculatedTotalSales =
+                declaredTotalSales;
+        } else {
+            throw new HttpsError(
+                "invalid-argument",
+                "Los totales de la caja legacy no son consistentes."
+            );
+        }
+    }
+
+    const totalSales =
+        numeroPosLegacy(
+            calculatedTotalSales,
+            "cashSession.totalSales"
+        );
+
+    let counted =
+        null;
+
+    let expectedAmount =
+        null;
+
+    if (
+        status ===
+        "closed"
+    ) {
+        const declaredCounted =
+            numeroPosLegacy(
+                rawCash.counted,
+                "cashSession.counted",
+                {
+                    allowNull: true,
+                }
+            );
+
+        const declaredCloseAmount =
+            numeroPosLegacy(
+                rawCash.closeAmount,
+                "cashSession.closeAmount",
+                {
+                    allowNull: true,
+                }
+            );
+
+        if (
+            declaredCounted !==
+                null &&
+            declaredCloseAmount !==
+                null &&
+            Math.abs(
+                declaredCounted -
+                declaredCloseAmount
+            ) >
+                0.01
+        ) {
+            throw new HttpsError(
+                "invalid-argument",
+                "El efectivo contado de la caja legacy no es consistente."
+            );
+        }
+
+        counted =
+            declaredCounted ??
+            declaredCloseAmount;
+
+        expectedAmount =
+            numeroPosLegacy(
+                redondearPosLegacy(
+                    openAmount +
+                    paymentTotals
+                        .efectivo,
+                    2
+                ),
+                "cashSession.expectedAmount"
+            );
+    }
+
+    const diff =
+        counted ===
+        null
+            ? null
+            : numeroPosLegacy(
+                redondearPosLegacy(
+                    counted -
+                    expectedAmount,
+                    2
+                ),
+                "cashSession.diff",
+                {
+                    min:
+                        -POS_LEGACY_MAX_MONEY,
+                }
+            );
+
+    const cash = {
+        id,
+        openTime,
+        openAmount,
+
+        closeTime:
+            status ===
+            "closed"
+                ? fechaIsoPosLegacy(
+                    rawCash
+                        .closeTime,
+                    "cashSession.closeTime",
+                    {
+                        allowNull: true,
+                    }
+                )
+                : null,
+
+        closeAmount:
+            counted,
+
+        expectedAmount,
+        counted,
+        diff,
+        totalSales,
+
+        salesCount:
+            numeroPosLegacy(
+                rawCash.salesCount,
+                "cashSession.salesCount",
+                {
+                    max:
+                        POS_LEGACY_MAX_COUNTS
+                            .sales,
+                    integer: true,
+                }
+            ),
+
+        paymentTotals,
+        status,
+    };
+
+    validarTamanoDocumentoPosLegacy(
+        cash,
+        "cashSession"
+    );
+
+    return {
+        id,
+        data: cash,
+    };
+}
+
+function normalizarDocumentoPosLegacy(
+    kind,
+    value
+) {
+    if (
+        kind ===
+        "products"
+    ) {
+        return normalizarProductoPosLegacy(
+            value
+        );
+    }
+
+    if (
+        kind ===
+        "sales"
+    ) {
+        return normalizarVentaPosLegacy(
+            value
+        );
+    }
+
+    if (
+        kind ===
+        "cashSessions"
+    ) {
+        return normalizarCajaPosLegacy(
+            value
+        );
+    }
+
+    throw new HttpsError(
+        "invalid-argument",
+        "Tipo de lote legacy invalido."
+    );
+}
+
+function validarContadoresPosLegacy(
+    value
+) {
+    if (
+        !esObjetoPlano(
+            value
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "counts es obligatorio."
+        );
+    }
+
+    const counts = {};
+
+    for (
+        const kind of
+        POS_LEGACY_KINDS
+    ) {
+        const count =
+            Number(
+                value[
+                    kind
+                ]
+            );
+
+        if (
+            !Number.isInteger(
+                count
+            ) ||
+            count < 0 ||
+            count >
+                POS_LEGACY_MAX_COUNTS[
+                    kind
+                ]
+        ) {
+            throw new HttpsError(
+                "invalid-argument",
+                "Cantidad legacy invalida para " +
+                    kind +
+                    "."
+            );
+        }
+
+        counts[
+            kind
+        ] = count;
+    }
+
+    return counts;
+}
+
+function contadoresPosLegacyVacios() {
+    return {
+        products: 0,
+        sales: 0,
+        cashSessions: 0,
+    };
+}
+
+function siguienteKindPosLegacy(
+    expected,
+    received,
+    afterKind = null
+) {
+    const startIndex =
+        afterKind
+            ? POS_LEGACY_KINDS
+                .indexOf(
+                    afterKind
+                ) +
+                1
+            : 0;
+
+    for (
+        let index =
+            Math.max(
+                0,
+                startIndex
+            );
+        index <
+            POS_LEGACY_KINDS
+                .length;
+        index += 1
+    ) {
+        const kind =
+            POS_LEGACY_KINDS[
+                index
+            ];
+
+        if (
+            received[
+                kind
+            ] <
+            expected[
+                kind
+            ]
+        ) {
+            return kind;
+        }
+    }
+
+    return null;
+}
+
+function mismosContadoresPosLegacy(
+    left,
+    right
+) {
+    return POS_LEGACY_KINDS
+        .every(
+            (
+                kind
+            ) =>
+                Number(
+                    left?.[
+                        kind
+                    ]
+                ) ===
+                Number(
+                    right?.[
+                        kind
+                    ]
+                )
+        );
+}
+
+function refsEstadoPosLegacy(
+    clienteRef
+) {
+    const root =
+        clienteRef
+            .collection(
+                "configuracion"
+            )
+            .doc(
+                "migracion-pos-v1"
+            );
+
+    return {
+        root,
+
+        control:
+            root
+                .collection(
+                    "control"
+                )
+                .doc(
+                    "estado"
+                ),
+
+        attempts:
+            root.collection(
+                "intentos"
+            ),
+
+        devices:
+            root.collection(
+                "devices"
+            ),
+
+        batches:
+            root.collection(
+                "lotes"
+            ),
+    };
+}
+
+function respuestaProgresoPosLegacy(
+    attempt
+) {
+    return {
+        attemptId:
+            attempt.id,
+
+        expected:
+            attempt.expected,
+
+        received:
+            attempt.received,
+
+        migrated:
+            attempt.migrated,
+
+        skipped:
+            attempt.skipped,
+
+        nextKind:
+            attempt.nextKind ||
+            null,
+
+        nextIndex:
+            Number(
+                attempt.nextIndex ||
+                0
+            ),
+    };
+}
+
+async function reconocerMigracionLegacyCompletada(
+    context
+) {
+    const refs =
+        refsEstadoPosLegacy(
+            context.clienteRef
+        );
+
+    const deviceRef =
+        refs.devices.doc(
+            hashPosLegacy(
+                context.deviceId
+            )
+        );
+
+    return db.runTransaction(
+        async (
+            transaction
+        ) => {
+            const deviceSnap =
+                await transaction.get(
+                    deviceRef
+                );
+
+            const deviceData =
+                deviceSnap.data() ||
+                {};
+
+            if (
+                deviceData.status ===
+                "completed"
+            ) {
+                return {
+                    completed: true,
+                    active: false,
+                    result:
+                        deviceData.result ||
+                        null,
+                };
+            }
+
+            const legacyRootSnap =
+                await transaction.get(
+                    refs.root
+                );
+
+            const legacyRoot =
+                legacyRootSnap.data() ||
+                {};
+
+            const completedDeviceIds =
+                Array.isArray(
+                    legacyRoot
+                        .completedDeviceIds
+                )
+                    ? legacyRoot
+                        .completedDeviceIds
+                    : [];
+
+            if (
+                Number(
+                    legacyRoot.version ||
+                    0
+                ) <
+                    POS_LEGACY_MIGRATION_VERSION ||
+                !completedDeviceIds.includes(
+                    context.deviceId
+                )
+            ) {
+                return {
+                    completed: false,
+                    active:
+                        deviceData.status ===
+                        "active",
+                    result: null,
+                };
+            }
+
+            /*
+             * El padre pertenecía al protocolo anterior y podía
+             * escribirse desde el browser. Sólo lo usamos como un
+             * marcador monotónico para DENEGAR una nueva importación;
+             * nunca autoriza datos ni se copia su contenido al estado
+             * protegido. Un valor falsificado sólo puede omitir la
+             * migración del propio dispositivo, no crear documentos.
+             */
+            transaction.set(
+                deviceRef,
+                {
+                    version:
+                        POS_LEGACY_MIGRATION_VERSION,
+
+                    status:
+                        "completed",
+
+                    attemptId:
+                        null,
+
+                    expected:
+                        null,
+
+                    received:
+                        null,
+
+                    result:
+                        null,
+
+                    importedFromLegacyMarker:
+                        true,
+
+                    completedAt:
+                        admin.firestore.FieldValue.serverTimestamp(),
+
+                    lastActivityAt:
+                        admin.firestore.FieldValue.serverTimestamp(),
+
+                    lastActivityAtMs:
+                        Date.now(),
+                },
+                {
+                    merge: true,
+                }
+            );
+
+            return {
+                completed: true,
+                active: false,
+                result: null,
+            };
+        }
+    );
+}
+
+async function iniciarMigracionPosLegacy(
+    request,
+    context
+) {
+    const previousCompletion =
+        await reconocerMigracionLegacyCompletada(
+            context
+        );
+
+    if (
+        previousCompletion.completed
+    ) {
+        return {
+            ok: true,
+            action: "start",
+            started: false,
+            reason:
+                "already-completed",
+            result:
+                previousCompletion.result,
+
+            limits: {
+                maxItems:
+                    POS_LEGACY_BATCH_MAX_ITEMS,
+
+                maxBytes:
+                    POS_LEGACY_BATCH_MAX_BYTES,
+            },
+        };
+    }
+
+    if (
+        request.data
+            ?.probeOnly ===
+            true &&
+        !previousCompletion.active
+    ) {
+        return {
+            ok: false,
+            action: "start",
+            started: false,
+            reason:
+                "migration-review-required",
+            message:
+                "La caché pertenece a una instalación anterior sin una migración completada verificable. Se requiere revisión antes de importarla.",
+
+            limits: {
+                maxItems:
+                    POS_LEGACY_BATCH_MAX_ITEMS,
+
+                maxBytes:
+                    POS_LEGACY_BATCH_MAX_BYTES,
+            },
+        };
+    }
+
+    if (
+        context.operador
+            .rol !==
+        "administrador"
+    ) {
+        return {
+            ok: true,
+            action: "start",
+            started: false,
+            reason:
+                "admin-required",
+            requiredRole:
+                "administrador",
+
+            limits: {
+                maxItems:
+                    POS_LEGACY_BATCH_MAX_ITEMS,
+
+                maxBytes:
+                    POS_LEGACY_BATCH_MAX_BYTES,
+            },
+        };
+    }
+
+    const expected =
+        validarContadoresPosLegacy(
+            request.data
+                ?.counts
+        );
+
+    const deviceHash =
+        hashPosLegacy(
+            context.deviceId
+        );
+
+    const refs =
+        refsEstadoPosLegacy(
+            context.clienteRef
+        );
+
+    const deviceRef =
+        refs.devices.doc(
+            deviceHash
+        );
+
+    /*
+     * El ID se genera exclusivamente en el servidor. Si la
+     * transaccion termina reanudando otro intento, esta
+     * referencia simplemente no se utiliza.
+     */
+    const newAttemptRef =
+        refs.attempts.doc();
+
+    const nowMs =
+        Date.now();
+
+    const result =
+        await db.runTransaction(
+            async (
+                transaction
+            ) => {
+                const controlSnap =
+                    await transaction.get(
+                        refs.control
+                    );
+
+                const deviceSnap =
+                    await transaction.get(
+                        deviceRef
+                    );
+
+                const deviceData =
+                    deviceSnap.data() ||
+                    {};
+
+                if (
+                    deviceData.status ===
+                    "completed"
+                ) {
+                    return {
+                        completed: true,
+                        result:
+                            deviceData.result ||
+                            null,
+                    };
+                }
+
+                const control =
+                    controlSnap.data() ||
+                    {};
+
+                const activeAttemptId =
+                    textoSeguro(
+                        control
+                            .activeAttemptId,
+                        180
+                    );
+
+                let activeAttemptRef =
+                    null;
+
+                let activeAttempt =
+                    null;
+
+                if (
+                    activeAttemptId &&
+                    /^[a-zA-Z0-9._:-]+$/.test(
+                        activeAttemptId
+                    )
+                ) {
+                    activeAttemptRef =
+                        refs.attempts.doc(
+                            activeAttemptId
+                        );
+
+                    const activeSnap =
+                        await transaction.get(
+                            activeAttemptRef
+                        );
+
+                    if (
+                        activeSnap.exists
+                    ) {
+                        activeAttempt = {
+                            id:
+                                activeSnap.id,
+
+                            ...activeSnap.data(),
+                        };
+                    }
+                }
+
+                const lockIsFresh =
+                    Boolean(
+                        activeAttempt &&
+                        activeAttempt
+                            .status ===
+                            "active" &&
+                        nowMs -
+                            Number(
+                                activeAttempt
+                                    .lastActivityAtMs ||
+                                0
+                            ) <
+                            POS_LEGACY_LOCK_TIMEOUT_MS
+                    );
+
+                if (
+                    lockIsFresh &&
+                    activeAttempt
+                        .deviceHash ===
+                        deviceHash
+                ) {
+                    if (
+                        !mismosContadoresPosLegacy(
+                            activeAttempt
+                                .expected,
+                            expected
+                        )
+                    ) {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "La migracion activa fue iniciada con otros contadores.",
+                            {
+                                motivo:
+                                    "migration-counts-mismatch",
+
+                                expected:
+                                    activeAttempt
+                                        .expected,
+                            }
+                        );
+                    }
+
+                    /*
+                     * Reanudar no prolonga el lock por sí solo.
+                     * Cada lote confirmado sí lo refresca. Así un
+                     * payload cambiado que entra en conflicto puede
+                     * recuperarse cuando vence el intento anterior.
+                     */
+
+                    return {
+                        resumed: true,
+                        attempt:
+                            activeAttempt,
+                    };
+                }
+
+                if (
+                    lockIsFresh
+                ) {
+                    throw new HttpsError(
+                        "resource-exhausted",
+                        "Otro dispositivo esta migrando los datos locales.",
+                        {
+                            motivo:
+                                "migration-in-progress",
+                        }
+                    );
+                }
+
+                /*
+                 * Todas las lecturas terminaron. El documento
+                 * padre legacy no se consulta ni se considera
+                 * una fuente de autoridad.
+                 */
+                if (
+                    activeAttemptRef &&
+                    activeAttempt &&
+                    activeAttempt
+                        .status ===
+                        "active"
+                ) {
+                    transaction.set(
+                        activeAttemptRef,
+                        {
+                            status:
+                                "abandoned",
+
+                            abandonedAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                        },
+                        {
+                            merge: true,
+                        }
+                    );
+                }
+
+                const received =
+                    contadoresPosLegacyVacios();
+
+                const attempt = {
+                    id:
+                        newAttemptRef.id,
+
+                    version:
+                        POS_LEGACY_MIGRATION_VERSION,
+
+                    status:
+                        "active",
+
+                    deviceHash,
+
+                    authUid:
+                        textoSeguro(
+                            request.auth
+                                ?.uid,
+                            180
+                        ),
+
+                    operadorId:
+                        context.operador
+                            .id,
+
+                    expected,
+                    received,
+
+                    migrated:
+                        contadoresPosLegacyVacios(),
+
+                    skipped:
+                        contadoresPosLegacyVacios(),
+
+                    openCashSessionCount: 0,
+
+                    nextKind:
+                        siguienteKindPosLegacy(
+                            expected,
+                            received
+                        ),
+
+                    nextIndex: 0,
+
+                    createdAt:
+                        admin.firestore.FieldValue.serverTimestamp(),
+
+                    lastActivityAt:
+                        admin.firestore.FieldValue.serverTimestamp(),
+
+                    lastActivityAtMs:
+                        nowMs,
+                };
+
+                transaction.set(
+                    newAttemptRef,
+                    attempt
+                );
+
+                transaction.set(
+                    refs.control,
+                    {
+                        version:
+                            POS_LEGACY_MIGRATION_VERSION,
+
+                        status:
+                            "active",
+
+                        activeAttemptId:
+                            newAttemptRef.id,
+
+                        deviceHash,
+
+                        lastActivityAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+
+                        lastActivityAtMs:
+                            nowMs,
+                    }
+                );
+
+                transaction.set(
+                    deviceRef,
+                    {
+                        version:
+                            POS_LEGACY_MIGRATION_VERSION,
+
+                        status:
+                            "active",
+
+                        attemptId:
+                            newAttemptRef.id,
+
+                        expected,
+
+                        startedAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+
+                        lastActivityAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+
+                        lastActivityAtMs:
+                            nowMs,
+                    },
+                    {
+                        merge: true,
+                    }
+                );
+
+                return {
+                    started: true,
+                    attempt,
+                };
+            }
+        );
+
+    if (
+        result.completed
+    ) {
+        return {
+            ok: true,
+            action: "start",
+            started: false,
+            reason:
+                "already-completed",
+            result:
+                result.result,
+
+            limits: {
+                maxItems:
+                    POS_LEGACY_BATCH_MAX_ITEMS,
+
+                maxBytes:
+                    POS_LEGACY_BATCH_MAX_BYTES,
+            },
+        };
+    }
+
+    return {
+        ok: true,
+        action: "start",
+        started: true,
+        resumed:
+            Boolean(
+                result.resumed
+            ),
+        reason:
+            result.resumed
+                ? "resumed"
+                : "started",
+
+        ...respuestaProgresoPosLegacy(
+            result.attempt
+        ),
+
+        limits: {
+            maxItems:
+                POS_LEGACY_BATCH_MAX_ITEMS,
+
+            maxBytes:
+                POS_LEGACY_BATCH_MAX_BYTES,
+        },
+    };
+}
+
+function validarLotePosLegacy(
+    request
+) {
+    const attemptId =
+        validarId(
+            request.data
+                ?.attemptId,
+            "attemptId"
+        );
+
+    const kind =
+        textoPosLegacy(
+            request.data
+                ?.kind,
+            "kind",
+            {
+                maxLength: 40,
+                required: true,
+            }
+        );
+
+    if (
+        !POS_LEGACY_KINDS.includes(
+            kind
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Tipo de lote legacy invalido."
+        );
+    }
+
+    const index =
+        Number(
+            request.data
+                ?.index
+        );
+
+    if (
+        !Number.isInteger(
+            index
+        ) ||
+        index < 0 ||
+        index >
+            POS_LEGACY_MAX_COUNTS[
+                kind
+            ]
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Indice de lote legacy invalido."
+        );
+    }
+
+    const items =
+        request.data
+            ?.items;
+
+    if (
+        !Array.isArray(
+            items
+        ) ||
+        items.length ===
+            0 ||
+        items.length >
+            POS_LEGACY_BATCH_MAX_ITEMS
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Cada lote debe contener entre 1 y 80 documentos."
+        );
+    }
+
+    if (
+        bytesPosLegacy(
+            items
+        ) >
+        POS_LEGACY_BATCH_MAX_BYTES
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El lote supera el limite de 750 KB."
+        );
+    }
+
+    const normalized =
+        items.map(
+            (
+                item
+            ) =>
+                normalizarDocumentoPosLegacy(
+                    kind,
+                    item
+                )
+        );
+
+    const documentIds =
+        normalized.map(
+            (
+                item
+            ) =>
+                item.id
+        );
+
+    if (
+        new Set(
+            documentIds
+        ).size !==
+        documentIds.length
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El lote contiene IDs de documento duplicados."
+        );
+    }
+
+    const canonical =
+        serializarPosLegacyCanonico(
+            normalized
+        );
+
+    if (
+        bytesPosLegacy(
+            canonical
+        ) >
+        POS_LEGACY_BATCH_MAX_BYTES
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El lote normalizado supera el limite de 750 KB."
+        );
+    }
+
+    return {
+        attemptId,
+        kind,
+        index,
+        normalized,
+
+        hash:
+            hashPosLegacy(
+                canonical
+            ),
+    };
+}
+
+function referenciaDestinoPosLegacy(
+    clienteRef,
+    kind,
+    id
+) {
+    const collections = {
+        products:
+            "productos",
+        sales:
+            "ventas",
+        cashSessions:
+            "cajas",
+    };
+
+    return clienteRef
+        .collection(
+            collections[
+                kind
+            ]
+        )
+        .doc(
+            id
+        );
+}
+
+function datosDestinoPosLegacy(
+    item,
+    kind,
+    deviceId
+) {
+    const base = {
+        ...item.data,
+
+        migratedFromLocal:
+            true,
+
+        migrationVersion:
+            POS_LEGACY_MIGRATION_VERSION,
+
+        migratedByDeviceId:
+            deviceId,
+
+        createdAt:
+            admin.firestore.FieldValue.serverTimestamp(),
+
+        migratedAt:
+            admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (
+        kind ===
+            "products" ||
+        kind ===
+            "cashSessions"
+    ) {
+        base.updatedAt =
+            admin.firestore.FieldValue.serverTimestamp();
+    }
+
+    return base;
+}
+
+function documentoDestinoPosLegacyCoincide(
+    kind,
+    item,
+    existingData
+) {
+    try {
+        const normalizedExisting =
+            normalizarDocumentoPosLegacy(
+                kind,
+                existingData
+            );
+
+        let rawComparable =
+            normalizedExisting.data;
+
+        if (
+            kind ===
+            "sales"
+        ) {
+            if (
+                !Array.isArray(
+                    existingData
+                        ?.items
+                )
+            ) {
+                return false;
+            }
+
+            rawComparable = {
+                id:
+                    existingData.id,
+
+                timestamp:
+                    existingData.timestamp,
+
+                items:
+                    existingData.items.map(
+                        (
+                            saleItem
+                        ) => ({
+                            barcode:
+                                saleItem
+                                    ?.barcode,
+
+                            name:
+                                saleItem
+                                    ?.name,
+
+                            tipoVenta:
+                                saleItem
+                                    ?.tipoVenta,
+
+                            unidadMedida:
+                                saleItem
+                                    ?.unidadMedida ??
+                                null,
+
+                            price:
+                                saleItem
+                                    ?.price,
+
+                            qty:
+                                saleItem
+                                    ?.qty,
+
+                            subtotal:
+                                saleItem
+                                    ?.subtotal,
+                        })
+                    ),
+
+                total:
+                    existingData.total,
+
+                sessionId:
+                    existingData
+                        .sessionId ??
+                    null,
+
+                payment: {
+                    method:
+                        existingData
+                            .payment
+                            ?.method,
+
+                    received:
+                        existingData
+                            .payment
+                            ?.received,
+
+                    change:
+                        existingData
+                            .payment
+                            ?.change,
+                },
+            };
+        }
+
+        if (
+            kind ===
+            "cashSessions"
+        ) {
+            rawComparable = {
+                id:
+                    existingData.id,
+
+                openTime:
+                    existingData
+                        .openTime,
+
+                openAmount:
+                    existingData
+                        .openAmount,
+
+                closeTime:
+                    existingData
+                        .closeTime ??
+                    null,
+
+                closeAmount:
+                    existingData
+                        .closeAmount ??
+                    null,
+
+                expectedAmount:
+                    existingData
+                        .expectedAmount ??
+                    null,
+
+                counted:
+                    existingData
+                        .counted ??
+                    null,
+
+                diff:
+                    existingData
+                        .diff ??
+                    null,
+
+                totalSales:
+                    existingData
+                        .totalSales,
+
+                salesCount:
+                    existingData
+                        .salesCount,
+
+                paymentTotals: {
+                    efectivo:
+                        existingData
+                            .paymentTotals
+                            ?.efectivo,
+
+                    transferencia:
+                        existingData
+                            .paymentTotals
+                            ?.transferencia,
+
+                    qr:
+                        existingData
+                            .paymentTotals
+                            ?.qr,
+
+                    tarjeta:
+                        existingData
+                            .paymentTotals
+                            ?.tarjeta,
+                },
+
+                status:
+                    existingData.status,
+            };
+        }
+
+        return (
+            normalizedExisting.id ===
+                item.id &&
+            serializarPosLegacyCanonico(
+                normalizedExisting.data
+            ) ===
+                serializarPosLegacyCanonico(
+                    item.data
+                ) &&
+            serializarPosLegacyCanonico(
+                rawComparable
+            ) ===
+                serializarPosLegacyCanonico(
+                    item.data
+                )
+        );
+    } catch {
+        return false;
+    }
+}
+
+function cerrarCajaPosLegacyPorConflicto(
+    cashData
+) {
+    return {
+        ...cashData,
+
+        status:
+            "closed",
+
+        closeTime:
+            null,
+
+        closeAmount:
+            null,
+
+        expectedAmount:
+            redondearPosLegacy(
+                Number(
+                    cashData
+                        .openAmount ||
+                    0
+                ) +
+                Number(
+                    cashData
+                        .paymentTotals
+                        ?.efectivo ||
+                    0
+                ),
+                2
+            ),
+
+        counted:
+            null,
+
+        diff:
+            null,
+    };
+}
+
+async function guardarLotePosLegacy(
+    request,
+    context
+) {
+    const batch =
+        validarLotePosLegacy(
+            request
+        );
+
+    const deviceHash =
+        hashPosLegacy(
+            context.deviceId
+        );
+
+    const refs =
+        refsEstadoPosLegacy(
+            context.clienteRef
+        );
+
+    const attemptRef =
+        refs.attempts.doc(
+            batch.attemptId
+        );
+
+    const deviceRef =
+        refs.devices.doc(
+            deviceHash
+        );
+
+    const lotId =
+        hashPosLegacy(
+            batch.attemptId +
+            "\u0000" +
+            batch.kind +
+            "\u0000" +
+            batch.index
+        );
+
+    const lotRef =
+        refs.batches.doc(
+            lotId
+        );
+
+    const destinations =
+        batch.normalized.map(
+            (
+                item
+            ) =>
+                referenciaDestinoPosLegacy(
+                    context.clienteRef,
+                    batch.kind,
+                    item.id
+                )
+        );
+
+    const openMarkers =
+        batch.kind ===
+        "cashSessions"
+            ? batch.normalized
+                .map(
+                    (
+                        item,
+                        index
+                    ) => ({
+                        item,
+                        index,
+
+                        ref:
+                            refs.batches.doc(
+                                hashPosLegacy(
+                                    "open-cash" +
+                                    "\u0000" +
+                                    batch.attemptId +
+                                    "\u0000" +
+                                    item.id
+                                )
+                            ),
+                    }))
+                .filter(
+                    (
+                        marker
+                    ) =>
+                        marker.item
+                            .data
+                            .status ===
+                        "open"
+                )
+            : [];
+
+    const openCashSessionsInBatch =
+        openMarkers.length;
+
+    const nowMs =
+        Date.now();
+
+    const result =
+        await db.runTransaction(
+            async (
+                transaction
+            ) => {
+                const attemptSnap =
+                    await transaction.get(
+                        attemptRef
+                    );
+
+                const controlSnap =
+                    await transaction.get(
+                        refs.control
+                    );
+
+                const deviceSnap =
+                    await transaction.get(
+                        deviceRef
+                    );
+
+                const lotSnap =
+                    await transaction.get(
+                        lotRef
+                    );
+
+                if (
+                    !attemptSnap.exists
+                ) {
+                    throw new HttpsError(
+                        "not-found",
+                        "El intento de migracion no existe."
+                    );
+                }
+
+                const attempt = {
+                    id:
+                        attemptSnap.id,
+
+                    ...attemptSnap.data(),
+                };
+
+                if (
+                    attempt.deviceHash !==
+                    deviceHash
+                ) {
+                    throw new HttpsError(
+                        "permission-denied",
+                        "El intento pertenece a otro dispositivo."
+                    );
+                }
+
+                if (
+                    lotSnap.exists
+                ) {
+                    const stored =
+                        lotSnap.data() ||
+                        {};
+
+                    if (
+                        stored.hash !==
+                        batch.hash
+                    ) {
+                        throw new HttpsError(
+                            "already-exists",
+                            "El indice del lote ya fue usado con otros datos.",
+                            {
+                                motivo:
+                                    "migration-batch-conflict",
+                            }
+                        );
+                    }
+
+                    if (
+                        attempt.status ===
+                        "active"
+                    ) {
+                        transaction.set(
+                            attemptRef,
+                            {
+                                lastActivityAtMs:
+                                    nowMs,
+
+                                lastActivityAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            },
+                            {
+                                merge: true,
+                            }
+                        );
+
+                        transaction.set(
+                            refs.control,
+                            {
+                                lastActivityAtMs:
+                                    nowMs,
+
+                                lastActivityAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            },
+                            {
+                                merge: true,
+                            }
+                        );
+
+                        transaction.set(
+                            deviceRef,
+                            {
+                                lastActivityAtMs:
+                                    nowMs,
+
+                                lastActivityAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            },
+                            {
+                                merge: true,
+                            }
+                        );
+                    }
+
+                    return {
+                        duplicate: true,
+                        result:
+                            stored.result,
+
+                        progress:
+                            stored.progress,
+                    };
+                }
+
+                const control =
+                    controlSnap.data() ||
+                    {};
+
+                const device =
+                    deviceSnap.data() ||
+                    {};
+
+                if (
+                    attempt.status !==
+                        "active" ||
+                    control
+                        .activeAttemptId !==
+                        batch.attemptId ||
+                    control.deviceHash !==
+                        deviceHash ||
+                    device.attemptId !==
+                        batch.attemptId ||
+                    device.status !==
+                        "active"
+                ) {
+                    throw new HttpsError(
+                        "failed-precondition",
+                        "El intento de migracion ya no esta activo.",
+                        {
+                            motivo:
+                                "migration-lock-lost",
+                        }
+                    );
+                }
+
+                if (
+                    attempt.nextKind !==
+                        batch.kind ||
+                    Number(
+                        attempt.nextIndex ||
+                        0
+                    ) !==
+                        batch.index
+                ) {
+                    throw new HttpsError(
+                        "failed-precondition",
+                        "El lote no respeta el orden esperado.",
+                        {
+                            motivo:
+                                "migration-batch-out-of-order",
+
+                            nextKind:
+                                attempt
+                                    .nextKind ||
+                                null,
+
+                            nextIndex:
+                                Number(
+                                    attempt
+                                        .nextIndex ||
+                                    0
+                                ),
+                        }
+                    );
+                }
+
+                const currentReceived =
+                    Number(
+                        attempt.received
+                            ?.[
+                                batch
+                                    .kind
+                            ] ||
+                        0
+                    );
+
+                const expected =
+                    Number(
+                        attempt.expected
+                            ?.[
+                                batch
+                                    .kind
+                            ] ||
+                        0
+                    );
+
+                const nextReceived =
+                    currentReceived +
+                    batch.normalized
+                        .length;
+
+                if (
+                    nextReceived >
+                    expected
+                ) {
+                    throw new HttpsError(
+                        "invalid-argument",
+                        "El lote excede la cantidad declarada al iniciar."
+                    );
+                }
+
+                const nextOpenCashSessionCount =
+                    Number(
+                        attempt
+                            .openCashSessionCount ||
+                        0
+                    ) +
+                    openCashSessionsInBatch;
+
+                if (
+                    nextOpenCashSessionCount >
+                    1
+                ) {
+                    throw new HttpsError(
+                        "failed-precondition",
+                        "Los datos locales contienen mas de una caja abierta.",
+                        {
+                            motivo:
+                                "migration-multiple-open-cash-sessions",
+                        }
+                    );
+                }
+
+                /*
+                 * Estas lecturas se completan antes de cualquier
+                 * escritura. Los documentos cloud existentes
+                 * siempre conservan prioridad.
+                 */
+                const destinationSnaps =
+                    [];
+
+                for (
+                    const destination of
+                    destinations
+                ) {
+                    destinationSnaps.push(
+                        await transaction.get(
+                            destination
+                        )
+                    );
+                }
+
+                let migratedCount =
+                    0;
+
+                let skippedCount =
+                    0;
+
+                for (
+                    let index = 0;
+                    index <
+                        destinations
+                            .length;
+                    index += 1
+                ) {
+                    const normalizedItem =
+                        batch.normalized[
+                            index
+                        ];
+
+                    const isDeferredOpenCash =
+                        batch.kind ===
+                            "cashSessions" &&
+                        normalizedItem.data
+                            .status ===
+                            "open";
+
+                    if (
+                        isDeferredOpenCash
+                    ) {
+                        continue;
+                    }
+
+                    if (
+                        destinationSnaps[
+                            index
+                        ].exists
+                    ) {
+                        if (
+                            batch.kind !==
+                                "products" &&
+                            !documentoDestinoPosLegacyCoincide(
+                                batch.kind,
+                                normalizedItem,
+                                destinationSnaps[
+                                    index
+                                ].data()
+                            )
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Un documento existente en Cloud no coincide con la copia local.",
+                                {
+                                    motivo:
+                                        "migration-existing-document-conflict",
+
+                                    kind:
+                                        batch.kind,
+
+                                    documentId:
+                                        normalizedItem.id,
+                                }
+                            );
+                        }
+
+                        skippedCount +=
+                            1;
+                        continue;
+                    }
+
+                    transaction.set(
+                        destinations[
+                            index
+                        ],
+                        datosDestinoPosLegacy(
+                            batch.normalized[
+                                index
+                            ],
+                            batch.kind,
+                            context.deviceId
+                        )
+                    );
+
+                    migratedCount +=
+                        1;
+                }
+
+                for (
+                    const marker of
+                    openMarkers
+                ) {
+                    transaction.set(
+                        marker.ref,
+                        {
+                            type:
+                                "open-cash-marker",
+
+                            attemptId:
+                                batch.attemptId,
+
+                            cashSessionId:
+                                marker.item.id,
+
+                            cashSession:
+                                marker.item.data,
+
+                            destinationExisted:
+                                destinationSnaps[
+                                    marker.index
+                                ].exists,
+
+                            createdAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                        }
+                    );
+                }
+
+                const received = {
+                    ...attempt.received,
+
+                    [
+                        batch.kind
+                    ]:
+                        nextReceived,
+                };
+
+                const migrated = {
+                    ...attempt.migrated,
+
+                    [
+                        batch.kind
+                    ]:
+                        Number(
+                            attempt.migrated
+                                ?.[
+                                    batch
+                                        .kind
+                                ] ||
+                            0
+                        ) +
+                        migratedCount,
+                };
+
+                const skipped = {
+                    ...attempt.skipped,
+
+                    [
+                        batch.kind
+                    ]:
+                        Number(
+                            attempt.skipped
+                                ?.[
+                                    batch
+                                        .kind
+                                ] ||
+                            0
+                        ) +
+                        skippedCount,
+                };
+
+                const kindCompleted =
+                    nextReceived ===
+                    expected;
+
+                const nextKind =
+                    kindCompleted
+                        ? siguienteKindPosLegacy(
+                            attempt
+                                .expected,
+                            received,
+                            batch.kind
+                        )
+                        : batch.kind;
+
+                const nextIndex =
+                    kindCompleted
+                        ? 0
+                        : batch.index +
+                            1;
+
+                const progress = {
+                    attemptId:
+                        batch.attemptId,
+                    expected:
+                        attempt.expected,
+                    received,
+                    migrated,
+                    skipped,
+                    nextKind,
+                    nextIndex,
+                };
+
+                const batchResult = {
+                    kind:
+                        batch.kind,
+                    index:
+                        batch.index,
+                    received:
+                        batch.normalized
+                            .length,
+                    migrated:
+                        migratedCount,
+                    skipped:
+                        skippedCount,
+                };
+
+                transaction.set(
+                    lotRef,
+                    {
+                        type:
+                            "batch",
+
+                        attemptId:
+                            batch.attemptId,
+
+                        kind:
+                            batch.kind,
+
+                        index:
+                            batch.index,
+
+                        hash:
+                            batch.hash,
+
+                        itemCount:
+                            batch.normalized
+                                .length,
+
+                        result:
+                            batchResult,
+
+                        progress,
+
+                        createdAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                    }
+                );
+
+                transaction.set(
+                    attemptRef,
+                    {
+                        received,
+                        migrated,
+                        skipped,
+                        nextKind,
+                        nextIndex,
+
+                        openCashSessionCount:
+                            nextOpenCashSessionCount,
+
+                        lastActivityAtMs:
+                            nowMs,
+
+                        lastActivityAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                    },
+                    {
+                        merge: true,
+                    }
+                );
+
+                transaction.set(
+                    refs.control,
+                    {
+                        lastActivityAtMs:
+                            nowMs,
+
+                        lastActivityAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                    },
+                    {
+                        merge: true,
+                    }
+                );
+
+                transaction.set(
+                    deviceRef,
+                    {
+                        received,
+                        lastActivityAtMs:
+                            nowMs,
+
+                        lastActivityAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                    },
+                    {
+                        merge: true,
+                    }
+                );
+
+                return {
+                    duplicate: false,
+                    result:
+                        batchResult,
+                    progress,
+                };
+            }
+        );
+
+    return {
+        ok: true,
+        action: "batch",
+        duplicate:
+            result.duplicate,
+        batch:
+            result.result,
+        ...result.progress,
+    };
+}
+
+function nombreOpcionalPosLegacy(
+    value
+) {
+    if (
+        value == null ||
+        value ===
+            ""
+    ) {
+        return null;
+    }
+
+    return validarTextoEstricto(
+        value,
+        "shopName",
+        {
+            minLength: 1,
+            maxLength: 120,
+        }
+    );
+}
+
+async function completarMigracionPosLegacy(
+    request,
+    context
+) {
+    const attemptId =
+        validarId(
+            request.data
+                ?.attemptId,
+            "attemptId"
+        );
+
+    const shopName =
+        nombreOpcionalPosLegacy(
+            request.data
+                ?.shopName
+        );
+
+    const rawOpenCashSessionId =
+        request.data
+            ?.openCashSessionId;
+
+    const openCashSessionId =
+        rawOpenCashSessionId == null ||
+        rawOpenCashSessionId ===
+            ""
+            ? null
+            : normalizarIdPosLegacy(
+                textoPosLegacy(
+                    rawOpenCashSessionId,
+                    "openCashSessionId",
+                    {
+                        maxLength: 1000,
+                        required: true,
+                    }
+                ),
+                "cashSessions"
+            );
+
+    const deviceHash =
+        hashPosLegacy(
+            context.deviceId
+        );
+
+    const refs =
+        refsEstadoPosLegacy(
+            context.clienteRef
+        );
+
+    const attemptRef =
+        refs.attempts.doc(
+            attemptId
+        );
+
+    const deviceRef =
+        refs.devices.doc(
+            deviceHash
+        );
+
+    const configRef =
+        context.clienteRef
+            .collection(
+                "configuracion"
+            )
+            .doc(
+                "pos"
+            );
+
+    const openMarkerRef =
+        openCashSessionId
+            ? refs.batches.doc(
+                hashPosLegacy(
+                    "open-cash" +
+                    "\u0000" +
+                    attemptId +
+                    "\u0000" +
+                    openCashSessionId
+                )
+            )
+            : null;
+
+    const openCashRef =
+        openCashSessionId
+            ? context.clienteRef
+                .collection(
+                    "cajas"
+                )
+                .doc(
+                    openCashSessionId
+                )
+            : null;
+
+    const nowMs =
+        Date.now();
+
+    const result =
+        await db.runTransaction(
+            async (
+                transaction
+            ) => {
+                const attemptSnap =
+                    await transaction.get(
+                        attemptRef
+                    );
+
+                const controlSnap =
+                    await transaction.get(
+                        refs.control
+                    );
+
+                const deviceSnap =
+                    await transaction.get(
+                        deviceRef
+                    );
+
+                const configSnap =
+                    await transaction.get(
+                        configRef
+                    );
+
+                const configuredOpenCashSessionId =
+                    normalizarIdDocumentoSeguro(
+                        configSnap.data()
+                            ?.openCashSessionId,
+                        180
+                    );
+
+                let configuredOpenCashSnap =
+                    null;
+
+                if (
+                    configuredOpenCashSessionId
+                ) {
+                    configuredOpenCashSnap =
+                        await transaction.get(
+                            context.clienteRef
+                                .collection(
+                                    "cajas"
+                                )
+                                .doc(
+                                    configuredOpenCashSessionId
+                                )
+                        );
+                }
+
+                let openMarkerSnap =
+                    null;
+
+                let openCashSnap =
+                    null;
+
+                if (
+                    openMarkerRef &&
+                    openCashRef
+                ) {
+                    openMarkerSnap =
+                        await transaction.get(
+                            openMarkerRef
+                        );
+
+                    openCashSnap =
+                        configuredOpenCashSessionId ===
+                        openCashSessionId
+                            ? configuredOpenCashSnap
+                            : await transaction.get(
+                                openCashRef
+                            );
+                }
+
+                if (
+                    !attemptSnap.exists
+                ) {
+                    throw new HttpsError(
+                        "not-found",
+                        "El intento de migracion no existe."
+                    );
+                }
+
+                const attempt = {
+                    id:
+                        attemptSnap.id,
+
+                    ...attemptSnap.data(),
+                };
+
+                if (
+                    attempt.deviceHash !==
+                    deviceHash
+                ) {
+                    throw new HttpsError(
+                        "permission-denied",
+                        "El intento pertenece a otro dispositivo."
+                    );
+                }
+
+                if (
+                    attempt.status ===
+                    "completed"
+                ) {
+                    return {
+                        duplicate: true,
+                        result:
+                            attempt.result ||
+                            null,
+                    };
+                }
+
+                const control =
+                    controlSnap.data() ||
+                    {};
+
+                const device =
+                    deviceSnap.data() ||
+                    {};
+
+                if (
+                    attempt.status !==
+                        "active" ||
+                    control
+                        .activeAttemptId !==
+                        attemptId ||
+                    control.deviceHash !==
+                        deviceHash ||
+                    device.attemptId !==
+                        attemptId ||
+                    device.status !==
+                        "active"
+                ) {
+                    throw new HttpsError(
+                        "failed-precondition",
+                        "El intento de migracion ya no esta activo.",
+                        {
+                            motivo:
+                                "migration-lock-lost",
+                        }
+                    );
+                }
+
+                if (
+                    attempt.nextKind ||
+                    !mismosContadoresPosLegacy(
+                        attempt.expected,
+                        attempt.received
+                    )
+                ) {
+                    throw new HttpsError(
+                        "failed-precondition",
+                        "Todavia faltan lotes por recibir.",
+                        {
+                            motivo:
+                                "migration-incomplete",
+
+                            expected:
+                                attempt
+                                    .expected,
+
+                            received:
+                                attempt
+                                    .received,
+
+                            nextKind:
+                                attempt
+                                    .nextKind ||
+                                null,
+
+                            nextIndex:
+                                Number(
+                                    attempt
+                                        .nextIndex ||
+                                    0
+                                ),
+                        }
+                    );
+                }
+
+                const openCashSessionCount =
+                    Number(
+                        attempt
+                            .openCashSessionCount ||
+                        0
+                    );
+
+                if (
+                    openCashSessionCount >
+                        1 ||
+                    (
+                        openCashSessionCount ===
+                            1 &&
+                        !openCashSessionId
+                    ) ||
+                    (
+                        openCashSessionCount ===
+                            0 &&
+                        openCashSessionId
+                    )
+                ) {
+                    throw new HttpsError(
+                        "failed-precondition",
+                        "La caja abierta declarada no coincide con los datos migrados.",
+                        {
+                            motivo:
+                                "migration-open-cash-mismatch",
+                        }
+                    );
+                }
+
+                const config =
+                    configSnap.data() ||
+                    {};
+
+                const existingShopName =
+                    textoSeguro(
+                        config.shopName,
+                        120
+                    );
+
+                const shopNameMigrated =
+                    Boolean(
+                        shopName &&
+                        !existingShopName
+                    );
+
+                let openCashRecovered =
+                    false;
+
+                let openCashAutoClosed =
+                    false;
+
+                let deferredOpenCashMigrated =
+                    0;
+
+                let deferredOpenCashSkipped =
+                    0;
+
+                const hasValidConfiguredOpenCash =
+                    Boolean(
+                        configuredOpenCashSessionId &&
+                        configuredOpenCashSnap
+                            ?.exists &&
+                        configuredOpenCashSnap.data()
+                            ?.status ===
+                            "open"
+                    );
+
+                if (
+                    openCashSessionId
+                ) {
+                    const markerData =
+                        openMarkerSnap
+                            ?.data() ||
+                        {};
+
+                    if (
+                        !openMarkerSnap
+                            ?.exists ||
+                        markerData.type !==
+                            "open-cash-marker" ||
+                        markerData.attemptId !==
+                            attemptId ||
+                        markerData.cashSessionId !==
+                            openCashSessionId
+                    ) {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "No se encontro la caja abierta validada del intento.",
+                            {
+                                motivo:
+                                    "migration-open-cash-marker-missing",
+                            }
+                        );
+                    }
+
+                    const normalizedOpenCash =
+                        normalizarCajaPosLegacy(
+                            markerData
+                                .cashSession
+                        );
+
+                    if (
+                        normalizedOpenCash.id !==
+                            openCashSessionId ||
+                        normalizedOpenCash
+                            .data
+                            .status !==
+                            "open"
+                    ) {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "El marcador de caja abierta no es valido.",
+                            {
+                                motivo:
+                                    "migration-open-cash-marker-invalid",
+                            }
+                        );
+                    }
+
+                    if (
+                        openCashSnap
+                            ?.exists &&
+                        !documentoDestinoPosLegacyCoincide(
+                            "cashSessions",
+                            normalizedOpenCash,
+                            openCashSnap.data()
+                        )
+                    ) {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "La caja existente en Cloud no coincide con la copia local.",
+                            {
+                                motivo:
+                                    "migration-existing-document-conflict",
+
+                                kind:
+                                    "cashSessions",
+
+                                documentId:
+                                    openCashSessionId,
+                            }
+                        );
+                    }
+
+                    if (
+                        hasValidConfiguredOpenCash &&
+                        configuredOpenCashSessionId !==
+                            openCashSessionId
+                    ) {
+                        if (
+                            openCashSnap
+                                ?.exists
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Cloud ya contiene otra caja abierta y la caja local tambien existe.",
+                                {
+                                    motivo:
+                                        "migration-cloud-open-cash-conflict",
+                                }
+                            );
+                        }
+
+                        const autoClosedData = {
+                            ...datosDestinoPosLegacy(
+                                {
+                                    data:
+                                        cerrarCajaPosLegacyPorConflicto(
+                                            normalizedOpenCash
+                                                .data
+                                        ),
+                                },
+                                "cashSessions",
+                                context.deviceId
+                            ),
+
+                            migrationAutoClosed:
+                                true,
+
+                            migrationAutoCloseReason:
+                                "cloud-cash-already-open",
+                        };
+
+                        transaction.set(
+                            openCashRef,
+                            autoClosedData
+                        );
+
+                        openCashAutoClosed =
+                            true;
+
+                        deferredOpenCashMigrated =
+                            1;
+                    } else {
+                        if (
+                            openCashSnap
+                                ?.exists
+                        ) {
+                            deferredOpenCashSkipped =
+                                1;
+                        } else {
+                            transaction.set(
+                                openCashRef,
+                                datosDestinoPosLegacy(
+                                    normalizedOpenCash,
+                                    "cashSessions",
+                                    context.deviceId
+                                )
+                            );
+
+                            deferredOpenCashMigrated =
+                                1;
+                        }
+
+                        if (
+                            !hasValidConfiguredOpenCash
+                        ) {
+                            openCashRecovered =
+                                true;
+                        }
+                    }
+                }
+
+                const configUpdate = {};
+
+                if (
+                    shopNameMigrated
+                ) {
+                    configUpdate.shopName =
+                        shopName;
+                }
+
+                if (
+                    openCashRecovered
+                ) {
+                    configUpdate
+                        .openCashSessionId =
+                        openCashSessionId;
+                }
+
+                if (
+                    Object.keys(
+                        configUpdate
+                    ).length >
+                    0
+                ) {
+                    transaction.set(
+                        configRef,
+                        {
+                            ...configUpdate,
+
+                            migratedFromLocal:
+                                true,
+
+                            migrationVersion:
+                                POS_LEGACY_MIGRATION_VERSION,
+
+                            migratedByDeviceId:
+                                context.deviceId,
+
+                            migratedAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+
+                            updatedAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                        },
+                        {
+                            merge: true,
+                        }
+                    );
+                }
+
+                const stats = {
+                    products: {
+                        migrated:
+                            Number(
+                                attempt.migrated
+                                    ?.products ||
+                                0
+                            ),
+
+                        skipped:
+                            Number(
+                                attempt.skipped
+                                    ?.products ||
+                                0
+                            ),
+                    },
+
+                    sales: {
+                        migrated:
+                            Number(
+                                attempt.migrated
+                                    ?.sales ||
+                                0
+                            ),
+
+                        skipped:
+                            Number(
+                                attempt.skipped
+                                    ?.sales ||
+                                0
+                            ),
+                    },
+
+                    cashSessions: {
+                        migrated:
+                            Number(
+                                attempt.migrated
+                                    ?.cashSessions ||
+                                0
+                            ) +
+                            deferredOpenCashMigrated,
+
+                        skipped:
+                            Number(
+                                attempt.skipped
+                                    ?.cashSessions ||
+                                0
+                            ) +
+                            deferredOpenCashSkipped,
+                    },
+
+                    shopName: {
+                        migrated:
+                            shopNameMigrated,
+
+                        skipped:
+                            Boolean(
+                                shopName &&
+                                !shopNameMigrated
+                            ),
+                    },
+
+                    openCashRecovered,
+
+                    openCashAutoClosed,
+                };
+
+                const eventoAuditoria =
+                    crearEventoAuditoria({
+                        clienteRef:
+                            context
+                                .clienteRef,
+
+                        operador:
+                            context
+                                .operador,
+
+                        accion:
+                            AUDIT_ACTIONS
+                                .MIGRACION_POS_LEGACY,
+
+                        deviceId:
+                            context
+                                .deviceId,
+
+                        detalle: {
+                            intentoId:
+                                attemptId,
+
+                            productosMigrados:
+                                stats.products
+                                    .migrated,
+
+                            productosOmitidos:
+                                stats.products
+                                    .skipped,
+
+                            ventasMigradas:
+                                stats.sales
+                                    .migrated,
+
+                            ventasOmitidas:
+                                stats.sales
+                                    .skipped,
+
+                            cajasMigradas:
+                                stats.cashSessions
+                                    .migrated,
+
+                            cajasOmitidas:
+                                stats.cashSessions
+                                    .skipped,
+
+                            nombreMigrado:
+                                shopNameMigrated,
+
+                            cajaAbiertaRecuperada:
+                                openCashRecovered,
+
+                            cajaAbiertaCerradaPorConflicto:
+                                openCashAutoClosed,
+                        },
+                    });
+
+                transaction.set(
+                    eventoAuditoria.ref,
+                    eventoAuditoria.data
+                );
+
+                transaction.set(
+                    attemptRef,
+                    {
+                        status:
+                            "completed",
+
+                        result:
+                            stats,
+
+                        completedAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+
+                        lastActivityAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+
+                        lastActivityAtMs:
+                            nowMs,
+                    },
+                    {
+                        merge: true,
+                    }
+                );
+
+                transaction.set(
+                    deviceRef,
+                    {
+                        version:
+                            POS_LEGACY_MIGRATION_VERSION,
+
+                        status:
+                            "completed",
+
+                        attemptId,
+
+                        expected:
+                            attempt.expected,
+
+                        received:
+                            attempt.received,
+
+                        result:
+                            stats,
+
+                        completedAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+
+                        lastActivityAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+
+                        lastActivityAtMs:
+                            nowMs,
+                    },
+                    {
+                        merge: true,
+                    }
+                );
+
+                transaction.set(
+                    refs.control,
+                    {
+                        version:
+                            POS_LEGACY_MIGRATION_VERSION,
+
+                        status:
+                            "idle",
+
+                        activeAttemptId:
+                            null,
+
+                        deviceHash:
+                            null,
+
+                        lastCompletedAttemptId:
+                            attemptId,
+
+                        lastActivityAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+
+                        lastActivityAtMs:
+                            nowMs,
+                    }
+                );
+
+                return {
+                    duplicate: false,
+                    result: stats,
+                };
+            }
+        );
+
+    return {
+        ok: true,
+        action: "complete",
+        migrated: true,
+        reason:
+            result.duplicate
+                ? "already-completed"
+                : "completed",
+        duplicate:
+            result.duplicate,
+        result:
+            result.result,
+    };
+}
+
+exports.migrarPosLegacy =
+    onCall(
+        POS_LEGACY_CALLABLE_OPTIONS,
+        async (request) => {
+            const version =
+                Number(
+                    request.data
+                        ?.version
+                );
+
+            if (
+                version !==
+                POS_LEGACY_MIGRATION_VERSION
+            ) {
+                throw new HttpsError(
+                    "failed-precondition",
+                    "La versión de migración no es compatible.",
+                    {
+                        motivo:
+                            "migration-version-unsupported",
+
+                        expectedVersion:
+                            POS_LEGACY_MIGRATION_VERSION,
+                    }
+                );
+            }
+
+            const action =
+                textoPosLegacy(
+                    request.data
+                        ?.action,
+                    "action",
+                    {
+                        maxLength: 20,
+                        required: true,
+                    }
+                );
+
+            const context =
+                await resolverContextoEscrituraPos(
+                    request,
+                    {
+                        requireRole:
+                            action ===
+                            "start"
+                                ? null
+                                : "administrador",
+                    }
+                );
+
+            if (
+                action ===
+                "start"
+            ) {
+                return iniciarMigracionPosLegacy(
+                    request,
+                    context
+                );
+            }
+
+            if (
+                action ===
+                "batch"
+            ) {
+                return guardarLotePosLegacy(
+                    request,
+                    context
+                );
+            }
+
+            if (
+                action ===
+                "complete"
+            ) {
+                return completarMigracionPosLegacy(
+                    request,
+                    context
+                );
+            }
+
+            throw new HttpsError(
+                "invalid-argument",
+                "Accion de migracion legacy invalida."
+            );
+        }
+    );
 
 
 /* =========================================================
