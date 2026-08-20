@@ -39,6 +39,11 @@ const PAYMENT_METHODS = Object.freeze([
   "tarjeta",
 ]);
 
+const SALE_METHODS = Object.freeze([
+  ...PAYMENT_METHODS,
+  "cuenta",
+]);
+
 const MAX_CART_LINES = 100;
 
 const abrirCajaFunction =
@@ -212,6 +217,16 @@ function normalizePaymentMethod(
     : "efectivo";
 }
 
+function normalizeSaleMethod(
+  value
+) {
+  return SALE_METHODS.includes(
+    value
+  )
+    ? value
+    : "efectivo";
+}
+
 function isPlainObject(value) {
   if (
     !value ||
@@ -376,6 +391,84 @@ function normalizeDateOnly(
   }
 
   return clean;
+}
+
+function normalizeReceivableForSale(
+  value
+) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    fail(
+      "invalid-receivable",
+      "Los datos de la cuenta por cobrar no son válidos"
+    );
+  }
+
+  const clienteNombre =
+    String(
+      value.clienteNombre ||
+      ""
+    )
+      .trim()
+      .slice(0, 120);
+
+  const clienteTelefono =
+    String(
+      value.clienteTelefono ||
+      ""
+    )
+      .trim()
+      .slice(0, 50);
+
+  const notas =
+    String(
+      value.notas ||
+      ""
+    )
+      .trim()
+      .slice(0, 1000);
+
+  if (!clienteNombre) {
+    fail(
+      "invalid-receivable",
+      "El nombre del cliente es obligatorio"
+    );
+  }
+
+  const fechaOrigen =
+    normalizeDateOnly(
+      value.fechaOrigen,
+      {
+        required: true,
+      }
+    );
+
+  const vencimiento =
+    normalizeDateOnly(
+      value.vencimiento
+    );
+
+  if (
+    vencimiento &&
+    vencimiento <
+      fechaOrigen
+  ) {
+    fail(
+      "invalid-receivable",
+      "El vencimiento no puede ser anterior a la fecha de origen"
+    );
+  }
+
+  return {
+    clienteNombre,
+    clienteTelefono,
+    fechaOrigen,
+    vencimiento,
+    notas,
+  };
 }
 
 /* =========================================================
@@ -2876,9 +2969,17 @@ export async function checkoutCloud(
   }
 
   const method =
-    normalizePaymentMethod(
+    normalizeSaleMethod(
       payment?.method
     );
+
+  const receivable =
+    method ===
+    "cuenta"
+      ? normalizeReceivableForSale(
+          payment?.receivable
+        )
+      : null;
 
   const received =
     method ===
@@ -2889,7 +2990,10 @@ export async function checkoutCloud(
             total
           )
         )
-      : total;
+      : method ===
+          "cuenta"
+        ? 0
+        : total;
 
   if (
     method ===
@@ -2928,6 +3032,13 @@ export async function checkoutCloud(
           received,
           change,
         },
+
+        ...(method ===
+          "cuenta"
+          ? {
+              receivable,
+            }
+          : {}),
 
         deviceId:
           cleanDeviceId,

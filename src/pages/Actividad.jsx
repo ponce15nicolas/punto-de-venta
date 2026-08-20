@@ -17,12 +17,25 @@ const ACTIONS = [
   { id: "apertura-caja", label: "Aperturas" },
   { id: "cierre-caja", label: "Cierres" },
   { id: "venta-realizada", label: "Ventas" },
+  { id: "alta-cuenta-por-cobrar", label: "Deudas" },
+  { id: "cobro-cuenta-por-cobrar", label: "Cobros" },
+  { id: "cuenta-por-cobrar-saldada", label: "Saldadas" },
   { id: "reposicion-stock", label: "Stock" },
   { id: "edicion-producto", label: "Ediciones" },
   { id: "alta-producto", label: "Altas" },
   { id: "eliminacion-producto", label: "Bajas" },
+  { id: "cambio-nombre-negocio", label: "Negocio" },
+  { id: "migracion-pos-legacy", label: "Migración" },
   { id: "eliminacion-cierre-historico", label: "Cierres eliminados" },
 ];
+
+const PAYMENT_METHOD_LABELS = Object.freeze({
+  efectivo: "Efectivo",
+  transferencia: "Transferencia",
+  qr: "QR",
+  tarjeta: "Tarjeta",
+  cuenta: "A cuenta",
+});
 
 const ACTION_META = {
   "apertura-caja": {
@@ -39,6 +52,21 @@ const ACTION_META = {
     title: "Venta realizada",
     eyebrow: "Ventas",
     icon: SaleIcon,
+  },
+  "alta-cuenta-por-cobrar": {
+    title: "Cuenta por cobrar creada",
+    eyebrow: "Cuentas por cobrar",
+    icon: WalletIcon,
+  },
+  "cobro-cuenta-por-cobrar": {
+    title: "Cobro de cuenta",
+    eyebrow: "Cuentas por cobrar",
+    icon: WalletIcon,
+  },
+  "cuenta-por-cobrar-saldada": {
+    title: "Cuenta saldada",
+    eyebrow: "Cuentas por cobrar",
+    icon: CheckCircleIcon,
   },
   "reposicion-stock": {
     title: "Reposición de stock",
@@ -59,6 +87,16 @@ const ACTION_META = {
     title: "Producto eliminado",
     eyebrow: "Inventario",
     icon: TrashIcon,
+  },
+  "cambio-nombre-negocio": {
+    title: "Nombre del negocio actualizado",
+    eyebrow: "Configuración",
+    icon: StoreIcon,
+  },
+  "migracion-pos-legacy": {
+    title: "Migración del POS completada",
+    eyebrow: "Sistema",
+    icon: MigrationIcon,
   },
   "eliminacion-cierre-historico": {
     title: "Eliminación de cierre",
@@ -344,8 +382,10 @@ function StatCard({ label, value }) {
 function ActivityCard({ event }) {
   const meta =
     ACTION_META[event.accion] || {
-      title: "Actividad",
-      eyebrow: "Sistema",
+      title: formatActionName(
+        event?.accion
+      ),
+      eyebrow: "Auditoría",
       icon: ActivityIcon,
     };
 
@@ -502,7 +542,9 @@ function getEventDetails(event) {
         },
         {
           label: "Medio de pago",
-          value: d.metodoPago,
+          value: formatPaymentMethod(
+            d.metodoPago
+          ),
         },
         {
           label: "Ítems",
@@ -623,6 +665,135 @@ function getEventDetails(event) {
         },
       ]);
 
+    case "alta-cuenta-por-cobrar":
+      return compactDetails([
+        {
+          label: "Cliente",
+          value: d.clienteNombre,
+        },
+        {
+          label: "Importe",
+          value: formatMoney(
+            d.importeOriginal
+          ),
+        },
+        {
+          label: "Origen",
+          value:
+            d.origen === "venta"
+              ? "Venta a cuenta"
+              : "Alta manual",
+        },
+        {
+          label: "Concepto",
+          value: d.concepto,
+        },
+        {
+          label: "Venta",
+          value: d.ventaId,
+        },
+        {
+          label: "Vencimiento",
+          value: formatDateOnly(
+            d.vencimiento
+          ),
+        },
+      ]);
+
+    case "cobro-cuenta-por-cobrar":
+      return compactDetails([
+        {
+          label: "Cliente",
+          value: d.clienteNombre,
+        },
+        {
+          label: "Importe cobrado",
+          value: formatMoney(
+            d.importe
+          ),
+        },
+        {
+          label: "Medio de pago",
+          value: formatPaymentMethod(
+            d.metodoPago
+          ),
+        },
+        {
+          label: "Saldo",
+          value: formatMoneyTransition(
+            d.saldoAnterior,
+            d.saldoRestante
+          ),
+        },
+        {
+          label: "Concepto",
+          value: d.concepto,
+        },
+      ]);
+
+    case "cuenta-por-cobrar-saldada":
+      return compactDetails([
+        {
+          label: "Cliente",
+          value: d.clienteNombre,
+        },
+        {
+          label: "Importe original",
+          value: formatMoney(
+            d.importeOriginal
+          ),
+        },
+        {
+          label: "Total pagado",
+          value: formatMoney(
+            d.totalPagado
+          ),
+        },
+      ]);
+
+    case "cambio-nombre-negocio":
+      return compactDetails([
+        {
+          label: "Nombre anterior",
+          value: d.nombreAnterior,
+        },
+        {
+          label: "Nombre nuevo",
+          value: d.nombreNuevo,
+        },
+      ]);
+
+    case "migracion-pos-legacy":
+      return compactDetails([
+        {
+          label: "Productos migrados",
+          value: finiteString(
+            d.productosMigrados
+          ),
+        },
+        {
+          label: "Ventas migradas",
+          value: finiteString(
+            d.ventasMigradas
+          ),
+        },
+        {
+          label: "Cajas migradas",
+          value: finiteString(
+            d.cajasMigradas
+          ),
+        },
+        {
+          label: "Nombre migrado",
+          value:
+            d.nombreMigrado === true
+              ? "Sí"
+              : d.nombreMigrado === false
+                ? "No"
+                : null,
+        },
+      ]);
+
     case "eliminacion-cierre-historico":
       return compactDetails([
         {
@@ -666,6 +837,72 @@ function finiteString(value) {
   return Number.isFinite(number)
     ? String(number)
     : null;
+}
+
+function formatActionName(value) {
+  const action =
+    String(value || "")
+      .trim()
+      .replace(/[-_]+/g, " ");
+
+  if (!action) {
+    return "Evento de auditoría";
+  }
+
+  return (
+    action.charAt(0).toUpperCase() +
+    action.slice(1)
+  );
+}
+
+function formatPaymentMethod(value) {
+  const method =
+    String(value || "")
+      .trim()
+      .toLowerCase();
+
+  return (
+    PAYMENT_METHOD_LABELS[
+      method
+    ] ||
+    (method
+      ? formatActionName(method)
+      : null)
+  );
+}
+
+function formatMoneyTransition(
+  from,
+  to
+) {
+  const first =
+    formatMoney(from);
+
+  const second =
+    formatMoney(to);
+
+  if (!first || !second) {
+    return null;
+  }
+
+  return `${first} → ${second}`;
+}
+
+function formatDateOnly(value) {
+  const clean =
+    String(value || "")
+      .trim();
+
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})$/.exec(
+      clean
+    );
+
+  if (!match) {
+    return clean || null;
+  }
+
+  return `${match[3]}/${match[2]}/${match[1]}`;
 }
 
 function formatDateTime(value) {
@@ -900,6 +1137,50 @@ function EditIcon({ className = "" }) {
       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 20h9" />
       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function WalletIcon({ className = "" }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 6h14a2 2 0 0 1 2 2v10H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z" />
+      <path d="M16 11h4" />
+      <circle cx="16" cy="14" r="1" />
+    </svg>
+  );
+}
+
+function CheckCircleIcon({ className = "" }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8 12 2.5 2.5L16 9" />
+    </svg>
+  );
+}
+
+function StoreIcon({ className = "" }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 10v10h16V10" />
+      <path d="M3 10 5 4h14l2 6" />
+      <path d="M8 20v-6h8v6" />
+    </svg>
+  );
+}
+
+function MigrationIcon({ className = "" }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 7h12" />
+      <path d="m13 4 3 3-3 3" />
+      <path d="M20 17H8" />
+      <path d="m11 14-3 3 3 3" />
     </svg>
   );
 }

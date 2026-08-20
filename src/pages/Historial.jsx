@@ -54,6 +54,7 @@ const METHOD_LABELS = {
   transferencia: "Transferencia",
   qr: "QR",
   tarjeta: "Tarjeta",
+  cuenta: "A cuenta",
 };
 
 const AUDIT_ACTION_META = {
@@ -80,6 +81,18 @@ const AUDIT_ACTION_META = {
   "eliminacion-producto": {
     title: "Eliminación de producto",
     category: "Inventario",
+  },
+  "alta-cuenta-por-cobrar": {
+    title: "Cuenta por cobrar creada",
+    category: "Cuentas por cobrar",
+  },
+  "cobro-cuenta-por-cobrar": {
+    title: "Cobro de cuenta",
+    category: "Cuentas por cobrar",
+  },
+  "cuenta-por-cobrar-saldada": {
+    title: "Cuenta saldada",
+    category: "Cuentas por cobrar",
   },
   "cierre-caja": {
     title: "Cierre de caja",
@@ -525,6 +538,84 @@ function getAuditDetailRows(event) {
         ],
       ];
     }
+
+    case "alta-cuenta-por-cobrar":
+      return [
+        [
+          "Cliente",
+          detail.clienteNombre ||
+            "Cliente",
+        ],
+        [
+          "Importe",
+          money(
+            detail.importeOriginal
+          ),
+        ],
+        [
+          "Origen",
+          detail.origen ===
+          "venta"
+            ? "Venta a cuenta"
+            : "Alta manual",
+        ],
+        ...(detail.ventaId
+          ? [[
+              "Venta",
+              `#${detail.ventaId}`,
+            ]]
+          : []),
+      ];
+
+    case "cobro-cuenta-por-cobrar":
+      return [
+        [
+          "Cliente",
+          detail.clienteNombre ||
+            "Cliente",
+        ],
+        [
+          "Importe",
+          money(
+            detail.importe
+          ),
+        ],
+        [
+          "Medio de pago",
+          formatAuditPaymentMethod(
+            detail.metodoPago
+          ),
+        ],
+        [
+          "Saldo",
+          `${money(
+            detail.saldoAnterior
+          )} → ${money(
+            detail.saldoRestante
+          )}`,
+        ],
+      ];
+
+    case "cuenta-por-cobrar-saldada":
+      return [
+        [
+          "Cliente",
+          detail.clienteNombre ||
+            "Cliente",
+        ],
+        [
+          "Importe original",
+          money(
+            detail.importeOriginal
+          ),
+        ],
+        [
+          "Total pagado",
+          money(
+            detail.totalPagado
+          ),
+        ],
+      ];
 
     case "cierre-caja":
       return [
@@ -1970,7 +2061,7 @@ function SessionDetail({
             text-white/35
           "
         >
-          Métodos de pago
+          Cobros y ventas a cuenta
         </p>
 
         <div className="grid grid-cols-2 gap-2">
@@ -3562,6 +3653,7 @@ function getPaymentTotals(
     transferencia: 0,
     qr: 0,
     tarjeta: 0,
+    cuenta: 0,
   };
 
   /*
@@ -3577,6 +3669,13 @@ function getPaymentTotals(
       totals
     ).forEach(
       (method) => {
+        if (
+          method ===
+          "cuenta"
+        ) {
+          return;
+        }
+
         totals[
           method
         ] =
@@ -3588,6 +3687,25 @@ function getPaymentTotals(
           );
       }
     );
+
+    totals.cuenta =
+      roundMoney(
+        sales.reduce(
+          (
+            accumulator,
+            sale
+          ) =>
+            sale?.payment
+              ?.method ===
+            "cuenta"
+              ? accumulator +
+                toNumber(
+                  sale?.total
+                )
+              : accumulator,
+          0
+        )
+      );
 
     return totals;
   }

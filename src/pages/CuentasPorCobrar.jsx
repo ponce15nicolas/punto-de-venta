@@ -1631,6 +1631,15 @@ function AccountDetail({
         }
       />
 
+      {account?.origen ===
+        "venta" &&
+        account?.ventaId && (
+        <DetailRow
+          label="Venta vinculada"
+          value={`#${account.ventaId}`}
+        />
+      )}
+
       {account?.clienteTelefono && (
         <DetailRow
           label="Teléfono"

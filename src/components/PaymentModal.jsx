@@ -29,7 +29,21 @@ const METHODS = [
     label: "Tarjeta",
     icon: CardIcon,
   },
+  {
+    id: "cuenta",
+    label: "A cuenta",
+    icon: DebtIcon,
+  },
 ];
+
+function todayDateOnly() {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60 * 1000;
+
+  return new Date(now.getTime() - offset)
+    .toISOString()
+    .slice(0, 10);
+}
 
 export default function PaymentModal({
   open,
@@ -39,24 +53,46 @@ export default function PaymentModal({
 }) {
   const [method, setMethod] = useState("efectivo");
   const [received, setReceived] = useState("");
+  const [clienteNombre, setClienteNombre] = useState("");
+  const [clienteTelefono, setClienteTelefono] = useState("");
+  const [vencimiento, setVencimiento] = useState("");
+  const [notas, setNotas] = useState("");
 
   useEffect(() => {
     if (open) {
       setMethod("efectivo");
       setReceived("");
+      setClienteNombre("");
+      setClienteTelefono("");
+      setVencimiento("");
+      setNotas("");
     }
   }, [open]);
 
   const receivedNum = parseFloat(received);
+  const fechaOrigen = todayDateOnly();
 
   const change =
     method === "efectivo" && !isNaN(receivedNum)
       ? receivedNum - total
       : 0;
 
+  const validReceivable =
+    method !== "cuenta" ||
+    (
+      clienteNombre.trim().length > 0 &&
+      (
+        !vencimiento ||
+        vencimiento >= fechaOrigen
+      )
+    );
+
   const canConfirm =
-    method !== "efectivo" ||
-    (!isNaN(receivedNum) && receivedNum >= total);
+    validReceivable &&
+    (
+      method !== "efectivo" ||
+      (!isNaN(receivedNum) && receivedNum >= total)
+    );
 
   const selectedMethod =
     METHODS.find((item) => item.id === method) || METHODS[0];
@@ -65,6 +101,22 @@ export default function PaymentModal({
 
   const confirmar = () => {
     if (!canConfirm) return;
+
+    if (method === "cuenta") {
+      onConfirm({
+        method,
+        received: 0,
+        receivable: {
+          clienteNombre: clienteNombre.trim(),
+          clienteTelefono: clienteTelefono.trim(),
+          fechaOrigen,
+          vencimiento: vencimiento || null,
+          notas: notas.trim(),
+        },
+      });
+
+      return;
+    }
 
     onConfirm({
       method,
@@ -79,7 +131,7 @@ export default function PaymentModal({
     <Modal
       open={open}
       onClose={onClose}
-      title="Cobrar venta"
+      title="Finalizar venta"
     >
       <div>
         {/* =================================================
@@ -108,7 +160,9 @@ export default function PaymentModal({
                     text-[#B98700]
                   "
                 >
-                  Total a cobrar
+                  {method === "cuenta"
+                    ? "Total de la venta"
+                    : "Total a cobrar"}
                 </p>
 
                 <div
@@ -167,7 +221,7 @@ export default function PaymentModal({
               text-white/55
             "
           >
-            Método de pago
+            Forma de cobro
           </label>
 
           <div className="grid grid-cols-2 gap-2.5">
@@ -195,6 +249,7 @@ export default function PaymentModal({
                       font-extrabold
                       transition
                       active:scale-[0.98]
+                      ${item.id === "cuenta" ? "col-span-2" : ""}
                     ` +
                     (activo
                       ? `
@@ -475,10 +530,209 @@ export default function PaymentModal({
         )}
 
         {/* =================================================
+            VENTA A CUENTA
+        ================================================= */}
+
+        {method === "cuenta" && (
+          <motion.div
+            initial={{
+              opacity: 0,
+              y: -5,
+            }}
+            animate={{
+              opacity: 1,
+              y: 0,
+            }}
+            className="
+              mb-4
+              overflow-hidden
+              rounded-[22px]
+              border
+              border-[#FFC61A]/20
+              bg-[#151A22]
+              p-3.5
+            "
+          >
+            <div className="flex items-start gap-3">
+              <div
+                className="
+                  grid
+                  h-10
+                  w-10
+                  shrink-0
+                  place-items-center
+                  rounded-xl
+                  bg-[#FFC61A]
+                  text-black
+                "
+              >
+                <DebtIcon className="h-[18px] w-[18px]" />
+              </div>
+
+              <div className="min-w-0">
+                <p className="text-sm font-extrabold text-white">
+                  Venta a cuenta
+                </p>
+
+                <p className="mt-1 text-xs leading-relaxed text-white/40">
+                  No ingresa dinero a caja. Se generará automáticamente una cuenta por cobrar por {money(total)}.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-bold text-white/55">
+                  Cliente <span className="text-[#FFC61A]">*</span>
+                </span>
+
+                <input
+                  type="text"
+                  autoFocus
+                  autoComplete="off"
+                  maxLength={120}
+                  value={clienteNombre}
+                  onChange={(event) =>
+                    setClienteNombre(event.target.value)
+                  }
+                  placeholder="Ej. Juan Pérez"
+                  className="
+                    w-full
+                    rounded-2xl
+                    border
+                    border-white/10
+                    bg-[#171B23]
+                    px-4
+                    py-3.5
+                    text-sm
+                    font-semibold
+                    text-white
+                    outline-none
+                    transition
+                    placeholder:text-white/25
+                    focus:border-[#FFC61A]/40
+                    focus:ring-2
+                    focus:ring-[#FFC61A]/10
+                  "
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-bold text-white/55">
+                  Teléfono
+                </span>
+
+                <input
+                  type="tel"
+                  autoComplete="off"
+                  maxLength={50}
+                  value={clienteTelefono}
+                  onChange={(event) =>
+                    setClienteTelefono(event.target.value)
+                  }
+                  placeholder="Opcional"
+                  className="
+                    w-full
+                    rounded-2xl
+                    border
+                    border-white/10
+                    bg-[#171B23]
+                    px-4
+                    py-3.5
+                    text-sm
+                    font-semibold
+                    text-white
+                    outline-none
+                    transition
+                    placeholder:text-white/25
+                    focus:border-[#FFC61A]/40
+                    focus:ring-2
+                    focus:ring-[#FFC61A]/10
+                  "
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-bold text-white/55">
+                  Vencimiento
+                </span>
+
+                <input
+                  type="date"
+                  min={fechaOrigen}
+                  value={vencimiento}
+                  onChange={(event) =>
+                    setVencimiento(event.target.value)
+                  }
+                  className="
+                    w-full
+                    rounded-2xl
+                    border
+                    border-white/10
+                    bg-[#171B23]
+                    px-4
+                    py-3.5
+                    text-sm
+                    font-semibold
+                    text-white
+                    outline-none
+                    transition
+                    focus:border-[#FFC61A]/40
+                    focus:ring-2
+                    focus:ring-[#FFC61A]/10
+                  "
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-bold text-white/55">
+                  Notas
+                </span>
+
+                <textarea
+                  rows="2"
+                  maxLength={1000}
+                  value={notas}
+                  onChange={(event) =>
+                    setNotas(event.target.value)
+                  }
+                  placeholder="Opcional"
+                  className="
+                    w-full
+                    resize-none
+                    rounded-2xl
+                    border
+                    border-white/10
+                    bg-[#171B23]
+                    px-4
+                    py-3.5
+                    text-sm
+                    font-semibold
+                    text-white
+                    outline-none
+                    transition
+                    placeholder:text-white/25
+                    focus:border-[#FFC61A]/40
+                    focus:ring-2
+                    focus:ring-[#FFC61A]/10
+                  "
+                />
+              </label>
+            </div>
+
+            {vencimiento && vencimiento < fechaOrigen && (
+              <p className="mt-3 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2.5 text-xs font-semibold text-red-200">
+                El vencimiento no puede ser anterior a hoy.
+              </p>
+            )}
+          </motion.div>
+        )}
+
+        {/* =================================================
             RESUMEN MÉTODO NO EFECTIVO
         ================================================= */}
 
-        {method !== "efectivo" && (
+        {method !== "efectivo" && method !== "cuenta" && (
           <motion.div
             key={method}
             initial={{
@@ -586,7 +840,9 @@ export default function PaymentModal({
           "
         >
           <CheckIcon className="h-4 w-4" />
-          Confirmar cobro · {money(total)}
+          {method === "cuenta"
+            ? `Registrar a cuenta · ${money(total)}`
+            : `Confirmar cobro · ${money(total)}`}
         </button>
       </div>
     </Modal>
@@ -725,6 +981,26 @@ function CardIcon({ className = "" }) {
       <rect x="3" y="5" width="18" height="14" rx="2" />
       <path d="M3 10h18" />
       <path d="M7 15h4" />
+    </svg>
+  );
+}
+
+function DebtIcon({ className = "" }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5 4h14v16H5z" />
+      <path d="M8 8h8" />
+      <path d="M8 12h5" />
+      <path d="M8 16h3" />
     </svg>
   );
 }

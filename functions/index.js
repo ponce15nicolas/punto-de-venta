@@ -10157,7 +10157,7 @@ exports.registrarPagoCuentaPorCobrar =
                 "efectivo";
 
             if (
-                !POS_METODOS_PAGO.has(
+                !POS_METODOS_COBRO.has(
                     metodoPago
                 )
             ) {
@@ -11746,12 +11746,18 @@ const POS_VENTA_TIPOS =
         "precio-libre",
     ]);
 
-const POS_METODOS_PAGO =
+const POS_METODOS_COBRO =
     new Set([
         "efectivo",
         "transferencia",
         "qr",
         "tarjeta",
+    ]);
+
+const POS_METODOS_VENTA =
+    new Set([
+        ...POS_METODOS_COBRO,
+        "cuenta",
     ]);
 
 const POS_MAX_LINEAS_VENTA = 100;
@@ -11798,6 +11804,80 @@ function normalizarFechaIsoVenta(
     }
 
     return date.toISOString();
+}
+
+function normalizarCuentaPorCobrarVenta(
+    value
+) {
+    if (
+        !esObjetoPlano(
+            value
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Los datos de la cuenta por cobrar no son válidos."
+        );
+    }
+
+    const clienteNombre =
+        textoSeguro(
+            value.clienteNombre,
+            120
+        );
+
+    const clienteTelefono =
+        textoSeguro(
+            value.clienteTelefono,
+            50
+        );
+
+    const notas =
+        textoSeguro(
+            value.notas,
+            1000
+        );
+
+    if (!clienteNombre) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El nombre del cliente es obligatorio."
+        );
+    }
+
+    const fechaOrigen =
+        validarFechaCuentaPorCobrar(
+            value.fechaOrigen,
+            "La fecha de origen",
+            {
+                required: true,
+            }
+        );
+
+    const vencimiento =
+        validarFechaCuentaPorCobrar(
+            value.vencimiento,
+            "La fecha de vencimiento"
+        );
+
+    if (
+        vencimiento &&
+        vencimiento <
+            fechaOrigen
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El vencimiento no puede ser anterior a la fecha de origen."
+        );
+    }
+
+    return {
+        clienteNombre,
+        clienteTelefono,
+        notas,
+        fechaOrigen,
+        vencimiento,
+    };
 }
 
 function normalizarItemsVenta(
@@ -12004,6 +12084,61 @@ exports.registrarVenta =
                         ?.timestamp
                 );
 
+            const rawMethod =
+                textoSeguro(
+                    request.data
+                        ?.payment
+                        ?.method,
+                    40
+                ) ||
+                "efectivo";
+
+            if (
+                !POS_METODOS_VENTA.has(
+                    rawMethod
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "La forma de cobro no es válida."
+                );
+            }
+
+            const cuentaVenta =
+                rawMethod ===
+                    "cuenta"
+                    ? normalizarCuentaPorCobrarVenta(
+                        request.data
+                            ?.receivable
+                    )
+                    : null;
+
+            const cuentaRef =
+                rawMethod ===
+                    "cuenta"
+                    ? clienteRef
+                        .collection(
+                            "cuentasPorCobrar"
+                        )
+                        .doc(
+                            `venta_${saleId}`
+                        )
+                    : null;
+
+            const operadorNombre =
+                textoSeguro(
+                    operadorAutorizado
+                        ?.data
+                        ?.nombre,
+                    80
+                );
+
+            const operadorRol =
+                validarRolOperador(
+                    operadorAutorizado
+                        .rol
+                );
+
             const configRef =
                 clienteRef
                     .collection(
@@ -12123,6 +12258,26 @@ exports.registrarVenta =
                                         null,
                                 },
                             };
+                        }
+
+                        if (cuentaRef) {
+                            const existingCuentaSnap =
+                                await transaction.get(
+                                    cuentaRef
+                                );
+
+                            if (
+                                existingCuentaSnap.exists
+                            ) {
+                                throw new HttpsError(
+                                    "already-exists",
+                                    "La cuenta por cobrar vinculada a esta venta ya existe.",
+                                    {
+                                        motivo:
+                                            "receivable-id-used",
+                                    }
+                                );
+                            }
                         }
 
                         const requiredByBarcode =
@@ -12452,26 +12607,6 @@ exports.registrarVenta =
                             );
                         }
 
-                        const rawMethod =
-                            textoSeguro(
-                                request.data
-                                    ?.payment
-                                    ?.method,
-                                40
-                            ) ||
-                            "efectivo";
-
-                        if (
-                            !POS_METODOS_PAGO.has(
-                                rawMethod
-                            )
-                        ) {
-                            throw new HttpsError(
-                                "invalid-argument",
-                                "El método de pago no es válido."
-                            );
-                        }
-
                         const receivedRaw =
                             rawMethod ===
                                 "efectivo"
@@ -12481,7 +12616,10 @@ exports.registrarVenta =
                                         ?.received ??
                                     total
                                 )
-                                : total;
+                                : rawMethod ===
+                                    "cuenta"
+                                    ? 0
+                                    : total;
 
                         const received =
                             redondearDineroVenta(
@@ -12552,15 +12690,20 @@ exports.registrarVenta =
                                 ),
                         };
 
-                        paymentTotals[
-                            rawMethod
-                        ] =
-                            redondearDineroVenta(
-                                paymentTotals[
-                                    rawMethod
-                                ] +
-                                total
-                            );
+                        if (
+                            rawMethod !==
+                            "cuenta"
+                        ) {
+                            paymentTotals[
+                                rawMethod
+                            ] =
+                                redondearDineroVenta(
+                                    paymentTotals[
+                                        rawMethod
+                                    ] +
+                                    total
+                                );
+                        }
 
                         const nextTotalSales =
                             redondearDineroVenta(
@@ -12604,6 +12747,13 @@ exports.registrarVenta =
                                 change,
                             },
 
+                            ...(cuentaRef
+                                ? {
+                                    cuentaPorCobrarId:
+                                        cuentaRef.id,
+                                }
+                                : {}),
+
                             deviceId,
 
                             createdAt:
@@ -12617,6 +12767,79 @@ exports.registrarVenta =
                             saleRef,
                             sale
                         );
+
+                        if (
+                            cuentaRef &&
+                            cuentaVenta
+                        ) {
+                            transaction.set(
+                                cuentaRef,
+                                {
+                                    clienteNombre:
+                                        cuentaVenta
+                                            .clienteNombre,
+
+                                    clienteTelefono:
+                                        cuentaVenta
+                                            .clienteTelefono,
+
+                                    concepto:
+                                        "Venta a cuenta",
+
+                                    notas:
+                                        cuentaVenta
+                                            .notas,
+
+                                    importeOriginal:
+                                        total,
+
+                                    fechaOrigen:
+                                        cuentaVenta
+                                            .fechaOrigen,
+
+                                    vencimiento:
+                                        cuentaVenta
+                                            .vencimiento,
+
+                                    origen:
+                                        "venta",
+
+                                    ventaId:
+                                        saleId,
+
+                                    sessionIdOrigen:
+                                        sessionId,
+
+                                    totalPagado:
+                                        0,
+
+                                    saldoPendiente:
+                                        total,
+
+                                    estado:
+                                        "pendiente",
+
+                                    pagos:
+                                        [],
+
+                                    creadoPor: {
+                                        operadorId:
+                                            operadorAutorizado
+                                                .id,
+
+                                        operadorNombre,
+
+                                        operadorRol,
+                                    },
+
+                                    creadoEn:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+
+                                    actualizadoEn:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }
+                            );
+                        }
 
                         for (
                             const [
@@ -12721,6 +12944,18 @@ exports.registrarVenta =
 
                                     cantidadItems:
                                         items.length,
+
+                                    ...(cuentaRef
+                                        ? {
+                                            cuentaId:
+                                                cuentaRef.id,
+
+                                            clienteNombre:
+                                                cuentaVenta
+                                                    ?.clienteNombre ||
+                                                null,
+                                        }
+                                        : {}),
                                 },
                             });
 
@@ -12728,6 +12963,61 @@ exports.registrarVenta =
                             eventoAuditoria.ref,
                             eventoAuditoria.data
                         );
+
+                        if (
+                            cuentaRef &&
+                            cuentaVenta
+                        ) {
+                            const eventoCuenta =
+                                crearEventoAuditoria({
+                                    clienteRef,
+
+                                    operador:
+                                        operadorAutorizado,
+
+                                    accion:
+                                        AUDIT_ACTIONS
+                                            .ALTA_CUENTA_POR_COBRAR,
+
+                                    sessionId,
+
+                                    deviceId,
+
+                                    detalle: {
+                                        cuentaId:
+                                            cuentaRef.id,
+
+                                        ventaId:
+                                            saleId,
+
+                                        clienteNombre:
+                                            cuentaVenta
+                                                .clienteNombre,
+
+                                        concepto:
+                                            "Venta a cuenta",
+
+                                        importeOriginal:
+                                            total,
+
+                                        fechaOrigen:
+                                            cuentaVenta
+                                                .fechaOrigen,
+
+                                        vencimiento:
+                                            cuentaVenta
+                                                .vencimiento,
+
+                                        origen:
+                                            "venta",
+                                    },
+                                });
+
+                            transaction.set(
+                                eventoCuenta.ref,
+                                eventoCuenta.data
+                            );
+                        }
 
                         return {
                             alreadyExists:

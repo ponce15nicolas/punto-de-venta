@@ -56,6 +56,11 @@ const PAYMENT_METHODS = [
   "tarjeta",
 ];
 
+const SALE_METHODS = [
+  ...PAYMENT_METHODS,
+  "cuenta",
+];
+
 const PRODUCT_TYPES = [
   "unidad",
   "peso",
@@ -3353,6 +3358,13 @@ export function usePosData({
             sale.payment?.method ||
             "efectivo";
 
+          if (
+            requestedMethod ===
+            "cuenta"
+          ) {
+            continue;
+          }
+
           const method =
             PAYMENT_METHODS.includes(
               requestedMethod
@@ -3481,6 +3493,25 @@ export function usePosData({
             )
           );
 
+        const totalCreditSales =
+          roundMoney(
+            sessSales.reduce(
+              (
+                accumulator,
+                sale
+              ) =>
+                sale?.payment
+                  ?.method ===
+                "cuenta"
+                  ? accumulator +
+                    toNumber(
+                      sale?.total
+                    )
+                  : accumulator,
+              0
+            )
+          );
+
         return {
           sessSales,
           saleTotals,
@@ -3489,6 +3520,7 @@ export function usePosData({
           totals,
           totalSales,
           totalReceivablePayments,
+          totalCreditSales,
         };
       },
       []
@@ -3665,11 +3697,118 @@ export function usePosData({
           "efectivo";
 
         const method =
-          PAYMENT_METHODS.includes(
+          SALE_METHODS.includes(
             requestedMethod
           )
             ? requestedMethod
             : "efectivo";
+
+        let receivable =
+          null;
+
+        if (
+          method ===
+          "cuenta"
+        ) {
+          if (
+            !cloudActiveRef
+              .current
+          ) {
+            showToast(
+              "Necesitás conexión con la nube para registrar una venta a cuenta",
+              true
+            );
+
+            return false;
+          }
+
+          const clienteNombre =
+            String(
+              payment?.receivable
+                ?.clienteNombre ||
+              ""
+            ).trim();
+
+          const clienteTelefono =
+            String(
+              payment?.receivable
+                ?.clienteTelefono ||
+              ""
+            ).trim();
+
+          const fechaOrigen =
+            String(
+              payment?.receivable
+                ?.fechaOrigen ||
+              ""
+            ).trim();
+
+          const vencimiento =
+            String(
+              payment?.receivable
+                ?.vencimiento ||
+              ""
+            ).trim();
+
+          const notas =
+            String(
+              payment?.receivable
+                ?.notas ||
+              ""
+            ).trim();
+
+          if (
+            !clienteNombre
+          ) {
+            showToast(
+              "Ingresá el nombre del cliente",
+              true
+            );
+
+            return false;
+          }
+
+          if (
+            !/^\d{4}-\d{2}-\d{2}$/.test(
+              fechaOrigen
+            )
+          ) {
+            showToast(
+              "La fecha de la cuenta no es válida",
+              true
+            );
+
+            return false;
+          }
+
+          if (
+            vencimiento &&
+            (
+              !/^\d{4}-\d{2}-\d{2}$/.test(
+                vencimiento
+              ) ||
+              vencimiento <
+                fechaOrigen
+            )
+          ) {
+            showToast(
+              "El vencimiento de la cuenta no es válido",
+              true
+            );
+
+            return false;
+          }
+
+          receivable = {
+            clienteNombre,
+            clienteTelefono,
+            fechaOrigen,
+            vencimiento:
+              vencimiento ||
+              null,
+            notas,
+          };
+        }
 
         const received =
           method ===
@@ -3678,7 +3817,10 @@ export function usePosData({
                 payment?.received,
                 total
               )
-            : total;
+            : method ===
+                "cuenta"
+              ? 0
+              : total;
 
         if (
           method ===
@@ -3765,6 +3907,13 @@ export function usePosData({
             ),
 
           change,
+
+          ...(method ===
+            "cuenta"
+            ? {
+                receivable,
+              }
+            : {}),
         };
 
         checkoutInFlightRef.current =
@@ -3956,9 +4105,14 @@ export function usePosData({
           setCart([]);
 
           showToast(
-            `Venta registrada · ${total.toFixed(
-              2
-            )}`
+            method ===
+              "cuenta"
+              ? `Venta a cuenta registrada · ${total.toFixed(
+                  2
+                )}`
+              : `Venta registrada · ${total.toFixed(
+                  2
+                )}`
           );
 
           return true;

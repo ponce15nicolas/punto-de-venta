@@ -54,11 +54,23 @@ const METHODS = [
   },
 ];
 
+const ACCOUNT_METHOD = {
+  id: "cuenta",
+  label: "A cuenta",
+  icon: DebtIcon,
+};
+
+const SALE_METHODS = [
+  ...METHODS,
+  ACCOUNT_METHOD,
+];
+
 const METHOD_LABEL = {
   efectivo: "Efectivo",
   transferencia: "Transferencia",
   qr: "QR",
   tarjeta: "Tarjeta",
+  cuenta: "A cuenta",
 };
 
 /* =========================================================
@@ -561,6 +573,12 @@ export default function Caja({
         .totalReceivablePayments
     );
 
+  const totalCreditSales =
+    roundMoney(
+      breakdown
+        .totalCreditSales
+    );
+
   const safeSaleTotals = {
     efectivo:
       roundMoney(
@@ -1013,6 +1031,29 @@ export default function Caja({
                 )} cobrados de cuentas por cobrar durante este turno.
               </div>
             )}
+
+            {totalCreditSales >
+              0 && (
+              <div
+                className="
+                  mt-2.5
+                  rounded-2xl
+                  border
+                  border-white/10
+                  bg-[#F4F5F7]
+                  px-3.5
+                  py-3
+                  text-[11px]
+                  font-semibold
+                  leading-relaxed
+                  text-black/50
+                "
+              >
+                Ventas a cuenta: {money(
+                  totalCreditSales
+                )}. Forman parte de las ventas del turno, pero no ingresan dinero a caja hasta que se cobren.
+              </div>
+            )}
           </div>
 
           {/* ===============================================
@@ -1143,7 +1184,7 @@ export default function Caja({
                     );
 
                   const paymentMeta =
-                    METHODS.find(
+                    SALE_METHODS.find(
                       (item) =>
                         item.id ===
                         method
@@ -2376,6 +2417,28 @@ function ChevronIcon({
       aria-hidden="true"
     >
       <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
+}
+
+function DebtIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5 4h14v16H5z" />
+      <path d="M8 8h8" />
+      <path d="M8 12h5" />
+      <path d="M8 16h3" />
     </svg>
   );
 }
