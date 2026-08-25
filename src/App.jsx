@@ -23,6 +23,46 @@ import Inventario from "./pages/Inventario";
 import Caja from "./pages/Caja";
 import Historial from "./pages/Historial";
 import Actividad from "./pages/Actividad";
+import Compras from "./pages/Compras";
+import Ganancias from "./pages/Ganancias";
+
+const THEME_STORAGE_KEY = "pos-theme";
+
+function getCurrentTheme() {
+  if (typeof document === "undefined") {
+    return "dark";
+  }
+
+  return document.documentElement.dataset.theme === "light"
+    ? "light"
+    : "dark";
+}
+
+function applyTheme(theme) {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const normalized = theme === "light" ? "light" : "dark";
+
+  document.documentElement.dataset.theme = normalized;
+  document.documentElement.style.colorScheme = normalized;
+
+  const themeColor = document.querySelector('meta[name="theme-color"]');
+
+  if (themeColor) {
+    themeColor.setAttribute(
+      "content",
+      normalized === "light" ? "#F4F1E8" : "#0B0D12"
+    );
+  }
+
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, normalized);
+  } catch {
+    // La preferencia visual sigue funcionando aunque el navegador bloquee storage.
+  }
+}
 
 /* =========================================================
    APP
@@ -95,6 +135,15 @@ function PosApp({ license }) {
 
   const [tab, setTab] = useState("vender");
   const [invFilter, setInvFilter] = useState("all");
+  const [theme, setTheme] = useState(getCurrentTheme);
+
+  function handleToggleTheme() {
+    setTheme((current) => {
+      const next = current === "dark" ? "light" : "dark";
+      applyTheme(next);
+      return next;
+    });
+  }
 
   /* =========================================================
      NAVEGACIÓN
@@ -159,6 +208,7 @@ function PosApp({ license }) {
         relative
         min-h-screen
         overflow-x-hidden
+        pos-app-shell
         bg-[#0B0D12]
         pb-[calc(92px+env(safe-area-inset-bottom))]
         text-white
@@ -218,6 +268,8 @@ function PosApp({ license }) {
           allowOperatorChangeWithOpenSession={
             pos.migrationNeedsAdmin
           }
+          theme={theme}
+          onToggleTheme={handleToggleTheme}
         />
       </div>
 
@@ -339,6 +391,14 @@ function PosApp({ license }) {
               <Caja pos={pos} />
             )}
 
+            {tab === "compras" && (
+              <Compras pos={pos} />
+            )}
+
+            {tab === "ganancias" && (
+              <Ganancias pos={pos} />
+            )}
+
             {tab === "historial" && (
               <Historial pos={pos} />
             )}
@@ -397,6 +457,18 @@ function PageLabel({ tab }) {
       eyebrow: "Turno",
       label: "Caja",
       icon: RegisterIcon,
+    },
+
+    compras: {
+      eyebrow: "Abastecimiento",
+      label: "Compras",
+      icon: PurchaseIcon,
+    },
+
+    ganancias: {
+      eyebrow: "Rentabilidad",
+      label: "Ganancias",
+      icon: ProfitIcon,
     },
 
     historial: {
@@ -690,6 +762,27 @@ function BoxIcon({
   );
 }
 
+function PurchaseIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="9" cy="20" r="1" />
+      <circle cx="18" cy="20" r="1" />
+      <path d="M3 4h2l2.5 11h10.5l2-7H7" />
+    </svg>
+  );
+}
+
 function RegisterIcon({
   className = "",
 }) {
@@ -731,6 +824,28 @@ function HistoryIcon({
       <path d="M3 12a9 9 0 1 0 3-6.7" />
       <path d="M3 4v5h5" />
       <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+function ProfitIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 19V5" />
+      <path d="M4 19h16" />
+      <path d="m7 15 4-4 3 2 5-6" />
+      <path d="M16 7h3v3" />
     </svg>
   );
 }

@@ -27,6 +27,12 @@ import {
   closeCashSessionCloud,
   createManualReceivableCloud,
   registerReceivablePaymentCloud,
+  loadPurchasingDataCloud,
+  createShoppingItemCloud,
+  completeShoppingItemCloud,
+  createManualPayableCloud,
+  registerPayablePaymentCloud,
+  migrateHistoricalProfitsCloud,
   deleteCashSessionCloud,
   deleteProductCloud,
   openCashSessionCloud,
@@ -211,6 +217,19 @@ function normalizeProduct(
         : roundMoney(
             toNumber(
               product.price
+            )
+          ),
+
+    cost:
+      tipoVenta ===
+      "precio-libre"
+        ? 0
+        : roundMoney(
+            Math.max(
+              0,
+              toNumber(
+                product.cost
+              )
             )
           ),
 
@@ -507,6 +526,16 @@ export function usePosData({
   ] = useState([]);
 
   const [
+    shoppingList,
+    setShoppingList,
+  ] = useState([]);
+
+  const [
+    accountsPayable,
+    setAccountsPayable,
+  ] = useState([]);
+
+  const [
     shopName,
     setShopNameState,
   ] = useState(
@@ -563,6 +592,9 @@ export function usePosData({
   const accountsReceivableRef =
     useRef([]);
 
+  const accountsPayableRef =
+    useRef([]);
+
   const cloudActiveRef =
     useRef(false);
 
@@ -615,6 +647,13 @@ export function usePosData({
       accountsReceivable;
   }, [
     accountsReceivable,
+  ]);
+
+  useEffect(() => {
+    accountsPayableRef.current =
+      accountsPayable;
+  }, [
+    accountsPayable,
   ]);
 
   /* =========================================================
@@ -1417,6 +1456,7 @@ export function usePosData({
           sales: false,
           cash: false,
           receivables: false,
+          purchasing: false,
           config: false,
         };
 
@@ -1490,6 +1530,52 @@ export function usePosData({
             );
           }
         }
+
+        loadPurchasingDataCloud(
+          cleanClienteId,
+          {
+            operadorSesion,
+            deviceId:
+              cleanDeviceId,
+          }
+        )
+          .then((data) => {
+            if (cancelled) {
+              return;
+            }
+
+            const nextShoppingList =
+              Array.isArray(
+                data?.shoppingList
+              )
+                ? data.shoppingList
+                : [];
+
+            const nextAccountsPayable =
+              Array.isArray(
+                data?.accountsPayable
+              )
+                ? data.accountsPayable
+                : [];
+
+            setShoppingList(
+              nextShoppingList
+            );
+
+            setAccountsPayable(
+              nextAccountsPayable
+            );
+
+            accountsPayableRef.current =
+              nextAccountsPayable;
+
+            markSnapshot(
+              "purchasing"
+            );
+          })
+          .catch(
+            handleListenerError
+          );
 
         unsubscribers = [
           subscribeProducts(
@@ -1906,6 +1992,15 @@ export function usePosData({
                 NaN
               );
 
+        const cost =
+          tipoVenta ===
+          "precio-libre"
+            ? 0
+            : toNumber(
+                product.cost,
+                0
+              );
+
         let stock = 0;
 
         if (
@@ -1954,6 +2049,27 @@ export function usePosData({
               "peso"
               ? "Ingresá un precio por kg válido"
               : "Ingresá un precio de venta válido",
+            true
+          );
+
+          return false;
+        }
+
+        if (
+          tipoVenta !==
+            "precio-libre" &&
+          (
+            !Number.isFinite(
+              cost
+            ) ||
+            cost < 0
+          )
+        ) {
+          showToast(
+            tipoVenta ===
+              "peso"
+              ? "Ingresá un costo por kg válido"
+              : "Ingresá un costo de mercadería válido",
             true
           );
 
@@ -2017,6 +2133,7 @@ export function usePosData({
             barcode,
             name,
             price,
+            cost,
             stock,
             tipoVenta,
 
@@ -2245,7 +2362,8 @@ export function usePosData({
     useCallback(
       async (
         barcode,
-        add
+        add,
+        unitCost = null
       ) => {
         const code =
           String(
@@ -2315,14 +2433,45 @@ export function usePosData({
           return false;
         }
 
+        const normalizedUnitCost =
+          unitCost === null ||
+          unitCost === undefined ||
+          unitCost === ""
+            ? roundMoney(
+                toNumber(
+                  product.cost
+                )
+              )
+            : roundMoney(
+                toNumber(
+                  unitCost,
+                  NaN
+                )
+              );
+
+        if (
+          !Number.isFinite(
+            normalizedUnitCost
+          ) ||
+          normalizedUnitCost < 0
+        ) {
+          showToast(
+            "Ingresá un costo unitario válido",
+            true
+          );
+
+          return false;
+        }
+
         try {
           let nextStock;
+          let nextCost;
 
           if (
             cloudActiveRef
               .current
           ) {
-            nextStock =
+            const result =
               await restockProductCloud(
                 cleanClienteId,
                 code,
@@ -2332,8 +2481,17 @@ export function usePosData({
 
                   deviceId:
                     cleanDeviceId,
+
+                  unitCost:
+                    normalizedUnitCost,
                 }
               );
+
+            nextStock =
+              result.stockNuevo;
+
+            nextCost =
+              result.costoNuevo;
           } else if (
             cloudRequested
           ) {
@@ -2360,6 +2518,26 @@ export function usePosData({
                     currentStock +
                       amount
                   );
+
+            const currentCost =
+              roundMoney(
+                toNumber(
+                  product.cost
+                )
+              );
+
+            nextCost =
+              nextStock > 0
+                ? roundMoney(
+                    (
+                      currentStock *
+                        currentCost +
+                      amount *
+                        normalizedUnitCost
+                    ) /
+                      nextStock
+                  )
+                : currentCost;
           }
 
           const current =
@@ -2385,6 +2563,11 @@ export function usePosData({
                         nextStock
                       )
                     ),
+
+              cost:
+                roundMoney(
+                  nextCost
+                ),
             },
           });
 
@@ -3444,6 +3627,65 @@ export function usePosData({
             );
         }
 
+        const payablePayments =
+          accountsPayableRef.current
+            .flatMap(
+              (account) =>
+                Array.isArray(
+                  account?.pagos
+                )
+                  ? account.pagos.map(
+                      (pago) => ({
+                        ...pago,
+                        cuentaId:
+                          account.id,
+                        proveedorNombre:
+                          account.proveedorNombre,
+                      })
+                    )
+                  : []
+            )
+            .filter(
+              (pago) =>
+                pago?.sessionId ===
+                sessionId
+            );
+
+        const payableTotals = {
+          efectivo: 0,
+          transferencia: 0,
+          qr: 0,
+          tarjeta: 0,
+        };
+
+        for (
+          const pago of
+          payablePayments
+        ) {
+          const requestedMethod =
+            pago?.metodoPago ||
+            "efectivo";
+
+          const method =
+            PAYMENT_METHODS.includes(
+              requestedMethod
+            )
+              ? requestedMethod
+              : "efectivo";
+
+          payableTotals[
+            method
+          ] =
+            roundMoney(
+              payableTotals[
+                method
+              ] +
+                toNumber(
+                  pago?.importe
+                )
+            );
+        }
+
         const totals =
           Object.fromEntries(
             PAYMENT_METHODS.map(
@@ -3493,6 +3735,21 @@ export function usePosData({
             )
           );
 
+        const totalPayablePayments =
+          roundMoney(
+            payablePayments.reduce(
+              (
+                accumulator,
+                pago
+              ) =>
+                accumulator +
+                toNumber(
+                  pago?.importe
+                ),
+              0
+            )
+          );
+
         const totalCreditSales =
           roundMoney(
             sessSales.reduce(
@@ -3517,9 +3774,12 @@ export function usePosData({
           saleTotals,
           receivablePayments,
           receivableTotals,
+          payablePayments,
+          payableTotals,
           totals,
           totalSales,
           totalReceivablePayments,
+          totalPayablePayments,
           totalCreditSales,
         };
       },
@@ -3859,6 +4119,35 @@ export function usePosData({
                   item.tipoVenta
                 );
 
+              const product =
+                catalogRef.current[
+                  item.barcode
+                ] ||
+                {};
+
+              const qty =
+                tipoVenta ===
+                "peso"
+                  ? roundQuantity(
+                      item.qty
+                    )
+                  : toNumber(
+                      item.qty
+                    );
+
+              const cost =
+                tipoVenta ===
+                "precio-libre"
+                  ? 0
+                  : roundMoney(
+                      Math.max(
+                        0,
+                        toNumber(
+                          product.cost
+                        )
+                      )
+                    );
+
               return {
                 barcode:
                   item.barcode,
@@ -3880,22 +4169,42 @@ export function usePosData({
                     item.price
                   ),
 
-                qty:
-                  tipoVenta ===
-                  "peso"
-                    ? roundQuantity(
-                        item.qty
-                      )
-                    : toNumber(
-                        item.qty
-                      ),
+                cost,
+
+                qty,
 
                 subtotal:
                   getItemSubtotal(
                     item
                   ),
+
+                costSubtotal:
+                  roundMoney(
+                    qty * cost
+                  ),
+
+                costSource:
+                  "exact",
               };
             }
+          );
+
+        const totalCost =
+          roundMoney(
+            saleItems.reduce(
+              (sum, item) =>
+                sum +
+                toNumber(
+                  item.costSubtotal
+                ),
+              0
+            )
+          );
+
+        const grossProfit =
+          roundMoney(
+            total -
+              totalCost
           );
 
         const normalizedPayment = {
@@ -3974,6 +4283,13 @@ export function usePosData({
 
                 total,
 
+                totalCost,
+
+                grossProfit,
+
+                profitCostStatus:
+                  "exact",
+
                 sessionId:
                   currentOpenSession.id,
 
@@ -4027,6 +4343,13 @@ export function usePosData({
                 saleItems,
 
               total,
+
+              totalCost,
+
+              grossProfit,
+
+              profitCostStatus:
+                "exact",
 
               sessionId:
                 currentOpenSession.id,
@@ -4741,6 +5064,422 @@ export function usePosData({
 
 
   /* =========================================================
+     COMPRAS — RECARGAR DATOS
+  ========================================================= */
+
+  const refreshPurchasingData =
+    useCallback(
+      async (
+        {
+          silent = false,
+        } = {}
+      ) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          if (!silent) {
+            showToast(
+              "Necesitás conexión con la nube para cargar compras",
+              true
+            );
+          }
+
+          return false;
+        }
+
+        try {
+          const data =
+            await loadPurchasingDataCloud(
+              cleanClienteId,
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
+
+          const nextShoppingList =
+            Array.isArray(
+              data?.shoppingList
+            )
+              ? data.shoppingList
+              : [];
+
+          const nextAccountsPayable =
+            Array.isArray(
+              data?.accountsPayable
+            )
+              ? data.accountsPayable
+              : [];
+
+          setShoppingList(
+            nextShoppingList
+          );
+
+          setAccountsPayable(
+            nextAccountsPayable
+          );
+
+          accountsPayableRef.current =
+            nextAccountsPayable;
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error cargando compras:",
+            error
+          );
+
+          if (!silent) {
+            showToast(
+              mapCloudError(
+                error
+              ),
+              true
+            );
+          }
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        showToast,
+      ]
+    );
+
+  const createShoppingItem =
+    useCallback(
+      async (payload) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para agregar compras",
+            true
+          );
+
+          return false;
+        }
+
+        try {
+          await createShoppingItemCloud(
+            cleanClienteId,
+            payload,
+            {
+              operadorSesion,
+              deviceId:
+                cleanDeviceId,
+            }
+          );
+
+          await refreshPurchasingData({
+            silent: true,
+          });
+
+          showToast(
+            "Agregado a la lista de compras"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error agregando compra:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        refreshPurchasingData,
+        showToast,
+      ]
+    );
+
+  const completeShoppingItem =
+    useCallback(
+      async (
+        compraId,
+        payload
+      ) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para completar compras",
+            true
+          );
+
+          return false;
+        }
+
+        try {
+          const result =
+            await completeShoppingItemCloud(
+              cleanClienteId,
+              compraId,
+              payload,
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
+
+          await refreshPurchasingData({
+            silent: true,
+          });
+
+          if (
+            result?.stockNuevo !==
+              null &&
+            result?.stockNuevo !==
+              undefined &&
+            payload?.productoBarcode
+          ) {
+            const code =
+              String(
+                payload.productoBarcode
+              ).trim();
+
+            const current =
+              catalogRef.current[
+                code
+              ];
+
+            if (current) {
+              persistCatalog({
+                ...catalogRef.current,
+                [code]: {
+                  ...current,
+                  stock:
+                    normalizeProductType(
+                      current.tipoVenta
+                    ) === "peso"
+                      ? roundQuantity(
+                          result.stockNuevo
+                        )
+                      : Math.max(
+                          0,
+                          Math.trunc(
+                            result.stockNuevo
+                          )
+                        ),
+                  cost:
+                    roundMoney(
+                      result.costoNuevo
+                    ),
+                },
+              });
+            }
+          }
+
+          showToast(
+            result?.cuentaPorPagarId
+              ? "Compra registrada y cuenta por pagar creada"
+              : "Compra registrada"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error completando compra:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        persistCatalog,
+        refreshPurchasingData,
+        showToast,
+      ]
+    );
+
+  const createManualPayable =
+    useCallback(
+      async (payload) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para registrar una cuenta por pagar",
+            true
+          );
+
+          return false;
+        }
+
+        try {
+          await createManualPayableCloud(
+            cleanClienteId,
+            payload,
+            {
+              operadorSesion,
+              deviceId:
+                cleanDeviceId,
+            }
+          );
+
+          await refreshPurchasingData({
+            silent: true,
+          });
+
+          showToast(
+            "Cuenta por pagar registrada"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error registrando cuenta por pagar:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        refreshPurchasingData,
+        showToast,
+      ]
+    );
+
+  const registerPayablePayment =
+    useCallback(
+      async (
+        cuentaId,
+        payload
+      ) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para registrar un pago",
+            true
+          );
+
+          return false;
+        }
+
+        const metodoPago =
+          String(
+            payload?.metodoPago ||
+              "efectivo"
+          )
+            .trim()
+            .toLowerCase();
+
+        const requiereCaja =
+          metodoPago ===
+          "efectivo";
+
+        if (requiereCaja) {
+          const currentOpenSession =
+            cashSessionsRef.current
+              .find(
+                (session) =>
+                  session?.status ===
+                  "open"
+              ) ||
+            null;
+
+          if (!currentOpenSession) {
+            showToast(
+              "Abrí una caja para registrar un pago en efectivo",
+              true
+            );
+
+            return false;
+          }
+        }
+
+        try {
+          await registerPayablePaymentCloud(
+            cleanClienteId,
+            cuentaId,
+            payload,
+            {
+              operadorSesion,
+              deviceId:
+                cleanDeviceId,
+            }
+          );
+
+          await refreshPurchasingData({
+            silent: true,
+          });
+
+          showToast(
+            "Pago registrado"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error registrando pago de cuenta por pagar:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        refreshPurchasingData,
+        showToast,
+      ]
+    );
+
+  /* =========================================================
      CUENTAS POR COBRAR — ALTA MANUAL
   ========================================================= */
 
@@ -4885,6 +5624,77 @@ export function usePosData({
 
 
   /* =========================================================
+     GANANCIAS HISTÓRICAS
+  ========================================================= */
+
+  const migrateHistoricalProfits =
+    useCallback(
+      async (rules) => {
+        if (
+          !cloudActiveRef.current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para completar ganancias históricas",
+            true
+          );
+
+          return null;
+        }
+
+        try {
+          const result =
+            await migrateHistoricalProfitsCloud(
+              cleanClienteId,
+              rules,
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
+
+          const updated =
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  result
+                    ?.ventasActualizadas
+                )
+              )
+            );
+
+          showToast(
+            updated > 0
+              ? `${updated} ${updated === 1 ? "venta actualizada" : "ventas actualizadas"}`
+              : "No había ventas para actualizar"
+          );
+
+          return result;
+        } catch (error) {
+          console.error(
+            "Error migrando ganancias históricas:",
+            error
+          );
+
+          showToast(
+            mapCloudError(error),
+            true
+          );
+
+          return null;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        showToast,
+      ]
+    );
+
+
+  /* =========================================================
      RETURN
   ========================================================= */
 
@@ -4906,6 +5716,8 @@ export function usePosData({
     sales,
     cashSessions,
     accountsReceivable,
+    shoppingList,
+    accountsPayable,
 
     shopName,
     setShopName,
@@ -4943,6 +5755,13 @@ export function usePosData({
 
     createManualReceivable,
     registerReceivablePayment,
+
+    refreshPurchasingData,
+    createShoppingItem,
+    completeShoppingItem,
+    createManualPayable,
+    registerPayablePayment,
+    migrateHistoricalProfits,
 
     paymentBreakdown,
   };

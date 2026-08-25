@@ -7,6 +7,7 @@ const EMPTY_FORM = {
   barcode: "",
   name: "",
   price: "",
+  cost: "0",
   stock: "0",
   expiry: "",
   tipoVenta: "unidad",
@@ -65,6 +66,11 @@ export default function ProductModal({
         price:
           String(
             product.price ?? ""
+          ),
+
+        cost:
+          String(
+            product.cost ?? 0
           ),
 
         stock:
@@ -148,6 +154,7 @@ export default function ProductModal({
         "precio-libre"
       ) {
         next.price = "0";
+        next.cost = "0";
         next.stock = "0";
       }
 
@@ -221,6 +228,13 @@ export default function ProductModal({
             form.price
           );
 
+    const cost =
+      precioLibre
+        ? 0
+        : parseFloat(
+            form.cost
+          );
+
     const stock =
       precioLibre
         ? 0
@@ -265,6 +279,25 @@ export default function ProductModal({
       !precioLibre &&
       (
         Number.isNaN(
+          cost
+        ) ||
+        cost < 0
+      )
+    ) {
+      onSave(
+        null,
+        ventaPorPeso
+          ? "Ingresá un costo por kg válido"
+          : "Ingresá un costo de mercadería válido"
+      );
+
+      return;
+    }
+
+    if (
+      !precioLibre &&
+      (
+        Number.isNaN(
           stock
         ) ||
         stock < 0
@@ -286,6 +319,8 @@ export default function ProductModal({
         name,
 
         price,
+
+        cost,
 
         stock,
 
@@ -320,6 +355,11 @@ export default function ProductModal({
   const priceNumero =
     parseFloat(
       form.price
+    );
+
+  const costNumero =
+    parseFloat(
+      form.cost
     );
 
   const stockNumero =
@@ -899,8 +939,9 @@ export default function ProductModal({
           <div
             className="
               grid
-              grid-cols-2
+              grid-cols-1
               gap-2.5
+              min-[420px]:grid-cols-3
             "
           >
             <Field
@@ -960,6 +1001,65 @@ export default function ProductModal({
                       "price",
                       event.target
                         .value
+                    )
+                  }
+                  placeholder="0.00"
+                />
+              </div>
+            </Field>
+
+            <Field
+              label={
+                ventaPorPeso
+                  ? "Costo por kg"
+                  : "Costo mercadería"
+              }
+            >
+              <div className="relative">
+                <span
+                  className="
+                    pointer-events-none
+                    absolute
+                    left-3.5
+                    top-1/2
+                    -translate-y-1/2
+                    text-sm
+                    font-extrabold
+                    text-[#FFC61A]
+                  "
+                >
+                  $
+                </span>
+
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  inputMode="decimal"
+                  className="
+                    w-full
+                    rounded-2xl
+                    border
+                    border-white/10
+                    bg-[#171B23]
+                    py-3
+                    pl-8
+                    pr-3
+                    text-sm
+                    font-extrabold
+                    text-white
+                    outline-none
+                    transition
+                    placeholder:text-white/25
+                    focus:border-[#FFC61A]
+                    focus:ring-2
+                    focus:ring-[#FFC61A]/10
+                  "
+                  value={form.cost}
+                  onChange={(event) =>
+                    set(
+                      "cost",
+                      event.target.value
                     )
                   }
                   placeholder="0.00"
@@ -1171,7 +1271,7 @@ export default function ProductModal({
           className="
             mb-4
             grid
-            grid-cols-2
+            grid-cols-3
             gap-2.5
             rounded-[22px]
             border
@@ -1200,6 +1300,26 @@ export default function ProductModal({
                           "currency",
                         currency:
                           "ARS",
+                        minimumFractionDigits: 2,
+                      }
+                    )
+            }
+          />
+
+          <PreviewBox
+            label="Costo"
+            value={
+              precioLibre
+                ? "No aplica"
+                : Number.isNaN(
+                      costNumero
+                    )
+                  ? "$ 0,00"
+                  : costNumero.toLocaleString(
+                      "es-AR",
+                      {
+                        style: "currency",
+                        currency: "ARS",
                         minimumFractionDigits: 2,
                       }
                     )

@@ -248,3 +248,266 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+/* =========================================================
+   MODO CLARO / OSCURO
+   El modo oscuro conserva la identidad original.
+   El modo claro usa superficies cálidas, texto carbón y el
+   amarillo como acento, sin duplicar la estructura de páginas.
+========================================================= */
+
+:root {
+  --pos-light-bg: #F4F1E8;
+  --pos-light-bg-2: #F8F7F3;
+  --pos-light-surface: #FFFFFF;
+  --pos-light-surface-2: #F3F4F6;
+  --pos-light-surface-3: #E9EBEF;
+  --pos-light-text: #17191F;
+  --pos-light-accent-text: #846100;
+  --pos-light-line: rgba(17, 19, 24, 0.10);
+  --pos-light-line-strong: rgba(17, 19, 24, 0.16);
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  background: var(--pos-light-bg);
+  --color-bg: var(--pos-light-bg);
+  --color-surface: var(--pos-light-surface);
+  --color-surface-2: var(--pos-light-surface-2);
+  --color-line: var(--pos-light-line);
+  --color-cream: var(--pos-light-text);
+  --color-cream-dim: #686D76;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+html[data-theme="light"] body {
+  background:
+    radial-gradient(circle at 12% -10%, rgba(255, 198, 26, 0.12), transparent 30rem),
+    linear-gradient(180deg, var(--pos-light-bg-2) 0%, var(--pos-light-bg) 100%);
+  color: var(--pos-light-text);
+}
+
+html[data-theme="light"] .pos-app-shell {
+  background: transparent !important;
+  color: var(--pos-light-text) !important;
+}
+
+html[data-theme="light"] .pos-header,
+html[data-theme="light"] .pos-bottom-nav {
+  border-color: var(--pos-light-line) !important;
+  background: rgba(250, 249, 246, 0.94) !important;
+  box-shadow: 0 12px 34px rgba(17, 19, 24, 0.08) !important;
+}
+
+html[data-theme="light"] .pos-theme-toggle {
+  border-color: var(--pos-light-line) !important;
+  background: rgba(17, 19, 24, 0.04) !important;
+  color: rgba(17, 19, 24, 0.68) !important;
+}
+
+html[data-theme="light"] .pos-theme-toggle:hover {
+  border-color: rgba(180, 132, 0, 0.30) !important;
+  background: rgba(255, 198, 26, 0.16) !important;
+  color: #765600 !important;
+}
+
+html[data-theme="light"] .pos-modal-overlay {
+  background: rgba(17, 19, 24, 0.46) !important;
+}
+
+html[data-theme="light"] .pos-modal-panel {
+  border-color: var(--pos-light-line) !important;
+  background-image: linear-gradient(180deg, #FFFFFF 0%, #F5F6F8 100%) !important;
+  box-shadow: 0 24px 70px rgba(17, 19, 24, 0.20) !important;
+}
+
+/* Superficies oscuras históricas */
+html[data-theme="light"] [class~="bg-[#0B0D12]"] {
+  background-color: var(--pos-light-bg) !important;
+}
+
+html[data-theme="light"] [class~="bg-[#0B0D12]/95"] {
+  background-color: rgba(250, 249, 246, 0.95) !important;
+}
+
+html[data-theme="light"] [class~="bg-[#11151C]"] {
+  background-color: var(--pos-light-surface) !important;
+}
+
+html[data-theme="light"] [class~="bg-[#151A22]"],
+html[data-theme="light"] [class~="bg-[#151A22]/95"] {
+  background-color: var(--pos-light-surface) !important;
+}
+
+html[data-theme="light"] [class~="bg-[#171B23]"],
+html[data-theme="light"] [class~="bg-[#171B23]/95"] {
+  background-color: var(--pos-light-surface-2) !important;
+}
+
+html[data-theme="light"] [class~="bg-[#191E27]"],
+html[data-theme="light"] [class~="bg-[#1A2029]"] {
+  background-color: #EEF0F3 !important;
+}
+
+html[data-theme="light"] [class~="bg-[#202630]"] {
+  background-color: #E5E8EC !important;
+}
+
+html[data-theme="light"] [class~="bg-[#241316]"],
+html[data-theme="light"] [class~="bg-[#241316]/95"] {
+  background-color: #FFF1F2 !important;
+}
+
+/* Texto pensado originalmente para fondos oscuros */
+html[data-theme="light"] [class~="text-white"] { color: var(--pos-light-text) !important; }
+html[data-theme="light"] [class~="text-white/80"] { color: rgba(17, 19, 24, 0.80) !important; }
+html[data-theme="light"] [class~="text-white/75"] { color: rgba(17, 19, 24, 0.75) !important; }
+html[data-theme="light"] [class~="text-white/70"] { color: rgba(17, 19, 24, 0.70) !important; }
+html[data-theme="light"] [class~="text-white/65"] { color: rgba(17, 19, 24, 0.65) !important; }
+html[data-theme="light"] [class~="text-white/60"] { color: rgba(17, 19, 24, 0.60) !important; }
+html[data-theme="light"] [class~="text-white/55"] { color: rgba(17, 19, 24, 0.55) !important; }
+html[data-theme="light"] [class~="text-white/50"] { color: rgba(17, 19, 24, 0.50) !important; }
+html[data-theme="light"] [class~="text-white/45"] { color: rgba(17, 19, 24, 0.45) !important; }
+html[data-theme="light"] [class~="text-white/40"] { color: rgba(17, 19, 24, 0.40) !important; }
+html[data-theme="light"] [class~="text-white/35"] { color: rgba(17, 19, 24, 0.35) !important; }
+html[data-theme="light"] [class~="text-white/30"] { color: rgba(17, 19, 24, 0.30) !important; }
+html[data-theme="light"] [class~="text-white/25"] { color: rgba(17, 19, 24, 0.25) !important; }
+html[data-theme="light"] [class~="text-white/20"] { color: rgba(17, 19, 24, 0.20) !important; }
+
+/* El amarillo puro sobre blanco pierde contraste: sólo oscurecemos texto/iconos. */
+html[data-theme="light"] [class~="text-[#FFC61A]"] {
+  color: var(--pos-light-accent-text) !important;
+}
+
+html[data-theme="light"] [class~="text-[#F3CD62]"] {
+  color: #765600 !important;
+}
+
+/* Bordes y fondos translúcidos que antes usaban blanco */
+html[data-theme="light"] [class~="border-white/20"] { border-color: rgba(17, 19, 24, 0.20) !important; }
+html[data-theme="light"] [class~="border-white/15"] { border-color: rgba(17, 19, 24, 0.15) !important; }
+html[data-theme="light"] [class~="border-white/10"] { border-color: rgba(17, 19, 24, 0.10) !important; }
+html[data-theme="light"] [class~="border-white/8"] { border-color: rgba(17, 19, 24, 0.08) !important; }
+html[data-theme="light"] [class~="border-white/[0.07]"] { border-color: rgba(17, 19, 24, 0.07) !important; }
+html[data-theme="light"] [class~="border-white/[0.06]"] { border-color: rgba(17, 19, 24, 0.06) !important; }
+
+html[data-theme="light"] [class~="bg-white/15"] { background-color: rgba(17, 19, 24, 0.15) !important; }
+html[data-theme="light"] [class~="bg-white/10"] { background-color: rgba(17, 19, 24, 0.08) !important; }
+html[data-theme="light"] [class~="bg-white/5"] { background-color: rgba(17, 19, 24, 0.045) !important; }
+html[data-theme="light"] [class~="bg-white/[0.08]"] { background-color: rgba(17, 19, 24, 0.07) !important; }
+html[data-theme="light"] [class~="bg-white/[0.06]"] { background-color: rgba(17, 19, 24, 0.055) !important; }
+html[data-theme="light"] [class~="bg-white/[0.055]"] { background-color: rgba(17, 19, 24, 0.05) !important; }
+html[data-theme="light"] [class~="bg-white/[0.045]"] { background-color: rgba(17, 19, 24, 0.042) !important; }
+html[data-theme="light"] [class~="bg-white/[0.04]"] { background-color: rgba(17, 19, 24, 0.038) !important; }
+html[data-theme="light"] [class~="bg-white/[0.035]"] { background-color: rgba(17, 19, 24, 0.034) !important; }
+html[data-theme="light"] [class~="bg-white/[0.025]"] { background-color: rgba(17, 19, 24, 0.025) !important; }
+
+/* Hover de componentes oscuros */
+html[data-theme="light"] [class~="hover:bg-white/5"]:hover,
+html[data-theme="light"] [class~="hover:bg-white/[0.045]"]:hover,
+html[data-theme="light"] [class~="hover:bg-white/[0.08]"]:hover,
+html[data-theme="light"] [class~="hover:bg-white/10"]:hover {
+  background-color: rgba(17, 19, 24, 0.07) !important;
+}
+
+html[data-theme="light"] [class~="hover:bg-[#1A2029]"]:hover,
+html[data-theme="light"] [class~="hover:bg-[#191E27]"]:hover,
+html[data-theme="light"] [class~="hover:bg-[#202630]"]:hover {
+  background-color: #E9ECF0 !important;
+}
+
+html[data-theme="light"] [class~="hover:border-white/20"]:hover {
+  border-color: rgba(17, 19, 24, 0.18) !important;
+}
+
+html[data-theme="light"] [class~="hover:text-white"]:hover,
+html[data-theme="light"] [class~="hover:text-white/70"]:hover,
+html[data-theme="light"] [class~="hover:text-white/65"]:hover {
+  color: var(--pos-light-text) !important;
+}
+
+html[data-theme="light"] [class~="group"]:hover [class~="group-hover:text-white/70"],
+html[data-theme="light"] [class~="group"]:hover [class~="group-hover:text-white/65"] {
+  color: rgba(17, 19, 24, 0.72) !important;
+}
+
+html[data-theme="light"] [class~="group"]:hover [class~="group-hover:bg-white/5"] {
+  background-color: rgba(17, 19, 24, 0.06) !important;
+}
+
+/* Estados con contraste correcto sobre superficies claras */
+html[data-theme="light"] [class~="text-red-200"],
+html[data-theme="light"] [class~="text-red-300"] {
+  color: #B42336 !important;
+}
+
+html[data-theme="light"] [class~="text-red-400"] {
+  color: #C52B40 !important;
+}
+
+html[data-theme="light"] [class~="text-emerald-300"],
+html[data-theme="light"] [class~="text-emerald-400"] {
+  color: #087443 !important;
+}
+
+/* Formularios */
+html[data-theme="light"] input,
+html[data-theme="light"] select,
+html[data-theme="light"] textarea {
+  color-scheme: light;
+}
+
+html[data-theme="light"] input::placeholder,
+html[data-theme="light"] textarea::placeholder {
+  color: rgba(17, 19, 24, 0.30) !important;
+}
+
+html[data-theme="light"] [class~="[color-scheme:dark]"] {
+  color-scheme: light !important;
+}
+
+html[data-theme="light"] select option {
+  background: #FFFFFF;
+  color: var(--pos-light-text);
+}
+
+/* Utilidades semánticas existentes */
+html[data-theme="light"] .pos-card {
+  border-color: var(--pos-light-line);
+  background: var(--pos-light-surface);
+  color: var(--pos-light-text);
+  box-shadow: 0 12px 32px rgba(17, 19, 24, 0.07);
+}
+
+html[data-theme="light"] .pos-card-light {
+  box-shadow: 0 14px 38px rgba(17, 19, 24, 0.08);
+}
+
+html[data-theme="light"] .ticket-edge::before,
+html[data-theme="light"] .ticket-edge::after {
+  background:
+    radial-gradient(circle at 6px 5px,
+      var(--pos-light-bg) 5px,
+      transparent 5.5px) repeat-x;
+  background-size: 16px 10px;
+}
+
+html[data-theme="light"] ::selection {
+  background: rgba(255, 198, 26, 0.34);
+  color: #17191F;
+}
+
+/* Cambio de tema suave, sin afectar animaciones funcionales. */
+.pos-app-shell,
+.pos-header,
+.pos-bottom-nav,
+.pos-modal-panel,
+.pos-theme-toggle {
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}

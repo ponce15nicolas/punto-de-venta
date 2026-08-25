@@ -215,6 +215,34 @@ function getPriceLabel(
   );
 }
 
+
+function getCostLabel(
+  product
+) {
+  const tipoVenta =
+    getTipoVenta(
+      product
+    );
+
+  if (
+    tipoVenta ===
+    "precio-libre"
+  ) {
+    return "No aplica";
+  }
+
+  const value =
+    money(
+      toNumber(
+        product?.cost
+      )
+    );
+
+  return tipoVenta === "peso"
+    ? `${value}/kg`
+    : value;
+}
+
 /* =========================================================
    COMPONENTE
 ========================================================= */
@@ -628,7 +656,7 @@ export default function Inventario({
   }
 
   async function handleRestock(
-    amount
+    payload
   ) {
     const product =
       restockModal.product;
@@ -648,7 +676,8 @@ export default function Inventario({
         await Promise.resolve(
           restock(
             product.barcode,
-            amount
+            payload?.amount,
+            payload?.unitCost
           )
         );
 
@@ -1360,6 +1389,16 @@ export default function Inventario({
                             product
                           )}
                         </span>
+
+                        {!precioLibre && (
+                          <span
+                            className="mt-1 block truncate text-[10px] font-extrabold text-black/55"
+                          >
+                            Costo {getCostLabel(
+                              product
+                            )}
+                          </span>
+                        )}
                       </div>
                     </div>
 

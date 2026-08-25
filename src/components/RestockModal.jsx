@@ -112,6 +112,11 @@ export default function RestockModal({
     setAdd,
   ] = useState("1");
 
+  const [
+    unitCost,
+    setUnitCost,
+  ] = useState("0");
+
   /* =========================================================
      TIPO
   ========================================================= */
@@ -143,9 +148,17 @@ export default function RestockModal({
         ? "1"
         : "1"
     );
+
+    setUnitCost(
+      String(
+        product?.cost ??
+        0
+      )
+    );
   }, [
     open,
     ventaPorPeso,
+    product?.cost,
   ]);
 
   if (!product) {
@@ -193,6 +206,18 @@ export default function RestockModal({
           )
       : stockActual;
 
+  const costoUnitario =
+    toNumber(
+      unitCost,
+      NaN
+    );
+
+  const costoValido =
+    Number.isFinite(
+      costoUnitario
+    ) &&
+    costoUnitario >= 0;
+
   /* =========================================================
      CONFIRMAR
   ========================================================= */
@@ -200,14 +225,18 @@ export default function RestockModal({
   function confirmar() {
     if (
       precioLibre ||
-      !cantidadValida
+      !cantidadValida ||
+      !costoValido
     ) {
       return;
     }
 
-    onConfirm(
-      cantidad
-    );
+    onConfirm({
+      amount:
+        cantidad,
+      unitCost:
+        costoUnitario,
+    });
   }
 
   /* =========================================================
@@ -751,6 +780,59 @@ export default function RestockModal({
               )}
             </div>
 
+            <div className="mb-4">
+              <label
+                htmlFor="restock-cost"
+                className="mb-2 block text-xs font-bold text-white/55"
+              >
+                {ventaPorPeso
+                  ? "Costo de compra por kg"
+                  : "Costo de compra por unidad"}
+              </label>
+
+              <div className="relative">
+                <span
+                  className="
+                    pointer-events-none absolute left-4 top-1/2
+                    -translate-y-1/2 text-sm font-black text-[#FFC61A]
+                  "
+                >
+                  $
+                </span>
+
+                <input
+                  id="restock-cost"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  inputMode="decimal"
+                  value={unitCost}
+                  onChange={(event) =>
+                    setUnitCost(
+                      event.target.value
+                    )
+                  }
+                  className="
+                    w-full rounded-2xl border border-white/10
+                    bg-[#171B23] py-3 pl-9 pr-4 text-sm
+                    font-extrabold text-white outline-none transition
+                    focus:border-[#FFC61A] focus:ring-2 focus:ring-[#FFC61A]/10
+                  "
+                  placeholder="0.00"
+                />
+              </div>
+
+              <p className="mt-2 text-[11px] leading-relaxed text-white/30">
+                El sistema recalcula automáticamente el costo promedio del stock existente.
+              </p>
+
+              {!costoValido && unitCost !== "" && (
+                <p className="mt-2 text-xs font-bold text-red-300">
+                  Ingresá un costo igual o mayor a 0.
+                </p>
+              )}
+            </div>
+
             {/* ===============================================
                 PREVISUALIZACIÓN
             =============================================== */}
@@ -842,7 +924,8 @@ export default function RestockModal({
                 confirmar
               }
               disabled={
-                !cantidadValida
+                !cantidadValida ||
+                !costoValido
               }
               className="
                 inline-flex

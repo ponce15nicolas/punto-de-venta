@@ -562,6 +562,10 @@ export default function Caja({
     breakdown.receivableTotals ||
     {};
 
+  const payableTotals =
+    breakdown.payableTotals ||
+    {};
+
   const totalSales =
     roundMoney(
       breakdown.totalSales
@@ -623,6 +627,28 @@ export default function Caja({
       ),
   };
 
+  const safePayableTotals = {
+    efectivo:
+      roundMoney(
+        payableTotals.efectivo
+      ),
+
+    transferencia:
+      roundMoney(
+        payableTotals.transferencia
+      ),
+
+    qr:
+      roundMoney(
+        payableTotals.qr
+      ),
+
+    tarjeta:
+      roundMoney(
+        payableTotals.tarjeta
+      ),
+  };
+
   const safeTotals = {
     efectivo:
       roundMoney(
@@ -657,7 +683,8 @@ export default function Caja({
   const expectedCash =
     roundMoney(
       openAmountNumber +
-        safeTotals.efectivo
+        safeTotals.efectivo -
+        safePayableTotals.efectivo
     );
 
   const countedNum =
@@ -1429,6 +1456,19 @@ export default function Caja({
             </div>
           )}
 
+          {safePayableTotals
+            .efectivo > 0 && (
+            <div className="mb-4">
+              <DarkStat
+                label="Pagos de cuentas por pagar"
+                value={`-${money(
+                  safePayableTotals
+                    .efectivo
+                )}`}
+              />
+            </div>
+          )}
+
           {/* ===============================================
               EFECTIVO ESPERADO
           =============================================== */}
@@ -1514,7 +1554,7 @@ export default function Caja({
                 text-white/35
               "
             >
-              Incluye ventas y cobros de cuentas por cobrar realizados en efectivo. Transferencia, QR y tarjeta no ingresan a la caja física.
+              Incluye ventas y cobros de cuentas por cobrar en efectivo, menos los pagos de cuentas por pagar realizados en efectivo. Transferencia, QR y tarjeta no modifican la caja física.
             </p>
           </div>
 

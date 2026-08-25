@@ -106,6 +106,42 @@ const registrarPagoCuentaPorCobrarFunction =
     "registrarPagoCuentaPorCobrar"
   );
 
+const cargarComprasFunction =
+  httpsCallable(
+    functions,
+    "cargarCompras"
+  );
+
+const crearItemCompraFunction =
+  httpsCallable(
+    functions,
+    "crearItemCompra"
+  );
+
+const marcarItemCompraCompradoFunction =
+  httpsCallable(
+    functions,
+    "marcarItemCompraComprado"
+  );
+
+const crearCuentaPorPagarManualFunction =
+  httpsCallable(
+    functions,
+    "crearCuentaPorPagarManual"
+  );
+
+const registrarPagoCuentaPorPagarFunction =
+  httpsCallable(
+    functions,
+    "registrarPagoCuentaPorPagar"
+  );
+
+const migrarGananciasHistoricasFunction =
+  httpsCallable(
+    functions,
+    "migrarGananciasHistoricas"
+  );
+
 const guardarNombreNegocioFunction =
   httpsCallable(
     functions,
@@ -513,6 +549,17 @@ function normalizeProductForCloud(
           )
         );
 
+  const cost =
+    tipoVenta ===
+    "precio-libre"
+      ? 0
+      : roundMoney(
+          toNumber(
+            product.cost,
+            0
+          )
+        );
+
   let stock = 0;
 
   if (
@@ -558,6 +605,22 @@ function normalizeProductForCloud(
       "precio-libre" &&
     (
       !Number.isFinite(
+        cost
+      ) ||
+      cost < 0
+    )
+  ) {
+    fail(
+      "invalid-cost",
+      "El costo del producto no es válido"
+    );
+  }
+
+  if (
+    tipoVenta !==
+      "precio-libre" &&
+    (
+      !Number.isFinite(
         stock
       ) ||
       stock < 0
@@ -583,6 +646,7 @@ function normalizeProductForCloud(
         : null,
 
     price,
+    cost,
     stock,
 
     expiry:
@@ -636,6 +700,19 @@ function normalizeProductFromCloud(
         : roundMoney(
             toNumber(
               data?.price
+            )
+          ),
+
+    cost:
+      tipoVenta ===
+      "precio-libre"
+        ? 0
+        : roundMoney(
+            Math.max(
+              0,
+              toNumber(
+                data?.cost
+              )
             )
           ),
 
@@ -1937,6 +2014,657 @@ export async function registerReceivablePaymentCloud(
 }
 
 /* =========================================================
+   COMPRAS + CUENTAS POR PAGAR
+========================================================= */
+
+function normalizePurchasingContext(
+  clienteId,
+  {
+    operadorSesion = null,
+    deviceId = null,
+  } = {}
+) {
+  const cleanClienteId =
+    requireString(
+      clienteId,
+      "clienteId"
+    );
+
+  if (
+    !operadorSesion?.id ||
+    !operadorSesion?.token
+  ) {
+    fail(
+      "unauthenticated",
+      "Falta la sesión interna del operador"
+    );
+  }
+
+  const cleanDeviceId =
+    requireString(
+      deviceId,
+      "deviceId"
+    );
+
+  return {
+    cleanClienteId,
+    cleanDeviceId,
+    operadorSesion,
+  };
+}
+
+async function invokePurchasingCallable(
+  callable,
+  data,
+  {
+    code,
+    message,
+  }
+) {
+  try {
+    const response =
+      await callable(data);
+
+    const result =
+      response?.data || {};
+
+    if (!result.ok) {
+      fail(
+        code,
+        message
+      );
+    }
+
+    return result;
+  } catch (error) {
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const firebaseCode =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    const serverMessage =
+      String(
+        error?.details?.mensaje ||
+        error?.details?.message ||
+        error?.message ||
+        ""
+      ).trim();
+
+    const motivo =
+      String(
+        error?.details?.motivo ||
+        ""
+      ).trim();
+
+    if (
+      firebaseCode ===
+      "unauthenticated"
+    ) {
+      fail(
+        "unauthenticated",
+        "Tu sesión dejó de ser válida. Iniciá sesión nuevamente."
+      );
+    }
+
+    if (
+      firebaseCode ===
+      "permission-denied"
+    ) {
+      fail(
+        "permission-denied",
+        serverMessage ||
+        "No tenés permisos para realizar esta operación."
+      );
+    }
+
+    if (
+      firebaseCode ===
+      "failed-precondition" &&
+      motivo === "cash-required"
+    ) {
+      fail(
+        "cash-required",
+        "Abrí una caja antes de registrar el pago."
+      );
+    }
+
+    if (
+      firebaseCode ===
+      "not-found"
+    ) {
+      fail(
+        "not-found",
+        serverMessage ||
+        "El registro ya no existe."
+      );
+    }
+
+    if (
+      firebaseCode ===
+      "invalid-argument" ||
+      firebaseCode ===
+      "failed-precondition"
+    ) {
+      fail(
+        firebaseCode,
+        serverMessage ||
+        message
+      );
+    }
+
+    fail(
+      code,
+      serverMessage ||
+      message
+    );
+  }
+}
+
+export async function loadPurchasingDataCloud(
+  clienteId,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  const result =
+    await invokePurchasingCallable(
+      cargarComprasFunction,
+      {
+        clienteId:
+          context.cleanClienteId,
+        operadorSesion:
+          context.operadorSesion,
+        deviceId:
+          context.cleanDeviceId,
+      },
+      {
+        code:
+          "load-purchasing-failed",
+        message:
+          "No se pudieron cargar las compras",
+      }
+    );
+
+  return {
+    shoppingList:
+      Array.isArray(
+        result.shoppingList
+      )
+        ? result.shoppingList
+        : [],
+
+    accountsPayable:
+      Array.isArray(
+        result.accountsPayable
+      )
+        ? result.accountsPayable
+        : [],
+  };
+}
+
+export async function createShoppingItemCloud(
+  clienteId,
+  item,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  const concepto =
+    requireString(
+      item?.concepto,
+      "concepto"
+    ).slice(0, 180);
+
+  const proveedor =
+    String(
+      item?.proveedor ||
+      ""
+    )
+      .trim()
+      .slice(0, 120);
+
+  const conceptoCosto =
+    String(
+      item?.conceptoCosto ||
+      ""
+    )
+      .trim()
+      .slice(0, 180);
+
+  const cantidad =
+    roundQuantity(
+      Math.max(
+        0.001,
+        toNumber(
+          item?.cantidad,
+          1
+        )
+      )
+    );
+
+  const costoEstimadoRaw =
+    toNumber(
+      item?.costoEstimado,
+      0
+    );
+
+  const costoEstimado =
+    roundMoney(
+      Math.max(
+        0,
+        costoEstimadoRaw
+      )
+    );
+
+  return invokePurchasingCallable(
+    crearItemCompraFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      item: {
+        concepto,
+        proveedor,
+        cantidad,
+        costoEstimado,
+        conceptoCosto,
+        notas:
+          String(
+            item?.notas ||
+            ""
+          )
+            .trim()
+            .slice(0, 1000),
+      },
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "create-shopping-item-failed",
+      message:
+        "No se pudo agregar a la lista de compras",
+    }
+  );
+}
+
+export async function completeShoppingItemCloud(
+  clienteId,
+  compraId,
+  payload,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  const cleanCompraId =
+    requireString(
+      compraId,
+      "compraId"
+    );
+
+  const costoReal =
+    roundMoney(
+      Math.max(
+        0,
+        toNumber(
+          payload?.costoReal,
+          0
+        )
+      )
+    );
+
+  const cantidadStock =
+    payload?.sumarStock
+      ? roundQuantity(
+          toNumber(
+            payload?.cantidadStock,
+            NaN
+          )
+        )
+      : 0;
+
+  if (
+    payload?.sumarStock &&
+    (
+      !Number.isFinite(
+        cantidadStock
+      ) ||
+      cantidadStock <= 0
+    )
+  ) {
+    fail(
+      "invalid-restock",
+      "Ingresá la cantidad que debe ingresar al stock"
+    );
+  }
+
+  const costoUnitario =
+    payload?.sumarStock &&
+    costoReal > 0 &&
+    cantidadStock > 0
+      ? roundMoney(
+          costoReal /
+          cantidadStock
+        )
+      : null;
+
+  return invokePurchasingCallable(
+    marcarItemCompraCompradoFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      compraId:
+        cleanCompraId,
+      compra: {
+        costoReal,
+        conceptoCosto:
+          String(
+            payload?.conceptoCosto ||
+            ""
+          )
+            .trim()
+            .slice(0, 180),
+        sumarStock:
+          Boolean(
+            payload?.sumarStock
+          ),
+        productoBarcode:
+          payload?.sumarStock
+            ? requireString(
+                payload?.productoBarcode,
+                "productoBarcode"
+              )
+            : null,
+        cantidadStock,
+        costoUnitario,
+        generarCuentaPorPagar:
+          Boolean(
+            payload?.generarCuentaPorPagar
+          ),
+        vencimiento:
+          normalizeDateOnly(
+            payload?.vencimiento
+          ),
+      },
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "complete-shopping-item-failed",
+      message:
+        "No se pudo completar la compra",
+    }
+  );
+}
+
+export async function createManualPayableCloud(
+  clienteId,
+  payload,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  const importeOriginal =
+    roundMoney(
+      toNumber(
+        payload?.importeOriginal,
+        NaN
+      )
+    );
+
+  if (
+    !Number.isFinite(
+      importeOriginal
+    ) ||
+    importeOriginal <= 0
+  ) {
+    fail(
+      "invalid-amount",
+      "Ingresá un importe válido"
+    );
+  }
+
+  return invokePurchasingCallable(
+    crearCuentaPorPagarManualFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      cuenta: {
+        proveedorNombre:
+          requireString(
+            payload?.proveedorNombre,
+            "proveedorNombre"
+          ).slice(0, 120),
+        concepto:
+          requireString(
+            payload?.concepto,
+            "concepto"
+          ).slice(0, 180),
+        importeOriginal,
+        fechaOrigen:
+          normalizeDateOnly(
+            payload?.fechaOrigen,
+            { required: true }
+          ),
+        vencimiento:
+          normalizeDateOnly(
+            payload?.vencimiento
+          ),
+        notas:
+          String(
+            payload?.notas ||
+            ""
+          )
+            .trim()
+            .slice(0, 1000),
+      },
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "create-payable-failed",
+      message:
+        "No se pudo registrar la cuenta por pagar",
+    }
+  );
+}
+
+export async function registerPayablePaymentCloud(
+  clienteId,
+  cuentaId,
+  payload,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  const importe =
+    roundMoney(
+      toNumber(
+        payload?.importe,
+        NaN
+      )
+    );
+
+  if (
+    !Number.isFinite(
+      importe
+    ) ||
+    importe <= 0
+  ) {
+    fail(
+      "invalid-amount",
+      "Ingresá un importe válido"
+    );
+  }
+
+  return invokePurchasingCallable(
+    registrarPagoCuentaPorPagarFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      cuentaId:
+        requireString(
+          cuentaId,
+          "cuentaId"
+        ),
+      pago: {
+        importe,
+        metodoPago:
+          normalizePaymentMethod(
+            payload?.metodoPago
+          ),
+      },
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "register-payable-payment-failed",
+      message:
+        "No se pudo registrar el pago",
+    }
+  );
+}
+
+/* =========================================================
+   GANANCIAS HISTÓRICAS
+========================================================= */
+
+export async function migrateHistoricalProfitsCloud(
+  clienteId,
+  rules,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  if (!Array.isArray(rules)) {
+    fail(
+      "invalid-argument",
+      "La configuración de costos históricos es inválida"
+    );
+  }
+
+  const normalizedRules =
+    rules.map((rule) => ({
+      productKey:
+        requireString(
+          rule?.productKey,
+          "productKey"
+        ).slice(0, 220),
+
+      productName:
+        String(
+          rule?.productName ||
+          rule?.productKey ||
+          "Producto"
+        )
+          .trim()
+          .slice(0, 180),
+
+      source:
+        rule?.source ===
+        "estimated"
+          ? "estimated"
+          : "migrated",
+
+      periods:
+        (Array.isArray(
+          rule?.periods
+        )
+          ? rule.periods
+          : []
+        ).map((period) => ({
+          fromMs:
+            period?.fromMs === null ||
+            period?.fromMs === undefined
+              ? null
+              : Number(
+                  period.fromMs
+                ),
+
+          toMs:
+            period?.toMs === null ||
+            period?.toMs === undefined
+              ? null
+              : Number(
+                  period.toMs
+                ),
+
+          cost:
+            roundMoney(
+              toNumber(
+                period?.cost,
+                NaN
+              )
+            ),
+        })),
+    }));
+
+  return invokePurchasingCallable(
+    migrarGananciasHistoricasFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      rules:
+        normalizedRules,
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "historical-profit-migration-failed",
+      message:
+        "No se pudieron completar las ganancias históricas",
+    }
+  );
+}
+
+/* =========================================================
    CONFIGURACIÓN
 ========================================================= */
 
@@ -2533,6 +3261,7 @@ export async function restockProductCloud(
   {
     operadorSesion = null,
     deviceId = null,
+    unitCost = null,
   } = {}
 ) {
   const cleanClienteId =
@@ -2569,6 +3298,33 @@ export async function restockProductCloud(
       NaN
     );
 
+  const normalizedUnitCost =
+    unitCost === null ||
+    unitCost === undefined ||
+    unitCost === ""
+      ? null
+      : roundMoney(
+          toNumber(
+            unitCost,
+            NaN
+          )
+        );
+
+  if (
+    normalizedUnitCost !== null &&
+    (
+      !Number.isFinite(
+        normalizedUnitCost
+      ) ||
+      normalizedUnitCost < 0
+    )
+  ) {
+    fail(
+      "invalid-cost",
+      "Ingresá un costo unitario válido"
+    );
+  }
+
   if (
     !Number.isFinite(
       amount
@@ -2593,6 +3349,9 @@ export async function restockProductCloud(
         add:
           amount,
 
+        costoUnitario:
+          normalizedUnitCost,
+
         operadorSesion,
 
         deviceId:
@@ -2616,9 +3375,19 @@ export async function restockProductCloud(
       );
     }
 
-    return Number(
-      data.stockNuevo
-    );
+    return {
+      stockNuevo:
+        Number(
+          data.stockNuevo
+        ),
+
+      costoNuevo:
+        roundMoney(
+          toNumber(
+            data.costoNuevo
+          )
+        ),
+    };
   } catch (error) {
     if (
       error instanceof

@@ -9,6 +9,8 @@ const TABS = [
   { id: "vender", label: "Vender", icon: ReceiptIcon },
   { id: "inventario", label: "Stock", icon: BoxIcon },
   { id: "caja", label: "Caja", icon: WalletIcon },
+  { id: "compras", label: "Compras", icon: PurchaseIcon },
+  { id: "ganancias", label: "Ganancias", icon: ProfitIcon },
   { id: "historial", label: "Historial", icon: ChartIcon },
   { id: "actividad", label: "Actividad", icon: ActivityIcon },
 ];
@@ -17,6 +19,7 @@ export default function BottomNav({ tab, setTab }) {
   return (
     <nav
       className="
+        pos-bottom-nav
         fixed bottom-0 left-0 right-0 z-30
         border-t border-white/10
         bg-[#0B0D12]/95 backdrop-blur-xl
@@ -64,7 +67,7 @@ export default function BottomNav({ tab, setTab }) {
                 className={
                   `
                     grid h-8 w-8 place-items-center rounded-xl
-                    transition-all duration-200 sm:h-10 sm:w-10
+                    transition-all duration-200 sm:h-9 sm:w-9
                   ` +
                   (activo
                     ? " bg-[#FFC61A] text-black shadow-[0_8px_24px_rgba(255,198,26,0.18)]"
@@ -77,9 +80,9 @@ export default function BottomNav({ tab, setTab }) {
               <span
                 className={
                   `
-                    max-w-full truncate text-[8px] font-extrabold
-                    uppercase tracking-[0.04em] transition-colors
-                    min-[390px]:text-[9px] sm:text-[10px]
+                    max-w-full truncate text-[7px] font-extrabold
+                    uppercase tracking-[0.025em] transition-colors
+                    min-[360px]:text-[8px] min-[430px]:text-[9px] sm:text-[10px]
                     sm:tracking-[0.07em]
                   ` +
                   (activo
@@ -127,6 +130,29 @@ function WalletIcon({ className = "" }) {
       <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6.5Z" />
       <path d="M4 8h16" />
       <path d="M16 13h4v3h-4a1.5 1.5 0 0 1 0-3Z" />
+    </svg>
+  );
+}
+
+function PurchaseIcon({ className = "" }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="9" cy="20" r="1" />
+      <circle cx="18" cy="20" r="1" />
+      <path d="M3 4h2l2.5 11h10.5l2-7H7" />
+    </svg>
+  );
+}
+
+function ProfitIcon({ className = "" }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 19V5" />
+      <path d="M4 19h16" />
+      <path d="m7 15 4-4 3 2 5-6" />
+      <path d="M16 7h3v3" />
     </svg>
   );
 }

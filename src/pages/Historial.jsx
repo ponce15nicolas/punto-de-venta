@@ -66,6 +66,10 @@ const AUDIT_ACTION_META = {
     title: "Venta realizada",
     category: "Ventas",
   },
+  "migracion-ganancias-historicas": {
+    title: "Ganancias históricas completadas",
+    category: "Ganancias",
+  },
   "reposicion-stock": {
     title: "Reposición de stock",
     category: "Inventario",
@@ -93,6 +97,38 @@ const AUDIT_ACTION_META = {
   "cuenta-por-cobrar-saldada": {
     title: "Cuenta saldada",
     category: "Cuentas por cobrar",
+  },
+  "alta-item-compra": {
+    title: "Ítem agregado a compras",
+    category: "Compras",
+  },
+  "compra-completada": {
+    title: "Compra registrada",
+    category: "Compras",
+  },
+  "alta-cuenta-por-pagar": {
+    title: "Cuenta por pagar creada",
+    category: "Cuentas por pagar",
+  },
+  "pago-cuenta-por-pagar": {
+    title: "Pago de cuenta por pagar",
+    category: "Cuentas por pagar",
+  },
+  "cuenta-por-pagar-saldada": {
+    title: "Cuenta por pagar saldada",
+    category: "Cuentas por pagar",
+  },
+  "cambio-nombre-negocio": {
+    title: "Nombre del negocio actualizado",
+    category: "Configuración",
+  },
+  "migracion-pos-legacy": {
+    title: "Migración del POS completada",
+    category: "Sistema",
+  },
+  "eliminacion-cierre-historico": {
+    title: "Eliminación de cierre",
+    category: "Historial",
   },
   "cierre-caja": {
     title: "Cierre de caja",
@@ -214,6 +250,175 @@ function getSaleItemCount(sale) {
    * no representan 0,65 productos.
    */
   return sale.items.length;
+}
+
+function getItemCostSnapshot(item) {
+  const storedSubtotal = Number(
+    item?.costSubtotal
+  );
+
+  if (Number.isFinite(storedSubtotal)) {
+    return {
+      known: true,
+      value: roundMoney(
+        Math.max(0, storedSubtotal)
+      ),
+    };
+  }
+
+  const storedCost = Number(
+    item?.cost
+  );
+
+  if (Number.isFinite(storedCost)) {
+    return {
+      known: true,
+      value: roundMoney(
+        Math.max(0, storedCost) *
+          Math.max(0, toNumber(item?.qty))
+      ),
+    };
+  }
+
+  return {
+    known: false,
+    value: 0,
+  };
+}
+
+function getSaleProfitSnapshot(sale) {
+  const total = roundMoney(
+    sale?.total
+  );
+
+  const storedCost = Number(
+    sale?.totalCost
+  );
+
+  if (Number.isFinite(storedCost)) {
+    const cost = roundMoney(
+      Math.max(0, storedCost)
+    );
+
+    return {
+      known: true,
+      total,
+      cost,
+      profit: roundMoney(
+        total - cost
+      ),
+    };
+  }
+
+  const storedProfit = Number(
+    sale?.grossProfit
+  );
+
+  if (Number.isFinite(storedProfit)) {
+    const profit = roundMoney(
+      storedProfit
+    );
+
+    return {
+      known: true,
+      total,
+      cost: roundMoney(
+        total - profit
+      ),
+      profit,
+    };
+  }
+
+  const items = Array.isArray(
+    sale?.items
+  )
+    ? sale.items
+    : [];
+
+  if (items.length === 0) {
+    return {
+      known: false,
+      total,
+      cost: 0,
+      profit: 0,
+    };
+  }
+
+  let cost = 0;
+
+  for (const item of items) {
+    const snapshot =
+      getItemCostSnapshot(item);
+
+    if (!snapshot.known) {
+      return {
+        known: false,
+        total,
+        cost: 0,
+        profit: 0,
+      };
+    }
+
+    cost += snapshot.value;
+  }
+
+  cost = roundMoney(cost);
+
+  return {
+    known: true,
+    total,
+    cost,
+    profit: roundMoney(
+      total - cost
+    ),
+  };
+}
+
+function getSalesProfitSummary(sales) {
+  const safeSales = Array.isArray(
+    sales
+  )
+    ? sales
+    : [];
+
+  let cost = 0;
+  let profit = 0;
+  let knownRevenue = 0;
+  let unknownSales = 0;
+
+  for (const sale of safeSales) {
+    const snapshot =
+      getSaleProfitSnapshot(sale);
+
+    if (!snapshot.known) {
+      unknownSales += 1;
+      continue;
+    }
+
+    cost += snapshot.cost;
+    profit += snapshot.profit;
+    knownRevenue += snapshot.total;
+  }
+
+  cost = roundMoney(cost);
+  profit = roundMoney(profit);
+  knownRevenue = roundMoney(
+    knownRevenue
+  );
+
+  return {
+    cost,
+    profit,
+    knownRevenue,
+    unknownSales,
+    knownSales:
+      safeSales.length -
+      unknownSales,
+    margin:
+      knownRevenue > 0
+        ? (profit / knownRevenue) * 100
+        : 0,
+  };
 }
 
 function normalizePaymentMethod(
@@ -338,6 +543,45 @@ function formatAuditPaymentMethod(value) {
     "Sin especificar";
 }
 
+function formatAuditMargin(total, profit) {
+  const totalNumber = Number(total);
+  const profitNumber = Number(profit);
+
+  if (
+    !Number.isFinite(totalNumber) ||
+    !Number.isFinite(profitNumber) ||
+    totalNumber <= 0
+  ) {
+    return "0%";
+  }
+
+  return `${(
+    (profitNumber / totalNumber) * 100
+  ).toLocaleString(
+    "es-AR",
+    {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 1,
+    }
+  )}%`;
+}
+
+function formatAuditDetailLabel(value) {
+  const text = String(value || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[-_]+/g, " ")
+    .trim();
+
+  if (!text) {
+    return "Detalle";
+  }
+
+  return (
+    text.charAt(0).toUpperCase() +
+    text.slice(1)
+  );
+}
+
 function getAuditDetailRows(event) {
   const detail =
     event?.detalle || {};
@@ -365,6 +609,36 @@ function getAuditDetailRows(event) {
           "Total",
           money(detail.total),
         ],
+        ...(Number.isFinite(
+          Number(
+            detail.costoMercaderia
+          )
+        )
+          ? [[
+              "Costo mercadería",
+              money(
+                detail.costoMercaderia
+              ),
+            ]]
+          : []),
+        ...(Number.isFinite(
+          Number(
+            detail.gananciaBruta
+          )
+        )
+          ? [[
+              "Ganancia bruta",
+              money(
+                detail.gananciaBruta
+              ),
+            ], [
+              "Margen bruto",
+              formatAuditMargin(
+                detail.total,
+                detail.gananciaBruta
+              ),
+            ]]
+          : []),
         [
           "Medio de pago",
           formatAuditPaymentMethod(
@@ -383,6 +657,92 @@ function getAuditDetailRows(event) {
               )
             )
           ),
+        ],
+      ];
+
+    case "migracion-ganancias-historicas":
+      return [
+        [
+          "Ventas actualizadas",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.ventasActualizadas
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Líneas actualizadas",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.lineasActualizadas
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Costos históricos",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.lineasMigradas
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Costos estimados",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.lineasEstimadas
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Costo incorporado",
+          money(
+            detail.costoHistoricoAgregado
+          ),
+        ],
+        [
+          "Pendientes",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.ventasPendientes
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Resultado",
+          detail.resultado === "completo"
+            ? "Completo"
+            : detail.resultado === "parcial"
+              ? "Parcial"
+              : String(
+                  detail.resultado ||
+                  "—"
+                ),
         ],
       ];
 
@@ -457,6 +817,24 @@ function getAuditDetailRows(event) {
       }
 
       if (
+        roundMoney(
+          detail.costoAnterior
+        ) !==
+        roundMoney(
+          detail.costoNuevo
+        )
+      ) {
+        rows.push([
+          "Costo mercadería",
+          `${money(
+            detail.costoAnterior
+          )} → ${money(
+            detail.costoNuevo
+          )}`,
+        ]);
+      }
+
+      if (
         roundQuantity(
           detail.stockAnterior
         ) !==
@@ -526,6 +904,15 @@ function getAuditDetailRows(event) {
             ? "Importe libre"
             : money(detail.precio),
         ],
+        ...(tipoVenta !== "precio-libre" &&
+        Number.isFinite(
+          Number(detail.costo)
+        )
+          ? [[
+              "Costo mercadería",
+              money(detail.costo),
+            ]]
+          : []),
         [
           "Stock",
           tipoVenta ===
@@ -617,6 +1004,248 @@ function getAuditDetailRows(event) {
         ],
       ];
 
+    case "alta-item-compra":
+      return [
+        [
+          "Concepto",
+          detail.concepto || "Compra",
+        ],
+        [
+          "Proveedor",
+          detail.proveedor || "Sin proveedor",
+        ],
+        [
+          "Cantidad",
+          String(
+            Math.max(
+              0,
+              toNumber(
+                detail.cantidad
+              )
+            )
+          ),
+        ],
+        [
+          "Costo estimado",
+          money(
+            detail.costoEstimado
+          ),
+        ],
+        ...(detail.conceptoCosto
+          ? [[
+              "Concepto del costo",
+              String(
+                detail.conceptoCosto
+              ),
+            ]]
+          : []),
+      ];
+
+    case "compra-completada":
+      return [
+        [
+          "Concepto",
+          detail.concepto || "Compra",
+        ],
+        [
+          "Proveedor",
+          detail.proveedor || "Sin proveedor",
+        ],
+        [
+          "Costo real",
+          money(detail.costoReal),
+        ],
+        ...(detail.productoBarcode
+          ? [[
+              "Producto",
+              String(
+                detail.productoBarcode
+              ),
+            ]]
+          : []),
+        ...(Number.isFinite(
+          Number(
+            detail.cantidadStock
+          )
+        )
+          ? [[
+              "Stock ingresado",
+              formatQuantity(
+                detail.cantidadStock
+              ),
+            ]]
+          : []),
+        ...(detail.cuentaPorPagarId
+          ? [[
+              "Cuenta por pagar",
+              String(
+                detail.cuentaPorPagarId
+              ),
+            ]]
+          : []),
+      ];
+
+    case "alta-cuenta-por-pagar":
+      return [
+        [
+          "Proveedor / persona",
+          detail.proveedorNombre ||
+            "Sin especificar",
+        ],
+        [
+          "Importe",
+          money(
+            detail.importeOriginal
+          ),
+        ],
+        [
+          "Concepto",
+          detail.concepto || "—",
+        ],
+        [
+          "Origen",
+          detail.origen === "compra"
+            ? "Compra"
+            : "Alta manual",
+        ],
+        ...(detail.compraId
+          ? [[
+              "Compra",
+              `#${detail.compraId}`,
+            ]]
+          : []),
+      ];
+
+    case "pago-cuenta-por-pagar":
+      return [
+        [
+          "Proveedor / persona",
+          detail.proveedorNombre ||
+            "Sin especificar",
+        ],
+        [
+          "Importe",
+          money(detail.importe),
+        ],
+        [
+          "Medio de pago",
+          formatAuditPaymentMethod(
+            detail.metodoPago
+          ),
+        ],
+        [
+          "Saldo",
+          `${money(
+            detail.saldoAnterior
+          )} → ${money(
+            detail.saldoRestante
+          )}`,
+        ],
+        ...(detail.concepto
+          ? [[
+              "Concepto",
+              String(detail.concepto),
+            ]]
+          : []),
+      ];
+
+    case "cuenta-por-pagar-saldada":
+      return [
+        [
+          "Proveedor / persona",
+          detail.proveedorNombre ||
+            "Sin especificar",
+        ],
+        [
+          "Importe original",
+          money(
+            detail.importeOriginal
+          ),
+        ],
+        [
+          "Total pagado",
+          money(
+            detail.totalPagado
+          ),
+        ],
+      ];
+
+    case "cambio-nombre-negocio":
+      return [
+        [
+          "Nombre anterior",
+          detail.nombreAnterior || "—",
+        ],
+        [
+          "Nombre nuevo",
+          detail.nombreNuevo || "—",
+        ],
+      ];
+
+    case "migracion-pos-legacy":
+      return [
+        [
+          "Productos migrados",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.productosMigrados
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Ventas migradas",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.ventasMigradas
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Cajas migradas",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.cajasMigradas
+                )
+              )
+            )
+          ),
+        ],
+      ];
+
+    case "eliminacion-cierre-historico":
+      return [
+        [
+          "Caja eliminada",
+          detail.cajaId || "—",
+        ],
+        [
+          "Ventas eliminadas",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  detail.ventasEliminadas
+                )
+              )
+            )
+          ),
+        ],
+      ];
+
     case "cierre-caja":
       return [
         [
@@ -672,7 +1301,9 @@ function getAuditDetailRows(event) {
         .slice(0, 8)
         .map(
           ([key, value]) => [
-            key,
+            formatAuditDetailLabel(
+              key
+            ),
             String(value),
           ]
         );
@@ -1877,6 +2508,11 @@ function SessionDetail({
       0
     );
 
+  const profitability =
+    getSalesProfitSummary(
+      sales
+    );
+
   return (
     <div>
       {/* =====================================================
@@ -2007,6 +2643,29 @@ function SessionDetail({
           }
         />
 
+        {profitability.knownSales > 0 && (
+          <>
+            <DarkStat
+              label="Costo mercadería"
+              value={money(
+                profitability.cost
+              )}
+            />
+
+            <DarkStat
+              label={
+                profitability.unknownSales > 0
+                  ? "Ganancia calculada"
+                  : "Ganancia bruta"
+              }
+              value={money(
+                profitability.profit
+              )}
+              highlight
+            />
+          </>
+        )}
+
         <DarkStat
           label="Esperado"
           value={money(
@@ -2035,6 +2694,18 @@ function SessionDetail({
           }
         />
       </div>
+
+      {profitability.unknownSales > 0 && (
+        <p
+          className="
+            mt-2 rounded-xl border border-amber-300/15
+            bg-amber-300/[0.06] px-3 py-2.5
+            text-[10px] leading-relaxed text-amber-100/50
+          "
+        >
+          {profitability.unknownSales} {profitability.unknownSales === 1 ? "venta" : "ventas"} de este turno no tiene costo histórico; la ganancia mostrada es parcial.
+        </p>
+      )}
 
       {/* =====================================================
           RESULTADO
@@ -3267,6 +3938,11 @@ function SaleDetailCard({
       sale?.total
     );
 
+  const profitability =
+    getSaleProfitSnapshot(
+      sale
+    );
+
   return (
     <motion.div
       initial={{
@@ -3407,6 +4083,38 @@ function SaleDetailCard({
           )
         )}
       </div>
+
+      {profitability.known && (
+        <div
+          className="
+            grid grid-cols-3 gap-2 border-t
+            border-white/[0.07] px-3.5 py-3
+          "
+        >
+          <PaymentMiniStat
+            label="Costo"
+            value={money(
+              profitability.cost
+            )}
+          />
+
+          <PaymentMiniStat
+            label="Ganancia"
+            value={money(
+              profitability.profit
+            )}
+            highlight
+          />
+
+          <PaymentMiniStat
+            label="Margen"
+            value={formatAuditMargin(
+              profitability.total,
+              profitability.profit
+            )}
+          />
+        </div>
+      )}
 
       {/* PAGO */}
 

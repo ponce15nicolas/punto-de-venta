@@ -29,6 +29,8 @@ export const POS_COLLECTIONS = Object.freeze({
   VENTAS: "ventas",
   CAJAS: "cajas",
   CUENTAS_POR_COBRAR: "cuentasPorCobrar",
+  CUENTAS_POR_PAGAR: "cuentasPorPagar",
+  LISTA_COMPRAS: "listaCompras",
   AUDITORIA: "auditoria",
   CONFIGURACION: "configuracion",
 });
@@ -228,6 +230,68 @@ export function cuentaPorCobrarPath(
 
   return [
     ...cuentasPorCobrarPath(
+      clienteId
+    ),
+    id,
+  ];
+}
+
+/* =========================================================
+   CUENTAS POR PAGAR
+========================================================= */
+
+export function cuentasPorPagarPath(
+  clienteId
+) {
+  return [
+    ...clientePath(clienteId),
+    POS_COLLECTIONS.CUENTAS_POR_PAGAR,
+  ];
+}
+
+export function cuentaPorPagarPath(
+  clienteId,
+  cuentaId
+) {
+  const id =
+    requireSegment(
+      cuentaId,
+      "cuentaId"
+    );
+
+  return [
+    ...cuentasPorPagarPath(
+      clienteId
+    ),
+    id,
+  ];
+}
+
+/* =========================================================
+   LISTA DE COMPRAS
+========================================================= */
+
+export function listaComprasPath(
+  clienteId
+) {
+  return [
+    ...clientePath(clienteId),
+    POS_COLLECTIONS.LISTA_COMPRAS,
+  ];
+}
+
+export function itemCompraPath(
+  clienteId,
+  compraId
+) {
+  const id =
+    requireSegment(
+      compraId,
+      "compraId"
+    );
+
+  return [
+    ...listaComprasPath(
       clienteId
     ),
     id,

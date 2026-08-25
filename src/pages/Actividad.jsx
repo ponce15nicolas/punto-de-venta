@@ -17,9 +17,15 @@ const ACTIONS = [
   { id: "apertura-caja", label: "Aperturas" },
   { id: "cierre-caja", label: "Cierres" },
   { id: "venta-realizada", label: "Ventas" },
+  { id: "migracion-ganancias-historicas", label: "Ganancias hist." },
   { id: "alta-cuenta-por-cobrar", label: "Deudas" },
   { id: "cobro-cuenta-por-cobrar", label: "Cobros" },
   { id: "cuenta-por-cobrar-saldada", label: "Saldadas" },
+  { id: "alta-item-compra", label: "Lista compras" },
+  { id: "compra-completada", label: "Compradas" },
+  { id: "alta-cuenta-por-pagar", label: "Ctas. pagar" },
+  { id: "pago-cuenta-por-pagar", label: "Pagos deuda" },
+  { id: "cuenta-por-pagar-saldada", label: "Deudas pagas" },
   { id: "reposicion-stock", label: "Stock" },
   { id: "edicion-producto", label: "Ediciones" },
   { id: "alta-producto", label: "Altas" },
@@ -53,6 +59,11 @@ const ACTION_META = {
     eyebrow: "Ventas",
     icon: SaleIcon,
   },
+  "migracion-ganancias-historicas": {
+    title: "Ganancias históricas completadas",
+    eyebrow: "Ganancias",
+    icon: MigrationIcon,
+  },
   "alta-cuenta-por-cobrar": {
     title: "Cuenta por cobrar creada",
     eyebrow: "Cuentas por cobrar",
@@ -66,6 +77,31 @@ const ACTION_META = {
   "cuenta-por-cobrar-saldada": {
     title: "Cuenta saldada",
     eyebrow: "Cuentas por cobrar",
+    icon: CheckCircleIcon,
+  },
+  "alta-item-compra": {
+    title: "Ítem agregado a compras",
+    eyebrow: "Compras",
+    icon: PurchaseIcon,
+  },
+  "compra-completada": {
+    title: "Compra registrada",
+    eyebrow: "Compras",
+    icon: PurchaseIcon,
+  },
+  "alta-cuenta-por-pagar": {
+    title: "Cuenta por pagar creada",
+    eyebrow: "Cuentas por pagar",
+    icon: WalletIcon,
+  },
+  "pago-cuenta-por-pagar": {
+    title: "Pago de cuenta por pagar",
+    eyebrow: "Cuentas por pagar",
+    icon: WalletIcon,
+  },
+  "cuenta-por-pagar-saldada": {
+    title: "Cuenta por pagar saldada",
+    eyebrow: "Cuentas por pagar",
     icon: CheckCircleIcon,
   },
   "reposicion-stock": {
@@ -537,8 +573,27 @@ function getEventDetails(event) {
           value: d.ventaId,
         },
         {
-          label: "Total",
+          label: "Total vendido",
           value: formatMoney(d.total),
+        },
+        {
+          label: "Costo mercadería",
+          value: formatMoney(
+            d.costoMercaderia
+          ),
+        },
+        {
+          label: "Ganancia bruta",
+          value: formatMoney(
+            d.gananciaBruta
+          ),
+        },
+        {
+          label: "Margen bruto",
+          value: formatMargin(
+            d.total,
+            d.gananciaBruta
+          ),
         },
         {
           label: "Medio de pago",
@@ -549,6 +604,61 @@ function getEventDetails(event) {
         {
           label: "Ítems",
           value: finiteString(d.cantidadItems),
+        },
+      ]);
+
+    case "migracion-ganancias-historicas":
+      return compactDetails([
+        {
+          label: "Ventas actualizadas",
+          value: finiteString(
+            d.ventasActualizadas
+          ),
+        },
+        {
+          label: "Líneas actualizadas",
+          value: finiteString(
+            d.lineasActualizadas
+          ),
+        },
+        {
+          label: "Costos históricos",
+          value: finiteString(
+            d.lineasMigradas
+          ),
+        },
+        {
+          label: "Costos estimados",
+          value: finiteString(
+            d.lineasEstimadas
+          ),
+        },
+        {
+          label: "Productos configurados",
+          value: finiteString(
+            d.productosConfigurados
+          ),
+        },
+        {
+          label: "Costo incorporado",
+          value: formatMoney(
+            d.costoHistoricoAgregado
+          ),
+        },
+        {
+          label: "Pendientes",
+          value: finiteString(
+            d.ventasPendientes
+          ),
+        },
+        {
+          label: "Resultado",
+          value:
+            d.resultado === "completo"
+              ? "Completo"
+              : d.resultado === "parcial"
+                ? "Parcial"
+                : d.resultado,
         },
       ]);
 
@@ -592,6 +702,13 @@ function getEventDetails(event) {
                 `${formatMoney(d.precioAnterior)} → ${formatMoney(d.precioNuevo)}`,
             }]
           : []),
+        ...(different(d.costoAnterior, d.costoNuevo)
+          ? [{
+              label: "Costo mercadería",
+              value:
+                `${formatMoney(d.costoAnterior)} → ${formatMoney(d.costoNuevo)}`,
+            }]
+          : []),
         ...(different(d.stockAnterior, d.stockNuevo)
           ? [{
               label: "Stock",
@@ -630,6 +747,13 @@ function getEventDetails(event) {
               : formatMoney(d.precio),
         },
         {
+          label: "Costo mercadería",
+          value:
+            d.tipoVenta === "precio-libre"
+              ? null
+              : formatMoney(d.costo),
+        },
+        {
           label: "Stock inicial",
           value:
             d.tipoVenta === "precio-libre"
@@ -652,6 +776,13 @@ function getEventDetails(event) {
         {
           label: "Código",
           value: d.barcode,
+        },
+        {
+          label: "Costo mercadería",
+          value:
+            d.tipoVenta === "precio-libre"
+              ? null
+              : formatMoney(d.costo),
         },
         {
           label: "Stock al eliminar",
@@ -751,6 +882,156 @@ function getEventDetails(event) {
         },
       ]);
 
+    case "alta-item-compra":
+      return compactDetails([
+        {
+          label: "Concepto",
+          value: d.concepto,
+        },
+        {
+          label: "Proveedor",
+          value: d.proveedor,
+        },
+        {
+          label: "Cantidad",
+          value: finiteString(d.cantidad),
+        },
+        {
+          label: "Costo estimado",
+          value: formatMoney(
+            d.costoEstimado
+          ),
+        },
+        {
+          label: "Concepto del costo",
+          value: d.conceptoCosto,
+        },
+      ]);
+
+    case "compra-completada":
+      return compactDetails([
+        {
+          label: "Concepto",
+          value: d.concepto,
+        },
+        {
+          label: "Proveedor",
+          value: d.proveedor,
+        },
+        {
+          label: "Costo real",
+          value: formatMoney(
+            d.costoReal
+          ),
+        },
+        {
+          label: "Producto",
+          value: d.productoBarcode,
+        },
+        {
+          label: "Stock ingresado",
+          value: formatNumber(
+            d.cantidadStock
+          ),
+        },
+        {
+          label: "Costo producto",
+          value: formatMoney(
+            d.costoNuevo
+          ),
+        },
+        {
+          label: "Cuenta por pagar",
+          value: d.cuentaPorPagarId,
+        },
+      ]);
+
+    case "alta-cuenta-por-pagar":
+      return compactDetails([
+        {
+          label: "Proveedor / persona",
+          value: d.proveedorNombre,
+        },
+        {
+          label: "Importe",
+          value: formatMoney(
+            d.importeOriginal
+          ),
+        },
+        {
+          label: "Concepto",
+          value: d.concepto,
+        },
+        {
+          label: "Origen",
+          value:
+            d.origen === "compra"
+              ? "Compra"
+              : "Alta manual",
+        },
+        {
+          label: "Compra",
+          value: d.compraId,
+        },
+        {
+          label: "Vencimiento",
+          value: formatDateOnly(
+            d.vencimiento
+          ),
+        },
+      ]);
+
+    case "pago-cuenta-por-pagar":
+      return compactDetails([
+        {
+          label: "Proveedor / persona",
+          value: d.proveedorNombre,
+        },
+        {
+          label: "Importe pagado",
+          value: formatMoney(
+            d.importe
+          ),
+        },
+        {
+          label: "Medio de pago",
+          value: formatPaymentMethod(
+            d.metodoPago
+          ),
+        },
+        {
+          label: "Saldo",
+          value: formatMoneyTransition(
+            d.saldoAnterior,
+            d.saldoRestante
+          ),
+        },
+        {
+          label: "Concepto",
+          value: d.concepto,
+        },
+      ]);
+
+    case "cuenta-por-pagar-saldada":
+      return compactDetails([
+        {
+          label: "Proveedor / persona",
+          value: d.proveedorNombre,
+        },
+        {
+          label: "Importe original",
+          value: formatMoney(
+            d.importeOriginal
+          ),
+        },
+        {
+          label: "Total pagado",
+          value: formatMoney(
+            d.totalPagado
+          ),
+        },
+      ]);
+
     case "cambio-nombre-negocio":
       return compactDetails([
         {
@@ -807,7 +1088,20 @@ function getEventDetails(event) {
       ]);
 
     default:
-      return [];
+      return compactDetails(
+        Object.entries(d)
+          .filter(
+            ([, value]) =>
+              value !== null &&
+              value !== undefined &&
+              typeof value !== "object"
+          )
+          .slice(0, 8)
+          .map(([key, value]) => ({
+            label: humanizeDetailLabel(key),
+            value: String(value),
+          }))
+      );
   }
 }
 
@@ -853,6 +1147,46 @@ function formatActionName(value) {
     action.charAt(0).toUpperCase() +
     action.slice(1)
   );
+}
+
+function humanizeDetailLabel(value) {
+  const text = String(value || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[-_]+/g, " ")
+    .trim();
+
+  if (!text) {
+    return "Detalle";
+  }
+
+  return (
+    text.charAt(0).toUpperCase() +
+    text.slice(1)
+  );
+}
+
+function formatMargin(total, profit) {
+  const totalNumber = Number(total);
+  const profitNumber = Number(profit);
+
+  if (
+    !Number.isFinite(totalNumber) ||
+    !Number.isFinite(profitNumber) ||
+    totalNumber <= 0
+  ) {
+    return null;
+  }
+
+  const margin =
+    (profitNumber / totalNumber) * 100;
+
+  return `${margin.toLocaleString(
+    "es-AR",
+    {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 1,
+    }
+  )}%`;
 }
 
 function formatPaymentMethod(value) {
@@ -1137,6 +1471,17 @@ function EditIcon({ className = "" }) {
       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 20h9" />
       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function PurchaseIcon({ className = "" }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="9" cy="20" r="1" />
+      <circle cx="18" cy="20" r="1" />
+      <path d="M3 4h2l2.5 11h10.5l2-7H7" />
     </svg>
   );
 }

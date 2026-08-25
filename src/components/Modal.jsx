@@ -151,6 +151,7 @@ export default function Modal({
       {open && (
         <motion.div
           className="
+            pos-modal-overlay
             fixed
             inset-0
             z-[9999]
@@ -186,6 +187,7 @@ export default function Modal({
         >
           <motion.div
             className="
+              pos-modal-panel
               relative
               flex
               max-h-[calc(100dvh-12px)]

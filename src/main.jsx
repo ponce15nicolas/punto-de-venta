@@ -8,6 +8,42 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.jsx";
 
+const THEME_STORAGE_KEY = "pos-theme";
+
+function getInitialTheme() {
+  try {
+    const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+
+    if (saved === "light" || saved === "dark") {
+      return saved;
+    }
+  } catch {
+    // Continuamos con la preferencia del sistema.
+  }
+
+  return window.matchMedia?.("(prefers-color-scheme: light)").matches
+    ? "light"
+    : "dark";
+}
+
+function applyInitialTheme() {
+  const theme = getInitialTheme();
+
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+
+  const themeColor = document.querySelector('meta[name="theme-color"]');
+
+  if (themeColor) {
+    themeColor.setAttribute(
+      "content",
+      theme === "light" ? "#F4F1E8" : "#0B0D12"
+    );
+  }
+}
+
+applyInitialTheme();
+
 const rootElement = document.getElementById("root");
 
 if (!rootElement) {

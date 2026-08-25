@@ -1934,6 +1934,30 @@ const AUDIT_ACTION_META = {
     title: "Venta realizada",
     category: "Ventas",
   },
+  "migracion-ganancias-historicas": {
+    title: "Ganancias históricas completadas",
+    category: "Ganancias",
+  },
+  "alta-item-compra": {
+    title: "Ítem agregado a compras",
+    category: "Compras",
+  },
+  "compra-completada": {
+    title: "Compra registrada",
+    category: "Compras",
+  },
+  "alta-cuenta-por-pagar": {
+    title: "Cuenta por pagar creada",
+    category: "Cuentas por pagar",
+  },
+  "pago-cuenta-por-pagar": {
+    title: "Pago de cuenta por pagar",
+    category: "Cuentas por pagar",
+  },
+  "cuenta-por-pagar-saldada": {
+    title: "Cuenta por pagar saldada",
+    category: "Cuentas por pagar",
+  },
   "reposicion-stock": {
     title: "Reposición de stock",
     category: "Inventario",
@@ -2068,6 +2092,30 @@ function getAuditPdfDetailRows(event) {
           "Total",
           money(detail.total),
         ],
+        ...(Number.isFinite(
+          Number(
+            detail.costoMercaderia
+          )
+        )
+          ? [[
+              "Costo mercadería",
+              money(
+                detail.costoMercaderia
+              ),
+            ]]
+          : []),
+        ...(Number.isFinite(
+          Number(
+            detail.gananciaBruta
+          )
+        )
+          ? [[
+              "Ganancia bruta",
+              money(
+                detail.gananciaBruta
+              ),
+            ]]
+          : []),
         [
           "Medio de pago",
           formatAuditPaymentMethod(
@@ -2085,6 +2133,220 @@ function getAuditPdfDetailRows(event) {
                 )
               )
             )
+          ),
+        ],
+      ];
+
+    case "migracion-ganancias-historicas":
+      return [
+        [
+          "Ventas actualizadas",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                number(
+                  detail.ventasActualizadas
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Líneas actualizadas",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                number(
+                  detail.lineasActualizadas
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Costos históricos",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                number(
+                  detail.lineasMigradas
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Costos estimados",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                number(
+                  detail.lineasEstimadas
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Costo incorporado",
+          money(
+            detail.costoHistoricoAgregado
+          ),
+        ],
+        [
+          "Pendientes",
+          String(
+            Math.max(
+              0,
+              Math.trunc(
+                number(
+                  detail.ventasPendientes
+                )
+              )
+            )
+          ),
+        ],
+        [
+          "Resultado",
+          detail.resultado === "completo"
+            ? "Completo"
+            : detail.resultado === "parcial"
+              ? "Parcial"
+              : String(
+                  detail.resultado ||
+                  "-"
+                ),
+        ],
+      ];
+
+    case "alta-item-compra":
+      return [
+        [
+          "Concepto",
+          detail.concepto || "Compra",
+        ],
+        [
+          "Proveedor",
+          detail.proveedor || "-",
+        ],
+        [
+          "Cantidad",
+          String(
+            number(
+              detail.cantidad
+            )
+          ),
+        ],
+        [
+          "Costo estimado",
+          money(
+            detail.costoEstimado
+          ),
+        ],
+      ];
+
+    case "compra-completada":
+      return [
+        [
+          "Concepto",
+          detail.concepto || "Compra",
+        ],
+        [
+          "Proveedor",
+          detail.proveedor || "-",
+        ],
+        [
+          "Costo real",
+          money(
+            detail.costoReal
+          ),
+        ],
+        ...(detail.productoBarcode
+          ? [[
+              "Producto",
+              detail.productoBarcode,
+            ]]
+          : []),
+        ...(detail.cuentaPorPagarId
+          ? [[
+              "Cuenta por pagar",
+              detail.cuentaPorPagarId,
+            ]]
+          : []),
+      ];
+
+    case "alta-cuenta-por-pagar":
+      return [
+        [
+          "Proveedor / persona",
+          detail.proveedorNombre || "-",
+        ],
+        [
+          "Importe",
+          money(
+            detail.importeOriginal
+          ),
+        ],
+        [
+          "Concepto",
+          detail.concepto || "-",
+        ],
+        [
+          "Origen",
+          detail.origen === "compra"
+            ? "Compra"
+            : "Alta manual",
+        ],
+      ];
+
+    case "pago-cuenta-por-pagar":
+      return [
+        [
+          "Proveedor / persona",
+          detail.proveedorNombre || "-",
+        ],
+        [
+          "Importe pagado",
+          money(
+            detail.importe
+          ),
+        ],
+        [
+          "Medio de pago",
+          formatAuditPaymentMethod(
+            detail.metodoPago
+          ),
+        ],
+        [
+          "Saldo",
+          `${money(
+            detail.saldoAnterior
+          )} -> ${money(
+            detail.saldoRestante
+          )}`,
+        ],
+      ];
+
+    case "cuenta-por-pagar-saldada":
+      return [
+        [
+          "Proveedor / persona",
+          detail.proveedorNombre || "-",
+        ],
+        [
+          "Importe original",
+          money(
+            detail.importeOriginal
+          ),
+        ],
+        [
+          "Total pagado",
+          money(
+            detail.totalPagado
           ),
         ],
       ];

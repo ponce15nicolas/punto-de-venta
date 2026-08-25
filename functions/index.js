@@ -1622,11 +1622,29 @@ const AUDIT_ACTIONS = Object.freeze({
     CUENTA_POR_COBRAR_SALDADA:
         "cuenta-por-cobrar-saldada",
 
+    ALTA_ITEM_COMPRA:
+        "alta-item-compra",
+
+    COMPRA_COMPLETADA:
+        "compra-completada",
+
+    ALTA_CUENTA_POR_PAGAR:
+        "alta-cuenta-por-pagar",
+
+    PAGO_CUENTA_POR_PAGAR:
+        "pago-cuenta-por-pagar",
+
+    CUENTA_POR_PAGAR_SALDADA:
+        "cuenta-por-pagar-saldada",
+
     CAMBIO_NOMBRE_NEGOCIO:
         "cambio-nombre-negocio",
 
     MIGRACION_POS_LEGACY:
         "migracion-pos-legacy",
+
+    MIGRACION_GANANCIAS_HISTORICAS:
+        "migracion-ganancias-historicas",
 });
 
 const AUDIT_ACTION_VALUES =
@@ -2793,6 +2811,18 @@ function normalizarProductoPosLegacy(
                 "product.price"
             );
 
+    const cost =
+        tipoVenta ===
+            "precio-libre"
+            ? 0
+            : numeroPosLegacy(
+                rawProduct.cost,
+                "product.cost",
+                {
+                    defaultValue: 0,
+                }
+            );
+
     const stock =
         tipoVenta ===
             "precio-libre"
@@ -2850,6 +2880,7 @@ function normalizarProductoPosLegacy(
                 : null,
 
         price,
+        cost,
         stock,
         expiry,
     };
@@ -10618,6 +10649,1833 @@ exports.registrarPagoCuentaPorCobrar =
     );
 
 /* =========================================================
+   COMPRAS + CUENTAS POR PAGAR
+========================================================= */
+
+function serializarFechaCompra(
+    value
+) {
+    if (!value) {
+        return null;
+    }
+
+    if (
+        typeof value?.toDate ===
+        "function"
+    ) {
+        return value
+            .toDate()
+            .toISOString();
+    }
+
+    const date =
+        value instanceof Date
+            ? value
+            : new Date(value);
+
+    return Number.isNaN(
+        date.getTime()
+    )
+        ? null
+        : date.toISOString();
+}
+
+function serializarCuentaPorPagar(
+    snapshot
+) {
+    const data =
+        snapshot.data() || {};
+
+    return {
+        id:
+            snapshot.id,
+
+        ...data,
+
+        creadoEn:
+            serializarFechaCompra(
+                data.creadoEn
+            ),
+
+        actualizadoEn:
+            serializarFechaCompra(
+                data.actualizadoEn
+            ),
+
+        ultimoPagoEn:
+            serializarFechaCompra(
+                data.ultimoPagoEn
+            ),
+
+        pagos:
+            Array.isArray(
+                data.pagos
+            )
+                ? data.pagos.map(
+                    (pago) => ({
+                        ...pago,
+
+                        fecha:
+                            serializarFechaCompra(
+                                pago?.fecha
+                            ),
+                    })
+                )
+                : [],
+    };
+}
+
+function serializarItemCompra(
+    snapshot
+) {
+    const data =
+        snapshot.data() || {};
+
+    return {
+        id:
+            snapshot.id,
+
+        ...data,
+
+        creadoEn:
+            serializarFechaCompra(
+                data.creadoEn
+            ),
+
+        actualizadoEn:
+            serializarFechaCompra(
+                data.actualizadoEn
+            ),
+
+        compradoEn:
+            serializarFechaCompra(
+                data.compradoEn
+            ),
+    };
+}
+
+function normalizarCuentaPorPagar(
+    value
+) {
+    if (
+        !esObjetoPlano(
+            value
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Los datos de la cuenta por pagar no son válidos."
+        );
+    }
+
+    const proveedorNombre =
+        textoSeguro(
+            value.proveedorNombre,
+            120
+        );
+
+    const concepto =
+        textoSeguro(
+            value.concepto,
+            180
+        );
+
+    const notas =
+        textoSeguro(
+            value.notas,
+            1000
+        );
+
+    if (!proveedorNombre) {
+        throw new HttpsError(
+            "invalid-argument",
+            "La persona o proveedor es obligatorio."
+        );
+    }
+
+    if (!concepto) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El concepto es obligatorio."
+        );
+    }
+
+    const importeOriginal =
+        redondearDineroCuentaPorCobrar(
+            value.importeOriginal
+        );
+
+    if (
+        !Number.isFinite(
+            importeOriginal
+        ) ||
+        importeOriginal <= 0 ||
+        importeOriginal >
+            999999999999
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El importe de la cuenta por pagar no es válido."
+        );
+    }
+
+    const fechaOrigen =
+        validarFechaCuentaPorCobrar(
+            value.fechaOrigen,
+            "La fecha de origen",
+            {
+                required: true,
+            }
+        );
+
+    const vencimiento =
+        validarFechaCuentaPorCobrar(
+            value.vencimiento,
+            "La fecha de vencimiento"
+        );
+
+    if (
+        vencimiento &&
+        vencimiento <
+            fechaOrigen
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El vencimiento no puede ser anterior a la fecha de origen."
+        );
+    }
+
+    return {
+        proveedorNombre,
+        concepto,
+        notas,
+        importeOriginal,
+        fechaOrigen,
+        vencimiento,
+    };
+}
+
+function normalizarItemCompra(
+    value
+) {
+    if (
+        !esObjetoPlano(
+            value
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Los datos de la compra no son válidos."
+        );
+    }
+
+    const concepto =
+        textoSeguro(
+            value.concepto,
+            180
+        );
+
+    if (!concepto) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El concepto de la compra es obligatorio."
+        );
+    }
+
+    const cantidadRaw =
+        Number(
+            value.cantidad ??
+            1
+        );
+
+    const cantidad =
+        redondearCantidadInventario(
+            cantidadRaw
+        );
+
+    if (
+        !Number.isFinite(
+            cantidad
+        ) ||
+        cantidad <= 0
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "La cantidad de la compra no es válida."
+        );
+    }
+
+    const costoEstimado =
+        redondearDineroCuentaPorCobrar(
+            value.costoEstimado ||
+            0
+        );
+
+    if (
+        !Number.isFinite(
+            costoEstimado
+        ) ||
+        costoEstimado < 0
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El costo estimado no es válido."
+        );
+    }
+
+    return {
+        concepto,
+
+        proveedor:
+            textoSeguro(
+                value.proveedor,
+                120
+            ),
+
+        cantidad,
+
+        costoEstimado,
+
+        conceptoCosto:
+            textoSeguro(
+                value.conceptoCosto,
+                180
+            ),
+
+        notas:
+            textoSeguro(
+                value.notas,
+                1000
+            ),
+    };
+}
+
+exports.cargarCompras =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            await validarSesionOperadorInterna(
+                clienteRef,
+                request.data
+                    ?.operadorSesion,
+                {
+                    deviceId,
+                }
+            );
+
+            const [
+                shoppingSnapshot,
+                payableSnapshot,
+            ] =
+                await Promise.all([
+                    clienteRef
+                        .collection(
+                            "listaCompras"
+                        )
+                        .get(),
+
+                    clienteRef
+                        .collection(
+                            "cuentasPorPagar"
+                        )
+                        .get(),
+                ]);
+
+            const shoppingList =
+                shoppingSnapshot.docs
+                    .map(
+                        serializarItemCompra
+                    )
+                    .sort(
+                        (a, b) =>
+                            String(
+                                b.creadoEn ||
+                                ""
+                            ).localeCompare(
+                                String(
+                                    a.creadoEn ||
+                                    ""
+                                )
+                            )
+                    );
+
+            const accountsPayable =
+                payableSnapshot.docs
+                    .map(
+                        serializarCuentaPorPagar
+                    )
+                    .sort(
+                        (a, b) =>
+                            String(
+                                b.creadoEn ||
+                                ""
+                            ).localeCompare(
+                                String(
+                                    a.creadoEn ||
+                                    ""
+                                )
+                            )
+                    );
+
+            return {
+                ok: true,
+                shoppingList,
+                accountsPayable,
+            };
+        }
+    );
+
+exports.crearItemCompra =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const item =
+                normalizarItemCompra(
+                    request.data?.item
+                );
+
+            const itemRef =
+                clienteRef
+                    .collection(
+                        "listaCompras"
+                    )
+                    .doc();
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
+
+                        transaction.set(
+                            itemRef,
+                            {
+                                ...item,
+
+                                estado:
+                                    "pendiente",
+
+                                costoReal:
+                                    null,
+
+                                productoBarcode:
+                                    null,
+
+                                cantidadStock:
+                                    null,
+
+                                cuentaPorPagarId:
+                                    null,
+
+                                creadoPor: {
+                                    operadorId:
+                                        operadorAutorizado.id,
+
+                                    operadorNombre:
+                                        textoSeguro(
+                                            operadorAutorizado
+                                                ?.data
+                                                ?.nombre,
+                                            80
+                                        ),
+
+                                    operadorRol:
+                                        validarRolOperador(
+                                            operadorAutorizado.rol
+                                        ),
+                                },
+
+                                creadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+
+                                actualizadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador:
+                                    operadorAutorizado,
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .ALTA_ITEM_COMPRA,
+                                sessionId,
+                                deviceId,
+                                detalle: {
+                                    compraId:
+                                        itemRef.id,
+                                    concepto:
+                                        item.concepto,
+                                    proveedor:
+                                        item.proveedor,
+                                    cantidad:
+                                        item.cantidad,
+                                    costoEstimado:
+                                        item.costoEstimado,
+                                    conceptoCosto:
+                                        item.conceptoCosto,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            sessionId,
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+
+                item: {
+                    id:
+                        itemRef.id,
+                    ...item,
+                    estado:
+                        "pendiente",
+                    costoReal:
+                        null,
+                    productoBarcode:
+                        null,
+                    cantidadStock:
+                        null,
+                    cuentaPorPagarId:
+                        null,
+                    sessionIdAuditoria:
+                        result.sessionId,
+                },
+            };
+        }
+    );
+
+exports.marcarItemCompraComprado =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const compraId =
+                validarId(
+                    request.data?.compraId,
+                    "compraId"
+                );
+
+            const payload =
+                esObjetoPlano(
+                    request.data?.compra
+                )
+                    ? request.data.compra
+                    : {};
+
+            const costoReal =
+                redondearDineroCuentaPorCobrar(
+                    payload.costoReal ||
+                    0
+                );
+
+            if (
+                !Number.isFinite(
+                    costoReal
+                ) ||
+                costoReal < 0
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El costo real no es válido."
+                );
+            }
+
+            const sumarStock =
+                Boolean(
+                    payload.sumarStock
+                );
+
+            const generarCuentaPorPagar =
+                Boolean(
+                    payload.generarCuentaPorPagar
+                );
+
+            const conceptoCosto =
+                textoSeguro(
+                    payload.conceptoCosto,
+                    180
+                );
+
+            const productoBarcode =
+                sumarStock
+                    ? textoSeguro(
+                        payload.productoBarcode,
+                        180
+                    )
+                    : null;
+
+            let cantidadStock =
+                sumarStock
+                    ? Number(
+                        payload.cantidadStock
+                    )
+                    : 0;
+
+            if (
+                sumarStock &&
+                (
+                    !productoBarcode ||
+                    !Number.isFinite(
+                        cantidadStock
+                    ) ||
+                    cantidadStock <= 0
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Seleccioná un producto e ingresá una cantidad de stock válida."
+                );
+            }
+
+            const vencimiento =
+                validarFechaCuentaPorCobrar(
+                    payload.vencimiento,
+                    "La fecha de vencimiento"
+                );
+
+            if (
+                generarCuentaPorPagar &&
+                costoReal <= 0
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá el costo real para generar la cuenta por pagar."
+                );
+            }
+
+            const compraRef =
+                clienteRef
+                    .collection(
+                        "listaCompras"
+                    )
+                    .doc(
+                        compraId
+                    );
+
+            const productoRef =
+                sumarStock
+                    ? clienteRef
+                        .collection(
+                            "productos"
+                        )
+                        .doc(
+                            encodeURIComponent(
+                                productoBarcode
+                            )
+                        )
+                    : null;
+
+            const cuentaRef =
+                generarCuentaPorPagar
+                    ? clienteRef
+                        .collection(
+                            "cuentasPorPagar"
+                        )
+                        .doc()
+                    : null;
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const compraSnap =
+                            await transaction.get(
+                                compraRef
+                            );
+
+                        if (
+                            !compraSnap.exists
+                        ) {
+                            throw new HttpsError(
+                                "not-found",
+                                "La compra ya no existe."
+                            );
+                        }
+
+                        const compra =
+                            compraSnap.data() ||
+                            {};
+
+                        if (
+                            compra.estado ===
+                            "comprado"
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La compra ya fue marcada como comprada."
+                            );
+                        }
+
+                        let producto =
+                            null;
+
+                        if (productoRef) {
+                            const productoSnap =
+                                await transaction.get(
+                                    productoRef
+                                );
+
+                            if (
+                                !productoSnap.exists
+                            ) {
+                                throw new HttpsError(
+                                    "not-found",
+                                    "El producto seleccionado ya no existe."
+                                );
+                            }
+
+                            producto =
+                                productoSnap.data() ||
+                                {};
+                        }
+
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
+
+                        let stockAnterior =
+                            null;
+                        let stockNuevo =
+                            null;
+                        let costoAnterior =
+                            null;
+                        let costoNuevo =
+                            null;
+                        let costoUnitario =
+                            null;
+
+                        if (
+                            productoRef &&
+                            producto
+                        ) {
+                            const tipoVenta =
+                                textoSeguro(
+                                    producto.tipoVenta,
+                                    40
+                                ) ||
+                                "unidad";
+
+                            if (
+                                tipoVenta ===
+                                "precio-libre"
+                            ) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    "El producto seleccionado no utiliza stock."
+                                );
+                            }
+
+                            cantidadStock =
+                                tipoVenta ===
+                                "peso"
+                                    ? redondearCantidadInventario(
+                                        cantidadStock
+                                    )
+                                    : Math.trunc(
+                                        cantidadStock
+                                    );
+
+                            if (
+                                !Number.isFinite(
+                                    cantidadStock
+                                ) ||
+                                cantidadStock <= 0
+                            ) {
+                                throw new HttpsError(
+                                    "invalid-argument",
+                                    "La cantidad a ingresar al stock no es válida."
+                                );
+                            }
+
+                            stockAnterior =
+                                Number(
+                                    producto.stock ||
+                                    0
+                                );
+
+                            stockAnterior =
+                                Number.isFinite(
+                                    stockAnterior
+                                )
+                                    ? stockAnterior
+                                    : 0;
+
+                            stockNuevo =
+                                tipoVenta ===
+                                "peso"
+                                    ? redondearCantidadInventario(
+                                        stockAnterior +
+                                        cantidadStock
+                                    )
+                                    : Math.trunc(
+                                        stockAnterior +
+                                        cantidadStock
+                                    );
+
+                            costoAnterior =
+                                redondearDineroInventario(
+                                    Number(
+                                        producto.cost ||
+                                        0
+                                    )
+                                );
+
+                            costoUnitario =
+                                costoReal > 0
+                                    ? redondearDineroInventario(
+                                        costoReal /
+                                        cantidadStock
+                                    )
+                                    : costoAnterior;
+
+                            /*
+                             * El costo del producto es un valor manual.
+                             * Ingresar mercadería desde Compras modifica
+                             * únicamente el stock; nunca recalcula el costo.
+                             * El costo sólo cambia cuando el usuario edita
+                             * explícitamente el producto.
+                             */
+                            costoNuevo =
+                                costoAnterior;
+                        }
+
+                        const proveedor =
+                            textoSeguro(
+                                compra.proveedor,
+                                120
+                            );
+
+                        if (
+                            cuentaRef &&
+                            !proveedor
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                "Ingresá el proveedor antes de generar una cuenta por pagar."
+                            );
+                        }
+
+                        const fechaCompra =
+                            new Date()
+                                .toISOString()
+                                .slice(0, 10);
+
+                        if (
+                            vencimiento &&
+                            vencimiento <
+                            fechaCompra
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                "El vencimiento no puede ser anterior a la compra."
+                            );
+                        }
+
+                        if (productoRef) {
+                            transaction.update(
+                                productoRef,
+                                {
+                                    stock:
+                                        stockNuevo,
+
+                                    updatedAt:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }
+                            );
+                        }
+
+                        if (cuentaRef) {
+                            transaction.set(
+                                cuentaRef,
+                                {
+                                    proveedorNombre:
+                                        proveedor,
+
+                                    concepto:
+                                        textoSeguro(
+                                            compra.concepto,
+                                            180
+                                        ) ||
+                                        "Compra de mercadería",
+
+                                    notas:
+                                        textoSeguro(
+                                            compra.notas,
+                                            1000
+                                        ),
+
+                                    importeOriginal:
+                                        costoReal,
+
+                                    fechaOrigen:
+                                        fechaCompra,
+
+                                    vencimiento,
+
+                                    origen:
+                                        "compra",
+
+                                    compraId,
+
+                                    totalPagado:
+                                        0,
+
+                                    saldoPendiente:
+                                        costoReal,
+
+                                    estado:
+                                        "pendiente",
+
+                                    pagos:
+                                        [],
+
+                                    creadoPor: {
+                                        operadorId:
+                                            operadorAutorizado.id,
+
+                                        operadorNombre:
+                                            textoSeguro(
+                                                operadorAutorizado
+                                                    ?.data
+                                                    ?.nombre,
+                                                80
+                                            ),
+
+                                        operadorRol:
+                                            validarRolOperador(
+                                                operadorAutorizado.rol
+                                            ),
+                                    },
+
+                                    creadoEn:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+
+                                    actualizadoEn:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }
+                            );
+                        }
+
+                        transaction.update(
+                            compraRef,
+                            {
+                                estado:
+                                    "comprado",
+
+                                costoReal,
+
+                                conceptoCosto:
+                                    conceptoCosto ||
+                                    textoSeguro(
+                                        compra.conceptoCosto,
+                                        180
+                                    ),
+
+                                productoBarcode:
+                                    productoBarcode ||
+                                    null,
+
+                                cantidadStock:
+                                    sumarStock
+                                        ? cantidadStock
+                                        : null,
+
+                                costoUnitario:
+                                    sumarStock
+                                        ? costoUnitario
+                                        : null,
+
+                                cuentaPorPagarId:
+                                    cuentaRef
+                                        ? cuentaRef.id
+                                        : null,
+
+                                compradoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+
+                                actualizadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        const eventoCompra =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador:
+                                    operadorAutorizado,
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .COMPRA_COMPLETADA,
+                                sessionId,
+                                deviceId,
+                                detalle: {
+                                    compraId,
+                                    concepto:
+                                        textoSeguro(
+                                            compra.concepto,
+                                            180
+                                        ),
+                                    proveedor,
+                                    costoReal,
+                                    productoBarcode,
+                                    cantidadStock:
+                                        sumarStock
+                                            ? cantidadStock
+                                            : null,
+                                    costoNuevo,
+                                    cuentaPorPagarId:
+                                        cuentaRef
+                                            ? cuentaRef.id
+                                            : null,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoCompra.ref,
+                            eventoCompra.data
+                        );
+
+                        if (cuentaRef) {
+                            const eventoCuenta =
+                                crearEventoAuditoria({
+                                    clienteRef,
+                                    operador:
+                                        operadorAutorizado,
+                                    accion:
+                                        AUDIT_ACTIONS
+                                            .ALTA_CUENTA_POR_PAGAR,
+                                    sessionId,
+                                    deviceId,
+                                    detalle: {
+                                        cuentaId:
+                                            cuentaRef.id,
+                                        compraId,
+                                        proveedorNombre:
+                                            proveedor,
+                                        concepto:
+                                            textoSeguro(
+                                                compra.concepto,
+                                                180
+                                            ),
+                                        importeOriginal:
+                                            costoReal,
+                                        origen:
+                                            "compra",
+                                    },
+                                });
+
+                            transaction.set(
+                                eventoCuenta.ref,
+                                eventoCuenta.data
+                            );
+                        }
+
+                        return {
+                            cuentaPorPagarId:
+                                cuentaRef
+                                    ? cuentaRef.id
+                                    : null,
+
+                            stockNuevo,
+                            costoNuevo,
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+                ...result,
+            };
+        }
+    );
+
+exports.crearCuentaPorPagarManual =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const cuenta =
+                normalizarCuentaPorPagar(
+                    request.data?.cuenta
+                );
+
+            const cuentaRef =
+                clienteRef
+                    .collection(
+                        "cuentasPorPagar"
+                    )
+                    .doc();
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
+
+                        transaction.set(
+                            cuentaRef,
+                            {
+                                ...cuenta,
+
+                                origen:
+                                    "manual",
+
+                                compraId:
+                                    null,
+
+                                totalPagado:
+                                    0,
+
+                                saldoPendiente:
+                                    cuenta.importeOriginal,
+
+                                estado:
+                                    "pendiente",
+
+                                pagos:
+                                    [],
+
+                                creadoPor: {
+                                    operadorId:
+                                        operadorAutorizado.id,
+
+                                    operadorNombre:
+                                        textoSeguro(
+                                            operadorAutorizado
+                                                ?.data
+                                                ?.nombre,
+                                            80
+                                        ),
+
+                                    operadorRol:
+                                        validarRolOperador(
+                                            operadorAutorizado.rol
+                                        ),
+                                },
+
+                                creadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+
+                                actualizadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador:
+                                    operadorAutorizado,
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .ALTA_CUENTA_POR_PAGAR,
+                                sessionId,
+                                deviceId,
+                                detalle: {
+                                    cuentaId:
+                                        cuentaRef.id,
+                                    proveedorNombre:
+                                        cuenta.proveedorNombre,
+                                    concepto:
+                                        cuenta.concepto,
+                                    importeOriginal:
+                                        cuenta.importeOriginal,
+                                    fechaOrigen:
+                                        cuenta.fechaOrigen,
+                                    vencimiento:
+                                        cuenta.vencimiento,
+                                    origen:
+                                        "manual",
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            sessionId,
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+
+                cuenta: {
+                    id:
+                        cuentaRef.id,
+                    ...cuenta,
+                    origen:
+                        "manual",
+                    compraId:
+                        null,
+                    totalPagado:
+                        0,
+                    saldoPendiente:
+                        cuenta.importeOriginal,
+                    estado:
+                        "pendiente",
+                    pagos:
+                        [],
+                    sessionIdAuditoria:
+                        result.sessionId,
+                },
+            };
+        }
+    );
+
+exports.registrarPagoCuentaPorPagar =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const cuentaId =
+                validarId(
+                    request.data?.cuentaId,
+                    "cuentaId"
+                );
+
+            const importe =
+                redondearDineroCuentaPorCobrar(
+                    request.data
+                        ?.pago
+                        ?.importe
+                );
+
+            if (
+                !Number.isFinite(
+                    importe
+                ) ||
+                importe <= 0 ||
+                importe >
+                    999999999999
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El importe del pago no es válido."
+                );
+            }
+
+            const metodoPago =
+                textoSeguro(
+                    request.data
+                        ?.pago
+                        ?.metodoPago,
+                    40
+                ) ||
+                "efectivo";
+
+            if (
+                !POS_METODOS_COBRO.has(
+                    metodoPago
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El método de pago no es válido."
+                );
+            }
+
+            const cuentaRef =
+                clienteRef
+                    .collection(
+                        "cuentasPorPagar"
+                    )
+                    .doc(
+                        cuentaId
+                    );
+
+            const configRef =
+                clienteRef
+                    .collection(
+                        "configuracion"
+                    )
+                    .doc(
+                        "pos"
+                    );
+
+            const pagoId =
+                crypto.randomUUID();
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const configSnap =
+                            await transaction.get(
+                                configRef
+                            );
+
+                        const requiereCaja =
+                            metodoPago ===
+                            "efectivo";
+
+                        const sessionIdConfigurada =
+                            textoSeguro(
+                                configSnap.data()
+                                    ?.openCashSessionId,
+                                180
+                            );
+
+                        let sessionId =
+                            null;
+
+                        let sessionRef =
+                            null;
+
+                        let sessionSnap =
+                            null;
+
+                        if (sessionIdConfigurada) {
+                            sessionRef =
+                                clienteRef
+                                    .collection(
+                                        "cajas"
+                                    )
+                                    .doc(
+                                        sessionIdConfigurada
+                                    );
+
+                            sessionSnap =
+                                await transaction.get(
+                                    sessionRef
+                                );
+
+                            if (
+                                sessionSnap.exists &&
+                                sessionSnap.data()
+                                    ?.status ===
+                                    "open"
+                            ) {
+                                sessionId =
+                                    sessionIdConfigurada;
+                            } else if (requiereCaja) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    "La caja ya no se encuentra abierta.",
+                                    {
+                                        motivo:
+                                            "cash-required",
+                                    }
+                                );
+                            }
+                        } else if (requiereCaja) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Abrí una caja para registrar un pago en efectivo.",
+                                {
+                                    motivo:
+                                        "cash-required",
+                                }
+                            );
+                        }
+
+                        const cuentaSnap =
+                            await transaction.get(
+                                cuentaRef
+                            );
+
+                        if (
+                            !cuentaSnap.exists
+                        ) {
+                            throw new HttpsError(
+                                "not-found",
+                                "La cuenta por pagar ya no existe."
+                            );
+                        }
+
+                        const cuenta =
+                            cuentaSnap.data() ||
+                            {};
+
+                        const saldoAnterior =
+                            redondearDineroCuentaPorCobrar(
+                                cuenta.saldoPendiente
+                            );
+
+                        if (
+                            saldoAnterior <= 0 ||
+                            cuenta.estado ===
+                            "pagado"
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Esta cuenta ya está saldada."
+                            );
+                        }
+
+                        if (
+                            importe >
+                            saldoAnterior
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                "El pago no puede superar el saldo pendiente."
+                            );
+                        }
+
+                        const saldoRestante =
+                            redondearDineroCuentaPorCobrar(
+                                Math.max(
+                                    0,
+                                    saldoAnterior -
+                                    importe
+                                )
+                            );
+
+                        const totalPagado =
+                            redondearDineroCuentaPorCobrar(
+                                Number(
+                                    cuenta.totalPagado ||
+                                    0
+                                ) +
+                                importe
+                            );
+
+                        const estadoNuevo =
+                            saldoRestante <= 0
+                                ? "pagado"
+                                : totalPagado > 0
+                                    ? "parcial"
+                                    : "pendiente";
+
+                        const fecha =
+                            admin.firestore.Timestamp.now();
+
+                        const pago = {
+                            id:
+                                pagoId,
+                            importe,
+                            metodoPago,
+                            sessionId,
+                            fecha,
+                            operadorId:
+                                operadorAutorizado.id,
+                            operadorNombre:
+                                textoSeguro(
+                                    operadorAutorizado
+                                        ?.data
+                                        ?.nombre,
+                                    80
+                                ),
+                            operadorRol:
+                                validarRolOperador(
+                                    operadorAutorizado.rol
+                                ),
+                        };
+
+                        const pagos =
+                            Array.isArray(
+                                cuenta.pagos
+                            )
+                                ? [
+                                    ...cuenta.pagos,
+                                    pago,
+                                ]
+                                : [
+                                    pago,
+                                ];
+
+                        transaction.update(
+                            cuentaRef,
+                            {
+                                pagos,
+                                totalPagado,
+                                saldoPendiente:
+                                    saldoRestante,
+                                estado:
+                                    estadoNuevo,
+                                ultimoPagoEn:
+                                    fecha,
+                                actualizadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        if (
+                            sessionId &&
+                            sessionRef &&
+                            sessionSnap
+                        ) {
+                            const sessionData =
+                                sessionSnap.data() ||
+                                {};
+
+                            const payablePaymentTotals = {
+                                efectivo:
+                                    redondearDineroCuentaPorCobrar(
+                                        sessionData
+                                            ?.payablePaymentTotals
+                                            ?.efectivo ||
+                                        0
+                                    ),
+                                transferencia:
+                                    redondearDineroCuentaPorCobrar(
+                                        sessionData
+                                            ?.payablePaymentTotals
+                                            ?.transferencia ||
+                                        0
+                                    ),
+                                qr:
+                                    redondearDineroCuentaPorCobrar(
+                                        sessionData
+                                            ?.payablePaymentTotals
+                                            ?.qr ||
+                                        0
+                                    ),
+                                tarjeta:
+                                    redondearDineroCuentaPorCobrar(
+                                        sessionData
+                                            ?.payablePaymentTotals
+                                            ?.tarjeta ||
+                                        0
+                                    ),
+                            };
+
+                            payablePaymentTotals[
+                                metodoPago
+                            ] =
+                                redondearDineroCuentaPorCobrar(
+                                    payablePaymentTotals[
+                                        metodoPago
+                                    ] +
+                                    importe
+                                );
+
+                            const payablePaymentsTotal =
+                                redondearDineroCuentaPorCobrar(
+                                    Number(
+                                        sessionData
+                                            .payablePaymentsTotal ||
+                                        0
+                                    ) +
+                                    importe
+                                );
+
+                            const payablePaymentsCount =
+                                Math.max(
+                                    0,
+                                    Math.trunc(
+                                        Number(
+                                            sessionData
+                                                .payablePaymentsCount ||
+                                            0
+                                        )
+                                    )
+                                ) +
+                                1;
+
+                            transaction.update(
+                                sessionRef,
+                                {
+                                    payablePaymentTotals,
+                                    payablePaymentsTotal,
+                                    payablePaymentsCount,
+                                    updatedAt:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }
+                            );
+                        }
+
+                        const eventoPago =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador:
+                                    operadorAutorizado,
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .PAGO_CUENTA_POR_PAGAR,
+                                sessionId,
+                                deviceId,
+                                detalle: {
+                                    cajaId:
+                                        sessionId,
+                                    cuentaId,
+                                    pagoId,
+                                    proveedorNombre:
+                                        textoSeguro(
+                                            cuenta.proveedorNombre,
+                                            120
+                                        ),
+                                    concepto:
+                                        textoSeguro(
+                                            cuenta.concepto,
+                                            180
+                                        ),
+                                    importe,
+                                    metodoPago,
+                                    saldoAnterior,
+                                    saldoRestante,
+                                    estadoNuevo,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoPago.ref,
+                            eventoPago.data
+                        );
+
+                        if (
+                            estadoNuevo ===
+                            "pagado"
+                        ) {
+                            const eventoSaldada =
+                                crearEventoAuditoria({
+                                    clienteRef,
+                                    operador:
+                                        operadorAutorizado,
+                                    accion:
+                                        AUDIT_ACTIONS
+                                            .CUENTA_POR_PAGAR_SALDADA,
+                                    sessionId,
+                                    deviceId,
+                                    detalle: {
+                                        cajaId:
+                                            sessionId,
+                                        cuentaId,
+                                        pagoId,
+                                        proveedorNombre:
+                                            textoSeguro(
+                                                cuenta.proveedorNombre,
+                                                120
+                                            ),
+                                        importeOriginal:
+                                            redondearDineroCuentaPorCobrar(
+                                                cuenta.importeOriginal
+                                            ),
+                                        totalPagado,
+                                    },
+                                });
+
+                            transaction.set(
+                                eventoSaldada.ref,
+                                eventoSaldada.data
+                            );
+                        }
+
+                        return {
+                            pago: {
+                                ...pago,
+                                fecha:
+                                    fecha
+                                        .toDate()
+                                        .toISOString(),
+                            },
+
+                            cuenta: {
+                                id:
+                                    cuentaId,
+                                totalPagado,
+                                saldoPendiente:
+                                    saldoRestante,
+                                estado:
+                                    estadoNuevo,
+                            },
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+                ...result,
+            };
+        }
+    );
+
+/* =========================================================
    PRODUCTOS — VALIDACIÓN + AUDITORÍA
 ========================================================= */
 
@@ -10713,6 +12571,14 @@ function normalizarProductoInventario(
                 value.price
             );
 
+    const cost =
+        tipoVenta ===
+            "precio-libre"
+            ? 0
+            : redondearDineroInventario(
+                value.cost ?? 0
+            );
+
     let stock = 0;
 
     if (
@@ -10748,6 +12614,22 @@ function normalizarProductoInventario(
         throw new HttpsError(
             "invalid-argument",
             "El precio del producto no es válido."
+        );
+    }
+
+    if (
+        tipoVenta !==
+            "precio-libre" &&
+        (
+            !Number.isFinite(
+                cost
+            ) ||
+            cost < 0
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El costo del producto no es válido."
         );
     }
 
@@ -10792,6 +12674,7 @@ function normalizarProductoInventario(
         tipoVenta,
         unidadMedida,
         price,
+        cost,
         stock,
         expiry,
     };
@@ -10932,6 +12815,9 @@ exports.crearProducto =
                                     precio:
                                         producto.price,
 
+                                    costo:
+                                        producto.cost,
+
                                     stock:
                                         producto.stock,
 
@@ -11037,6 +12923,7 @@ exports.editarProducto =
                 tipoVenta,
                 unidadMedida,
                 price,
+                cost,
                 stock,
                 expiry,
             } = producto;
@@ -11135,6 +13022,8 @@ exports.editarProducto =
 
                             price,
 
+                            cost,
+
                             stock,
 
                             expiry,
@@ -11229,6 +13118,15 @@ exports.editarProducto =
                                     precioNuevo:
                                         price,
 
+                                    costoAnterior:
+                                        Number(
+                                            anterior.cost ||
+                                            0
+                                        ),
+
+                                    costoNuevo:
+                                        cost,
+
                                     stockAnterior:
                                         Number(
                                             anterior.stock ||
@@ -11255,6 +13153,8 @@ exports.editarProducto =
                             unidadMedida,
 
                             price,
+
+                            cost,
 
                             stock,
 
@@ -11518,6 +13418,33 @@ exports.reponerStock =
                 );
             }
 
+            const costoUnitarioInput =
+                request.data?.costoUnitario;
+
+            const costoUnitario =
+                costoUnitarioInput === null ||
+                costoUnitarioInput === undefined ||
+                costoUnitarioInput === ""
+                    ? null
+                    : redondearDineroInventario(
+                        costoUnitarioInput
+                    );
+
+            if (
+                costoUnitario !== null &&
+                (
+                    !Number.isFinite(
+                        costoUnitario
+                    ) ||
+                    costoUnitario < 0
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá un costo unitario válido."
+                );
+            }
+
             const productoRef =
                 clienteRef
                     .collection(
@@ -11644,6 +13571,22 @@ exports.reponerStock =
                                     cantidadAgregada
                                 );
 
+                        const costoAnterior =
+                            redondearDineroInventario(
+                                Number(
+                                    producto.cost ||
+                                    0
+                                )
+                            );
+
+                        /*
+                         * Reponer stock no altera el costo configurado.
+                         * El costo del producto permanece fijo hasta que
+                         * el usuario lo cambie manualmente al editarlo.
+                         */
+                        const costoNuevo =
+                            costoAnterior;
+
                         const sessionId =
                             await obtenerSessionIdCajaAbiertaEnTransaccion(
                                 transaction,
@@ -11692,6 +13635,12 @@ exports.reponerStock =
                                     stockAnterior,
 
                                     stockNuevo,
+
+                                    costoAnterior,
+
+                                    costoUnitario,
+
+                                    costoNuevo,
                                 },
                             });
 
@@ -11710,6 +13659,8 @@ exports.reponerStock =
                             stockAnterior,
 
                             stockNuevo,
+
+                            costoNuevo,
                         };
                     }
                 );
@@ -12541,6 +14492,15 @@ exports.registrarVenta =
                                                 ) ||
                                                 item.name,
 
+                                            cost:
+                                                0,
+
+                                            costSubtotal:
+                                                0,
+
+                                            costSource:
+                                                "exact",
+
                                             subtotal,
                                         };
                                     }
@@ -12549,6 +14509,23 @@ exports.registrarVenta =
                                     const price =
                                         redondearDineroVenta(
                                             product.price
+                                        );
+
+                                    const cost =
+                                        redondearDineroVenta(
+                                            Math.max(
+                                                0,
+                                                Number(
+                                                    product.cost ||
+                                                    0
+                                                )
+                                            )
+                                        );
+
+                                    const costSubtotal =
+                                        redondearDineroVenta(
+                                            item.qty *
+                                            cost
                                         );
 
                                     const subtotal =
@@ -12577,6 +14554,12 @@ exports.registrarVenta =
                                             item.name,
 
                                         price,
+                                        cost,
+                                        costSubtotal,
+
+                                        costSource:
+                                            "exact",
+
                                         subtotal,
                                     };
                                 }
@@ -12593,6 +14576,28 @@ exports.registrarVenta =
                                         item.subtotal,
                                     0
                                 )
+                            );
+
+                        const totalCost =
+                            redondearDineroVenta(
+                                items.reduce(
+                                    (
+                                        sum,
+                                        item
+                                    ) =>
+                                        sum +
+                                        Number(
+                                            item.costSubtotal ||
+                                            0
+                                        ),
+                                    0
+                                )
+                            );
+
+                        const grossProfit =
+                            redondearDineroVenta(
+                                total -
+                                totalCost
                             );
 
                         if (
@@ -12735,6 +14740,13 @@ exports.registrarVenta =
                             items,
 
                             total,
+
+                            totalCost,
+
+                            grossProfit,
+
+                            profitCostStatus:
+                                "exact",
 
                             sessionId,
 
@@ -12939,6 +14951,12 @@ exports.registrarVenta =
 
                                     total,
 
+                                    costoMercaderia:
+                                        totalCost,
+
+                                    gananciaBruta:
+                                        grossProfit,
+
                                     metodoPago:
                                         rawMethod,
 
@@ -13041,6 +15059,858 @@ exports.registrarVenta =
             };
         }
     );
+
+/* =========================================================
+   GANANCIAS HISTÓRICAS
+========================================================= */
+
+const HISTORICAL_PROFIT_MAX_RULES = 300;
+const HISTORICAL_PROFIT_MAX_PERIODS = 24;
+const HISTORICAL_PROFIT_BATCH_SIZE = 350;
+
+function getHistoricalProfitItemKey(item) {
+    const barcode =
+        textoSeguro(
+            item?.barcode,
+            180
+        );
+
+    if (barcode) {
+        return barcode;
+    }
+
+    const name =
+        textoSeguro(
+            item?.name,
+            180
+        )
+            .trim()
+            .toLocaleLowerCase(
+                "es-AR"
+            );
+
+    return name
+        ? `name:${name}`
+        : "";
+}
+
+function getHistoricalProfitSaleTimeMs(sale) {
+    const value =
+        sale?.timestamp ??
+        sale?.createdAt ??
+        null;
+
+    if (!value) {
+        return null;
+    }
+
+    if (
+        typeof value?.toMillis ===
+        "function"
+    ) {
+        const time = value.toMillis();
+
+        return Number.isFinite(time)
+            ? time
+            : null;
+    }
+
+    if (
+        typeof value?.toDate ===
+        "function"
+    ) {
+        const date = value.toDate();
+        const time = date?.getTime?.();
+
+        return Number.isFinite(time)
+            ? time
+            : null;
+    }
+
+    const time =
+        value instanceof Date
+            ? value.getTime()
+            : Date.parse(
+                String(value)
+            );
+
+    return Number.isFinite(time)
+        ? time
+        : null;
+}
+
+function getHistoricalProfitExistingCost(item) {
+    const rawSubtotal =
+        item?.costSubtotal;
+
+    if (
+        rawSubtotal !== null &&
+        rawSubtotal !== undefined &&
+        rawSubtotal !== ""
+    ) {
+        const subtotal =
+            Number(rawSubtotal);
+
+        if (
+            Number.isFinite(subtotal) &&
+            subtotal >= 0
+        ) {
+            return {
+                known: true,
+                subtotal:
+                    redondearDineroVenta(
+                        subtotal
+                    ),
+            };
+        }
+    }
+
+    const rawCost = item?.cost;
+
+    if (
+        rawCost !== null &&
+        rawCost !== undefined &&
+        rawCost !== ""
+    ) {
+        const cost = Number(rawCost);
+        const qty = Math.max(
+            0,
+            Number(item?.qty || 0)
+        );
+
+        if (
+            Number.isFinite(cost) &&
+            cost >= 0 &&
+            Number.isFinite(qty)
+        ) {
+            return {
+                known: true,
+                subtotal:
+                    redondearDineroVenta(
+                        cost * qty
+                    ),
+            };
+        }
+    }
+
+    return {
+        known: false,
+        subtotal: 0,
+    };
+}
+
+function normalizarReglasGananciasHistoricas(
+    rawRules
+) {
+    if (!Array.isArray(rawRules)) {
+        throw new HttpsError(
+            "invalid-argument",
+            "La configuración de costos históricos es inválida."
+        );
+    }
+
+    if (
+        rawRules.length >
+        HISTORICAL_PROFIT_MAX_RULES
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Hay demasiados productos para migrar en una sola operación."
+        );
+    }
+
+    const seen = new Set();
+
+    return rawRules.map(
+        (rawRule, ruleIndex) => {
+            if (
+                !esObjetoPlano(rawRule)
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    `La configuración del producto ${ruleIndex + 1} es inválida.`
+                );
+            }
+
+            const productKey =
+                textoSeguro(
+                    rawRule.productKey,
+                    220
+                );
+
+            const productName =
+                textoSeguro(
+                    rawRule.productName,
+                    180
+                ) ||
+                productKey;
+
+            const source =
+                textoSeguro(
+                    rawRule.source,
+                    30
+                );
+
+            if (!productKey) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Falta identificar uno de los productos históricos."
+                );
+            }
+
+            if (seen.has(productKey)) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    `El producto ${productName} está configurado más de una vez.`
+                );
+            }
+
+            seen.add(productKey);
+
+            if (
+                source !== "migrated" &&
+                source !== "estimated"
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    `El origen del costo de ${productName} es inválido.`
+                );
+            }
+
+            const rawPeriods =
+                Array.isArray(
+                    rawRule.periods
+                )
+                    ? rawRule.periods
+                    : [];
+
+            if (
+                rawPeriods.length === 0 ||
+                rawPeriods.length >
+                    HISTORICAL_PROFIT_MAX_PERIODS
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    `Configurá al menos un período válido para ${productName}.`
+                );
+            }
+
+            const periods =
+                rawPeriods.map(
+                    (
+                        rawPeriod,
+                        periodIndex
+                    ) => {
+                        if (
+                            !esObjetoPlano(
+                                rawPeriod
+                            )
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                `El período ${periodIndex + 1} de ${productName} es inválido.`
+                            );
+                        }
+
+                        const cost =
+                            redondearDineroVenta(
+                                rawPeriod.cost
+                            );
+
+                        if (
+                            !Number.isFinite(cost) ||
+                            cost < 0
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                `Ingresá un costo válido para ${productName}.`
+                            );
+                        }
+
+                        const fromMsRaw =
+                            rawPeriod.fromMs;
+
+                        const toMsRaw =
+                            rawPeriod.toMs;
+
+                        const fromMs =
+                            fromMsRaw === null ||
+                            fromMsRaw === undefined ||
+                            fromMsRaw === ""
+                                ? null
+                                : Number(fromMsRaw);
+
+                        const toMs =
+                            toMsRaw === null ||
+                            toMsRaw === undefined ||
+                            toMsRaw === ""
+                                ? null
+                                : Number(toMsRaw);
+
+                        if (
+                            fromMs !== null &&
+                            !Number.isFinite(fromMs)
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                `La fecha desde de ${productName} es inválida.`
+                            );
+                        }
+
+                        if (
+                            toMs !== null &&
+                            !Number.isFinite(toMs)
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                `La fecha hasta de ${productName} es inválida.`
+                            );
+                        }
+
+                        if (
+                            fromMs !== null &&
+                            toMs !== null &&
+                            fromMs > toMs
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                `Revisá el rango de fechas de ${productName}.`
+                            );
+                        }
+
+                        return {
+                            fromMs,
+                            toMs,
+                            cost,
+                        };
+                    }
+                )
+                .sort(
+                    (a, b) =>
+                        (a.fromMs ??
+                            Number.NEGATIVE_INFINITY) -
+                        (b.fromMs ??
+                            Number.NEGATIVE_INFINITY)
+                );
+
+            for (
+                let index = 1;
+                index < periods.length;
+                index += 1
+            ) {
+                const previous =
+                    periods[index - 1];
+
+                const current =
+                    periods[index];
+
+                const previousEnd =
+                    previous.toMs ??
+                    Number.POSITIVE_INFINITY;
+
+                const currentStart =
+                    current.fromMs ??
+                    Number.NEGATIVE_INFINITY;
+
+                if (
+                    previousEnd >=
+                    currentStart
+                ) {
+                    throw new HttpsError(
+                        "invalid-argument",
+                        `Los períodos de ${productName} se superponen.`
+                    );
+                }
+            }
+
+            return {
+                productKey,
+                productName,
+                source,
+                periods,
+            };
+        }
+    );
+}
+
+function buscarPeriodoGananciaHistorica(
+    rule,
+    saleTimeMs
+) {
+    for (const period of rule.periods) {
+        const hasFrom =
+            period.fromMs !== null;
+
+        const hasTo =
+            period.toMs !== null;
+
+        if (
+            (hasFrom || hasTo) &&
+            !Number.isFinite(saleTimeMs)
+        ) {
+            continue;
+        }
+
+        if (
+            hasFrom &&
+            saleTimeMs < period.fromMs
+        ) {
+            continue;
+        }
+
+        if (
+            hasTo &&
+            saleTimeMs > period.toMs
+        ) {
+            continue;
+        }
+
+        return period;
+    }
+
+    return null;
+}
+
+function getHistoricalProfitStatus(items) {
+    let migrated = false;
+    let estimated = false;
+
+    for (const item of items) {
+        const source =
+            textoSeguro(
+                item?.costSource,
+                30
+            );
+
+        if (source === "estimated") {
+            estimated = true;
+        } else if (
+            source === "migrated"
+        ) {
+            migrated = true;
+        }
+    }
+
+    if (estimated) {
+        return "estimated";
+    }
+
+    if (migrated) {
+        return "migrated";
+    }
+
+    return "exact";
+}
+
+exports.migrarGananciasHistoricas =
+    onCall(
+        {
+            ...CALLABLE_OPTIONS,
+            timeoutSeconds: 120,
+        },
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                        requireRole:
+                            "administrador",
+                    }
+                );
+
+            const rules =
+                normalizarReglasGananciasHistoricas(
+                    request.data?.rules
+                );
+
+            const ruleMap = new Map(
+                rules.map(
+                    (rule) => [
+                        rule.productKey,
+                        rule,
+                    ]
+                )
+            );
+
+            const ventasSnap =
+                await clienteRef
+                    .collection("ventas")
+                    .get();
+
+            const updates = [];
+
+            let ventasCandidatas = 0;
+            let ventasActualizadas = 0;
+            let ventasPendientes = 0;
+            let lineasActualizadas = 0;
+            let lineasMigradas = 0;
+            let lineasEstimadas = 0;
+            let costoHistoricoAgregado = 0;
+
+            for (
+                const ventaDoc of
+                ventasSnap.docs
+            ) {
+                const sale =
+                    ventaDoc.data() || {};
+
+                const saleLevelCost =
+                    sale?.totalCost;
+
+                const saleLevelProfit =
+                    sale?.grossProfit;
+
+                if (
+                    (
+                        saleLevelCost !== null &&
+                        saleLevelCost !== undefined &&
+                        saleLevelCost !== "" &&
+                        Number.isFinite(
+                            Number(
+                                saleLevelCost
+                            )
+                        )
+                    ) ||
+                    (
+                        saleLevelProfit !== null &&
+                        saleLevelProfit !== undefined &&
+                        saleLevelProfit !== "" &&
+                        Number.isFinite(
+                            Number(
+                                saleLevelProfit
+                            )
+                        )
+                    )
+                ) {
+                    continue;
+                }
+
+                const originalItems =
+                    Array.isArray(
+                        sale?.items
+                    )
+                        ? sale.items
+                        : [];
+
+                if (
+                    originalItems.length === 0
+                ) {
+                    continue;
+                }
+
+                const hadUnknown =
+                    originalItems.some(
+                        (item) =>
+                            !getHistoricalProfitExistingCost(
+                                item
+                            ).known
+                    );
+
+                if (!hadUnknown) {
+                    continue;
+                }
+
+                ventasCandidatas += 1;
+
+                const saleTimeMs =
+                    getHistoricalProfitSaleTimeMs(
+                        sale
+                    );
+
+                let changed = false;
+
+                const nextItems =
+                    originalItems.map(
+                        (item) => {
+                            const existing =
+                                getHistoricalProfitExistingCost(
+                                    item
+                                );
+
+                            if (existing.known) {
+                                return item;
+                            }
+
+                            const tipoVenta =
+                                textoSeguro(
+                                    item?.tipoVenta,
+                                    40
+                                );
+
+                            if (
+                                tipoVenta ===
+                                "precio-libre"
+                            ) {
+                                changed = true;
+                                lineasActualizadas += 1;
+
+                                return {
+                                    ...item,
+                                    cost: 0,
+                                    costSubtotal: 0,
+                                    costSource:
+                                        "exact",
+                                };
+                            }
+
+                            const productKey =
+                                getHistoricalProfitItemKey(
+                                    item
+                                );
+
+                            const rule =
+                                ruleMap.get(
+                                    productKey
+                                );
+
+                            if (!rule) {
+                                return item;
+                            }
+
+                            const period =
+                                buscarPeriodoGananciaHistorica(
+                                    rule,
+                                    saleTimeMs
+                                );
+
+                            if (!period) {
+                                return item;
+                            }
+
+                            const qty =
+                                Math.max(
+                                    0,
+                                    Number(
+                                        item?.qty ||
+                                        0
+                                    )
+                                );
+
+                            const cost =
+                                redondearDineroVenta(
+                                    period.cost
+                                );
+
+                            const costSubtotal =
+                                redondearDineroVenta(
+                                    cost * qty
+                                );
+
+                            changed = true;
+                            lineasActualizadas += 1;
+                            costoHistoricoAgregado =
+                                redondearDineroVenta(
+                                    costoHistoricoAgregado +
+                                    costSubtotal
+                                );
+
+                            if (
+                                rule.source ===
+                                "estimated"
+                            ) {
+                                lineasEstimadas += 1;
+                            } else {
+                                lineasMigradas += 1;
+                            }
+
+                            return {
+                                ...item,
+                                cost,
+                                costSubtotal,
+                                costSource:
+                                    rule.source,
+                            };
+                        }
+                    );
+
+                const allKnown =
+                    nextItems.every(
+                        (item) =>
+                            getHistoricalProfitExistingCost(
+                                item
+                            ).known
+                    );
+
+                if (!allKnown) {
+                    ventasPendientes += 1;
+                }
+
+                if (!changed) {
+                    continue;
+                }
+
+                ventasActualizadas += 1;
+
+                const update = {
+                    items: nextItems,
+                    profitCostUpdatedAt:
+                        admin.firestore.FieldValue.serverTimestamp(),
+                };
+
+                if (allKnown) {
+                    const totalCost =
+                        redondearDineroVenta(
+                            nextItems.reduce(
+                                (
+                                    sum,
+                                    item
+                                ) =>
+                                    sum +
+                                    getHistoricalProfitExistingCost(
+                                        item
+                                    ).subtotal,
+                                0
+                            )
+                        );
+
+                    const total =
+                        Number.isFinite(
+                            Number(
+                                sale?.total
+                            )
+                        )
+                            ? redondearDineroVenta(
+                                sale.total
+                            )
+                            : redondearDineroVenta(
+                                nextItems.reduce(
+                                    (
+                                        sum,
+                                        item
+                                    ) =>
+                                        sum +
+                                        Number(
+                                            item?.subtotal ||
+                                            0
+                                        ),
+                                    0
+                                )
+                            );
+
+                    update.totalCost =
+                        totalCost;
+
+                    update.grossProfit =
+                        redondearDineroVenta(
+                            total - totalCost
+                        );
+
+                    update.profitCostStatus =
+                        getHistoricalProfitStatus(
+                            nextItems
+                        );
+                }
+
+                updates.push({
+                    ref: ventaDoc.ref,
+                    data: update,
+                });
+            }
+
+            for (
+                let offset = 0;
+                offset < updates.length;
+                offset +=
+                    HISTORICAL_PROFIT_BATCH_SIZE
+            ) {
+                const batch = db.batch();
+
+                for (
+                    const update of
+                    updates.slice(
+                        offset,
+                        offset +
+                            HISTORICAL_PROFIT_BATCH_SIZE
+                    )
+                ) {
+                    batch.update(
+                        update.ref,
+                        update.data
+                    );
+                }
+
+                await batch.commit();
+            }
+
+            if (
+                ventasActualizadas > 0
+            ) {
+                const eventoAuditoria =
+                    crearEventoAuditoria({
+                        clienteRef,
+                        operador:
+                            operadorAutorizado,
+                        accion:
+                            AUDIT_ACTIONS
+                                .MIGRACION_GANANCIAS_HISTORICAS,
+                        sessionId: null,
+                        deviceId,
+                        detalle: {
+                            ventasCandidatas,
+                            ventasActualizadas,
+                            ventasPendientes,
+                            lineasActualizadas,
+                            lineasMigradas,
+                            lineasEstimadas,
+                            productosConfigurados:
+                                rules.length,
+                            costoHistoricoAgregado,
+                            resultado:
+                                ventasPendientes > 0
+                                    ? "parcial"
+                                    : "completo",
+                        },
+                    });
+
+                await eventoAuditoria.ref.set(
+                    eventoAuditoria.data
+                );
+            }
+
+            return {
+                ok: true,
+                ventasCandidatas,
+                ventasActualizadas,
+                ventasPendientes,
+                lineasActualizadas,
+                lineasMigradas,
+                lineasEstimadas,
+                productosConfigurados:
+                    rules.length,
+                costoHistoricoAgregado,
+            };
+        }
+    );
+
 
 
 exports.abrirCaja =
@@ -13636,6 +16506,54 @@ exports.cerrarCaja =
                                 ),
                         };
 
+                        const payablePaymentTotals = {
+                            efectivo:
+                                roundMoney(
+                                    session
+                                        ?.payablePaymentTotals
+                                        ?.efectivo
+                                ),
+
+                            transferencia:
+                                roundMoney(
+                                    session
+                                        ?.payablePaymentTotals
+                                        ?.transferencia
+                                ),
+
+                            qr:
+                                roundMoney(
+                                    session
+                                        ?.payablePaymentTotals
+                                        ?.qr
+                                ),
+
+                            tarjeta:
+                                roundMoney(
+                                    session
+                                        ?.payablePaymentTotals
+                                        ?.tarjeta
+                                ),
+                        };
+
+                        const payablePaymentsTotal =
+                            roundMoney(
+                                session
+                                    .payablePaymentsTotal
+                            );
+
+                        const payablePaymentsCount =
+                            Math.max(
+                                0,
+                                Math.trunc(
+                                    Number(
+                                        session
+                                            .payablePaymentsCount ||
+                                        0
+                                    )
+                                )
+                            );
+
                         const receivablePaymentsTotal =
                             roundMoney(
                                 session
@@ -13678,6 +16596,8 @@ exports.cerrarCaja =
                                 ) +
                                 paymentTotals.efectivo +
                                 receivablePaymentTotals
+                                    .efectivo -
+                                payablePaymentTotals
                                     .efectivo
                             );
 
@@ -13716,6 +16636,12 @@ exports.cerrarCaja =
                                 receivablePaymentsTotal,
 
                                 receivablePaymentsCount,
+
+                                payablePaymentTotals,
+
+                                payablePaymentsTotal,
+
+                                payablePaymentsCount,
 
                                 status:
                                     "closed",

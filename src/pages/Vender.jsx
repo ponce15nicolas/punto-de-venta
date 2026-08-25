@@ -1,6 +1,7 @@
 // src/pages/Vender.jsx
 
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -136,6 +137,15 @@ export default function Vender({
   const [amountInput, setAmountInput] = useState("");
 
   const checkoutInFlightRef = useRef(false);
+
+  /*
+   * Los lectores USB comunes se presentan como teclado (HID).
+   * Guardamos un buffer independiente para poder escanear desde
+   * cualquier punto de la pantalla sin enfocar el buscador.
+   */
+  const usbScannerBufferRef = useRef("");
+  const usbScannerLastKeyRef = useRef(0);
+  const usbScannerResetTimerRef = useRef(null);
 
   /* =========================================================
      PRODUCTOS
@@ -327,6 +337,169 @@ export default function Vender({
     setSearch("");
     setSearchFocused(false);
   }
+
+  /* =========================================================
+     LECTOR USB / HID GLOBAL
+  ========================================================= */
+
+  useEffect(() => {
+    const MAX_GAP_MS = 110;
+    const RESET_AFTER_MS = 260;
+    const MIN_CODE_LENGTH = 3;
+
+    function clearUsbBuffer() {
+      usbScannerBufferRef.current = "";
+      usbScannerLastKeyRef.current = 0;
+
+      if (usbScannerResetTimerRef.current) {
+        window.clearTimeout(
+          usbScannerResetTimerRef.current
+        );
+
+        usbScannerResetTimerRef.current = null;
+      }
+    }
+
+    function isEditableTarget(target) {
+      if (!(target instanceof Element)) {
+        return false;
+      }
+
+      return Boolean(
+        target.closest(
+          'input, textarea, select, [contenteditable="true"]'
+        )
+      );
+    }
+
+    function handleUsbScannerKeyDown(event) {
+      /*
+       * Cuando el usuario está escribiendo en un campo dejamos
+       * trabajar al control normalmente. El buscador ya acepta
+       * un código exacto + Enter, por lo que el lector también
+       * funciona si ese campo quedó enfocado.
+       */
+      if (isEditableTarget(event.target)) {
+        clearUsbBuffer();
+        return;
+      }
+
+      if (
+        !openSession ||
+        scanOpen ||
+        payOpen ||
+        saleProduct ||
+        checkoutInFlightRef.current
+      ) {
+        clearUsbBuffer();
+        return;
+      }
+
+      if (
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.repeat
+      ) {
+        clearUsbBuffer();
+        return;
+      }
+
+      const key = event.key;
+
+      if (key === "Enter" || key === "Tab") {
+        const code = String(
+          usbScannerBufferRef.current || ""
+        ).trim();
+
+        clearUsbBuffer();
+
+        if (code.length < MIN_CODE_LENGTH) {
+          return;
+        }
+
+        event.preventDefault();
+
+        const product =
+          catalog?.[code] ||
+          products.find(
+            (item) =>
+              String(
+                item?.barcode || ""
+              ).trim() === code
+          );
+
+        if (!product) {
+          showToast(
+            `Código ${code}: producto no encontrado`,
+            true
+          );
+          return;
+        }
+
+        agregarProducto(product);
+        return;
+      }
+
+      if (key.length !== 1) {
+        return;
+      }
+
+      const now = Date.now();
+      const last =
+        usbScannerLastKeyRef.current;
+
+      /*
+       * Si entre caracteres pasa demasiado tiempo, lo tratamos
+       * como escritura humana y comenzamos una lectura nueva.
+       */
+      if (
+        last > 0 &&
+        now - last > MAX_GAP_MS
+      ) {
+        usbScannerBufferRef.current = "";
+      }
+
+      usbScannerBufferRef.current += key;
+      usbScannerLastKeyRef.current = now;
+
+      if (usbScannerResetTimerRef.current) {
+        window.clearTimeout(
+          usbScannerResetTimerRef.current
+        );
+      }
+
+      usbScannerResetTimerRef.current =
+        window.setTimeout(
+          clearUsbBuffer,
+          RESET_AFTER_MS
+        );
+    }
+
+    window.addEventListener(
+      "keydown",
+      handleUsbScannerKeyDown,
+      true
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleUsbScannerKeyDown,
+        true
+      );
+
+      clearUsbBuffer();
+    };
+  }, [
+    catalog,
+    openSession,
+    payOpen,
+    products,
+    saleProduct,
+    scanOpen,
+    showToast,
+  ]);
 
   function editarItem(item, index) {
     const tipo =
@@ -835,6 +1008,15 @@ export default function Vender({
       {/* =====================================================
           BUSCADOR
       ===================================================== */}
+
+      <div
+        className="mb-2.5 hidden items-center gap-2 rounded-2xl border border-[#FFC61A]/15 bg-[#FFC61A]/[0.06] px-3.5 py-2.5 text-[11px] font-semibold text-white/45 lg:flex"
+      >
+        <BarcodeIcon className="h-4 w-4 shrink-0 text-[#FFC61A]" />
+        <span>
+          Lector USB listo · Escaneá desde cualquier parte de esta pantalla.
+        </span>
+      </div>
 
       <div className="relative z-20 mb-4">
         <div className="flex gap-2.5">
