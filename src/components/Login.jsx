@@ -65,6 +65,7 @@ export default function Login() {
   return (
     <div
       className="
+        pos-auth-screen
         relative
         min-h-screen
         overflow-hidden
@@ -189,6 +190,7 @@ export default function Login() {
 
           <div
             className="
+              pos-auth-card
               overflow-hidden
               rounded-[30px]
               bg-white

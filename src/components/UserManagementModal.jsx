@@ -567,6 +567,7 @@ export default function UserManagementModal({
   return createPortal(
     <div
       className="
+        pos-user-management-overlay
         fixed
         inset-0
         z-[120]
@@ -609,6 +610,7 @@ export default function UserManagementModal({
           ease: "easeOut",
         }}
         className="
+          pos-user-management-panel
           max-h-[92dvh]
           w-full
           max-w-[440px]
@@ -624,6 +626,7 @@ export default function UserManagementModal({
       >
         <div
           className="
+            pos-user-management-header
             sticky
             top-0
             z-10
@@ -1303,6 +1306,7 @@ export default function UserManagementModal({
               ease: "easeOut",
             }}
             className="
+              pos-user-management-panel
               w-full
               max-w-[420px]
               rounded-t-[28px]

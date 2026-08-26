@@ -1119,6 +1119,7 @@ function OperatorLogin({
 
         <div
           className="
+            pos-auth-card
             overflow-hidden
             rounded-[30px]
             bg-white
@@ -1966,6 +1967,7 @@ function InitialAdminSetup({
 
         <div
           className="
+            pos-auth-card
             overflow-hidden
             rounded-[30px]
             bg-white
@@ -2414,6 +2416,7 @@ function OperatorError({
 
         <div
           className="
+            pos-auth-card
             rounded-[30px]
             bg-white
             p-5
@@ -2498,6 +2501,7 @@ function ScreenShell({
   return (
     <div
       className="
+        pos-auth-screen
         relative
         flex
         min-h-screen

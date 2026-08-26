@@ -184,6 +184,7 @@ function LicenseLoading() {
     return (
         <div
             className="
+        pos-auth-screen
         relative
         flex
         min-h-screen
@@ -450,6 +451,7 @@ function BlockedScreen({
     return (
         <div
             className="
+        pos-auth-screen
         relative
         flex
         min-h-screen
@@ -584,6 +586,7 @@ function BlockedScreen({
 
                 <div
                     className="
+            pos-auth-card
             overflow-hidden
             rounded-[30px]
             bg-white

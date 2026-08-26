@@ -463,6 +463,44 @@ function obtenerNombreDispositivo(
   return "Dispositivo desconocido";
 }
 
+const ADMIN_THEME_STORAGE_KEY = "pos-theme";
+
+function getAdminTheme() {
+  if (typeof document === "undefined") {
+    return "dark";
+  }
+
+  return document.documentElement.dataset.theme === "light"
+    ? "light"
+    : "dark";
+}
+
+function applyAdminTheme(theme) {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const normalized = theme === "light" ? "light" : "dark";
+
+  document.documentElement.dataset.theme = normalized;
+  document.documentElement.style.colorScheme = normalized;
+
+  const themeColor = document.querySelector('meta[name="theme-color"]');
+
+  if (themeColor) {
+    themeColor.setAttribute(
+      "content",
+      normalized === "light" ? "#F4F1E8" : "#0B0D12"
+    );
+  }
+
+  try {
+    window.localStorage.setItem(ADMIN_THEME_STORAGE_KEY, normalized);
+  } catch {
+    // El tema sigue funcionando aunque el navegador bloquee storage.
+  }
+}
+
 function mensajeError(
   error,
   fallback
@@ -522,6 +560,31 @@ export default function AdminPanel() {
     mostrarCrear,
     setMostrarCrear,
   ] = useState(false);
+
+  const [
+    theme,
+    setTheme,
+  ] = useState(getAdminTheme);
+
+  function handleToggleTheme() {
+    setTheme((current) => {
+      const next = current === "light" ? "dark" : "light";
+      applyAdminTheme(next);
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return undefined;
+    }
+
+    document.body.classList.add("pos-admin-active");
+
+    return () => {
+      document.body.classList.remove("pos-admin-active");
+    };
+  }, []);
 
   /* =======================================================
      CARGAR CLIENTES
@@ -780,6 +843,7 @@ export default function AdminPanel() {
   return (
     <div
       className="
+        pos-admin-shell
         min-h-screen
         bg-gradient-to-b
         from-[#0B0D12]
@@ -795,6 +859,7 @@ export default function AdminPanel() {
 
       <header
         className="
+          pos-admin-header
           sticky
           top-0
           z-20
@@ -873,6 +938,8 @@ export default function AdminPanel() {
                 )
               }
               className="
+                pos-admin-button
+                pos-admin-button--primary
                 inline-flex
                 items-center
                 gap-2
@@ -902,10 +969,58 @@ export default function AdminPanel() {
 
             <button
               type="button"
+              onClick={handleToggleTheme}
+              className="
+                pos-admin-button
+                pos-admin-theme-toggle
+                inline-flex
+                h-[42px]
+                items-center
+                justify-center
+                gap-2
+                rounded-2xl
+                border
+                border-white/10
+                bg-white/5
+                px-3
+                text-sm
+                font-bold
+                text-white/70
+                transition
+                hover:border-[#FFC61A]/45
+                hover:text-[#FFC61A]
+                active:scale-[0.98]
+              "
+              aria-label={
+                theme === "light"
+                  ? "Activar modo oscuro"
+                  : "Activar modo claro"
+              }
+              title={
+                theme === "light"
+                  ? "Modo oscuro"
+                  : "Modo claro"
+              }
+            >
+              {theme === "light" ? (
+                <MoonIcon className="h-4 w-4" />
+              ) : (
+                <SunIcon className="h-4 w-4" />
+              )}
+
+              <span className="hidden md:inline">
+                {theme === "light" ? "Oscuro" : "Claro"}
+              </span>
+            </button>
+
+            <button
+              type="button"
               onClick={() =>
                 signOut(auth)
               }
               className="
+                pos-admin-button
+                pos-admin-button--outline
                 inline-flex
                 items-center
                 gap-2
@@ -1127,6 +1242,7 @@ export default function AdminPanel() {
                     }
                     className={
                       `
+                        pos-admin-filter-button
                         rounded-2xl
                         px-4
                         py-2
@@ -4908,6 +5024,52 @@ function LogoutAllIcon({
       <path d="M9 17l5-5-5-5" />
       <path d="M14 12H3" />
       <path d="M16 7h3a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-3" />
+    </svg>
+  );
+}
+
+function SunIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2" />
+      <path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" />
+      <path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+      <path d="m6.34 17.66-1.41 1.41" />
+      <path d="m19.07 4.93-1.41 1.41" />
+    </svg>
+  );
+}
+
+function MoonIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20.7 13.3A8.3 8.3 0 1 1 10.7 3.3 6.5 6.5 0 0 0 20.7 13.3Z" />
     </svg>
   );
 }

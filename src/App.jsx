@@ -9,9 +9,11 @@ import { AnimatePresence, motion } from "motion/react";
 
 import { usePosData } from "./hooks/usePosData";
 import { useLicenseCheck } from "./hooks/useLicenseCheck";
+import { fmtTime } from "./lib/format";
 
 import Header from "./components/Header";
 import BottomNav from "./components/BottomNav";
+import MoreDrawer from "./components/MoreDrawer";
 import Toast from "./components/Toast";
 import UpdateNotice from "./components/UpdateNotice";
 import LicenseGate from "./components/LicenseGate";
@@ -136,6 +138,7 @@ function PosApp({ license }) {
   const [tab, setTab] = useState("vender");
   const [invFilter, setInvFilter] = useState("all");
   const [theme, setTheme] = useState(getCurrentTheme);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   function handleToggleTheme() {
     setTheme((current) => {
@@ -264,12 +267,6 @@ function PosApp({ license }) {
           shopName={pos.shopName}
           openSession={pos.openSession}
           onRename={handleRename}
-          deviceId={license.deviceId}
-          allowOperatorChangeWithOpenSession={
-            pos.migrationNeedsAdmin
-          }
-          theme={theme}
-          onToggleTheme={handleToggleTheme}
         />
       </div>
 
@@ -284,6 +281,7 @@ function PosApp({ license }) {
           mx-auto
           w-full
           max-w-[520px]
+          pos-main-content
           px-3.5
           pb-4
           pt-3
@@ -295,51 +293,12 @@ function PosApp({ license }) {
             BARRA SECUNDARIA
         =================================================== */}
 
-        <div
-          className="
-            mb-3
-            flex
-            min-h-9
-            items-center
-            justify-between
-            gap-3
-          "
-        >
+        <div className="pos-page-heading mb-3 flex min-h-9 items-center justify-between gap-3">
           <PageLabel tab={tab} />
 
-          <button
-            type="button"
-            onClick={handleCerrarSesion}
-            title="Cerrar sesión"
-            aria-label="Cerrar sesión"
-            className="
-              inline-flex
-              shrink-0
-              items-center
-              gap-1.5
-              rounded-xl
-              border
-              border-white/10
-              bg-white/[0.04]
-              px-2.5
-              py-2
-              text-[10px]
-              font-extrabold
-              text-white/45
-              transition
-              hover:border-[#FFC61A]/30
-              hover:bg-[#FFC61A]/10
-              hover:text-[#FFC61A]
-              active:scale-[0.97]
-              sm:px-3
-            "
-          >
-            <LogoutIcon className="h-3.5 w-3.5" />
-
-            <span className="hidden sm:inline">
-              Cerrar sesión
-            </span>
-          </button>
+          {tab === "vender" && pos.openSession && (
+            <DesktopCashStatus openSession={pos.openSession} />
+          )}
         </div>
 
         {/* ===================================================
@@ -416,9 +375,29 @@ function PosApp({ license }) {
           NAVEGACIÓN INFERIOR
       ===================================================== */}
 
-      <BottomNav
-        tab={tab}
-        setTab={setTab}
+      <AnimatePresence initial={false}>
+        {!moreOpen && (
+          <BottomNav
+            tab={tab}
+            setTab={setTab}
+            moreOpen={moreOpen}
+            onMore={() => setMoreOpen(true)}
+          />
+        )}
+      </AnimatePresence>
+
+      <MoreDrawer
+        open={moreOpen}
+        onClose={() => setMoreOpen(false)}
+        shopName={pos.shopName}
+        onNavigate={setTab}
+        currentTab={tab}
+        openSession={pos.openSession}
+        allowOperatorChangeWithOpenSession={pos.migrationNeedsAdmin}
+        deviceId={license.deviceId}
+        theme={theme}
+        onToggleTheme={handleToggleTheme}
+        onLogout={handleCerrarSesion}
       />
 
       {/* =====================================================
@@ -551,6 +530,34 @@ function PageLabel({ tab }) {
           {current.label}
         </span>
       </div>
+    </motion.div>
+  );
+}
+
+function DesktopCashStatus({ openSession }) {
+  if (!openSession) {
+    return null;
+  }
+
+  return (
+    <motion.div
+      key={openSession.openTime || "open-session"}
+      initial={{ opacity: 0, y: -3, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ type: "spring", stiffness: 420, damping: 28 }}
+      className="pos-desktop-cash-status"
+      aria-label={`Caja abierta desde ${fmtTime(openSession.openTime)}`}
+    >
+      <motion.span
+        animate={{ scale: [1, 1.32, 1], opacity: [1, 0.68, 1] }}
+        transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+        className="pos-desktop-cash-status__dot"
+        aria-hidden="true"
+      />
+
+      <span className="whitespace-nowrap">
+        Caja abierta · {fmtTime(openSession.openTime)}
+      </span>
     </motion.div>
   );
 }
@@ -697,27 +704,6 @@ function AppLoading() {
 /* =========================================================
    ICONOS
 ========================================================= */
-
-function LogoutIcon({
-  className = "",
-}) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M16 17l5-5-5-5" />
-      <path d="M21 12H9" />
-      <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7" />
-    </svg>
-  );
-}
 
 function ReceiptIcon({
   className = "",

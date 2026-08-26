@@ -36,6 +36,7 @@ export default function AdminLogin({ mensajeError }) {
   return (
     <div
       className="
+        pos-auth-screen
         relative
         min-h-screen
         overflow-hidden
@@ -173,6 +174,7 @@ export default function AdminLogin({ mensajeError }) {
 
           <div
             className="
+              pos-auth-card
               overflow-hidden
               rounded-[30px]
               bg-white
