@@ -280,18 +280,21 @@ export default function MoreDrawer({
                 <DrawerRow
                   icon={ReceiptIcon}
                   label="Vender"
+                  shortcut="Num 1"
                   active={currentTab === "vender"}
                   onClick={() => navigate("vender")}
                 />
                 <DrawerRow
                   icon={BoxIcon}
                   label="Stock"
+                  shortcut="Num 2"
                   active={currentTab === "inventario"}
                   onClick={() => navigate("inventario")}
                 />
                 <DrawerRow
                   icon={WalletIcon}
                   label="Caja"
+                  shortcut="Num 3"
                   active={currentTab === "caja"}
                   onClick={() => navigate("caja")}
                 />
@@ -324,31 +327,35 @@ export default function MoreDrawer({
                 )}
 
                 <DrawerRow
+                  icon={PurchaseIcon}
+                  label="Compras"
+                  shortcut="Num 4"
+                  active={currentTab === "compras"}
+                  onClick={() => navigate("compras")}
+                />
+
+                <DrawerRow
                   icon={ProfitIcon}
                   label="Ganancias"
+                  shortcut="Num 5"
                   active={currentTab === "ganancias"}
                   onClick={() => navigate("ganancias")}
                 />
 
                 <DrawerRow
-                  icon={ActivityIcon}
-                  label="Actividad"
-                  active={currentTab === "actividad"}
-                  onClick={() => navigate("actividad")}
-                />
-
-                <DrawerRow
                   icon={HistoryIcon}
                   label="Historial"
+                  shortcut="Num 6"
                   active={currentTab === "historial"}
                   onClick={() => navigate("historial")}
                 />
 
                 <DrawerRow
-                  icon={PurchaseIcon}
-                  label="Compras"
-                  active={currentTab === "compras"}
-                  onClick={() => navigate("compras")}
+                  icon={ActivityIcon}
+                  label="Actividad"
+                  shortcut="Num 7"
+                  active={currentTab === "actividad"}
+                  onClick={() => navigate("actividad")}
                 />
 
                 <DrawerRow
@@ -418,6 +425,7 @@ export default function MoreDrawer({
 function DrawerRow({
   icon: Icon,
   label,
+  shortcut = null,
   active = false,
   disabled = false,
   onClick,
@@ -434,6 +442,11 @@ function DrawerRow({
         <Icon className="h-5 w-5" />
       </span>
       <span className="pos-more-row__label">{label}</span>
+      {shortcut && (
+        <kbd className="pos-more-row__shortcut" aria-label={`Atajo ${shortcut}`}>
+          {shortcut}
+        </kbd>
+      )}
       <ChevronIcon className="pos-more-row__chevron h-4 w-4" />
     </button>
   );

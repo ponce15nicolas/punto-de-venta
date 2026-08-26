@@ -137,6 +137,7 @@ export default function Vender({
   const [amountInput, setAmountInput] = useState("");
 
   const checkoutInFlightRef = useRef(false);
+  const searchInputRef = useRef(null);
 
   /*
    * Los lectores USB comunes se presentan como teclado (HID).
@@ -499,6 +500,176 @@ export default function Vender({
     saleProduct,
     scanOpen,
     showToast,
+  ]);
+
+  /* =========================================================
+     ATAJOS DE VENTA — SOLO PC
+
+     F2              -> buscar producto
+     F4              -> vaciar ticket con confirmación
+     Numpad Enter    -> cobrar venta
+     Esc             -> cerrar/cancelar la acción activa
+  ========================================================= */
+
+  useEffect(() => {
+    function isEditableShortcutTarget(target) {
+      if (!(target instanceof Element)) {
+        return false;
+      }
+
+      return Boolean(
+        target.closest(
+          'input, textarea, select, [contenteditable="true"]'
+        )
+      );
+    }
+
+    function hasExternalDialog() {
+      if (
+        payOpen ||
+        scanOpen ||
+        saleProduct
+      ) {
+        return false;
+      }
+
+      return Boolean(
+        document.querySelector(
+          '[role="dialog"][aria-modal="true"]'
+        )
+      );
+    }
+
+    function handleDesktopSaleShortcut(event) {
+      if (
+        event.defaultPrevented ||
+        event.repeat ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.shiftKey ||
+        !window.matchMedia("(min-width: 900px)").matches
+      ) {
+        return;
+      }
+
+      const code = event.code;
+
+      if (code === "Escape") {
+        if (isEditableShortcutTarget(event.target)) {
+          return;
+        }
+
+        if (checkoutInFlightRef.current) {
+          return;
+        }
+
+        if (payOpen) {
+          event.preventDefault();
+          setPayOpen(false);
+          return;
+        }
+
+        if (scanOpen) {
+          event.preventDefault();
+          setScanOpen(false);
+          return;
+        }
+
+        if (saleProduct) {
+          event.preventDefault();
+          closeSaleModal();
+          return;
+        }
+
+        if (search || searchFocused) {
+          event.preventDefault();
+          setSearch("");
+          setSearchFocused(false);
+          searchInputRef.current?.blur();
+        }
+
+        return;
+      }
+
+      if (
+        isEditableShortcutTarget(event.target) ||
+        hasExternalDialog() ||
+        payOpen ||
+        scanOpen ||
+        saleProduct ||
+        checkoutInFlightRef.current
+      ) {
+        return;
+      }
+
+      if (code === "F2") {
+        if (!openSession) {
+          return;
+        }
+
+        event.preventDefault();
+        setSearchFocused(true);
+
+        window.requestAnimationFrame(() => {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        });
+
+        return;
+      }
+
+      if (code === "F4") {
+        if (cart.length === 0) {
+          return;
+        }
+
+        event.preventDefault();
+
+        const confirmar = window.confirm(
+          "¿Vaciar el ticket actual?"
+        );
+
+        if (confirmar) {
+          clearCart();
+        }
+
+        return;
+      }
+
+      if (code === "NumpadEnter") {
+        if (
+          !openSession ||
+          cart.length === 0
+        ) {
+          return;
+        }
+
+        event.preventDefault();
+        setPayOpen(true);
+      }
+    }
+
+    window.addEventListener(
+      "keydown",
+      handleDesktopSaleShortcut
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleDesktopSaleShortcut
+      );
+    };
+  }, [
+    cart.length,
+    clearCart,
+    openSession,
+    payOpen,
+    saleProduct,
+    scanOpen,
+    search,
+    searchFocused,
   ]);
 
   function editarItem(item, index) {
@@ -899,6 +1070,20 @@ export default function Vender({
     }
   }
 
+  function handleClearTicket() {
+    if (cart.length === 0) {
+      return;
+    }
+
+    const confirmar = window.confirm(
+      "¿Vaciar el ticket actual?"
+    );
+
+    if (confirmar) {
+      clearCart();
+    }
+  }
+
   /* =========================================================
      MODAL
   ========================================================= */
@@ -1010,11 +1195,18 @@ export default function Vender({
       ===================================================== */}
 
       <div
-        className="mb-2.5 hidden items-center gap-2 rounded-2xl border border-[#FFC61A]/15 bg-[#FFC61A]/[0.06] px-3.5 py-2.5 text-[11px] font-semibold text-white/45 lg:flex"
+        className="pos-sale-shortcuts mb-2.5 hidden items-center gap-2 rounded-2xl border border-[#FFC61A]/15 bg-[#FFC61A]/[0.06] px-3.5 py-2.5 text-[11px] font-semibold text-white/45 lg:flex"
       >
         <BarcodeIcon className="h-4 w-4 shrink-0 text-[#FFC61A]" />
-        <span>
-          Lector USB listo · Escaneá desde cualquier parte de esta pantalla.
+        <span className="mr-auto">Lector USB listo</span>
+        <span className="pos-sale-shortcuts__item">
+          <kbd>F2</kbd> Buscar
+        </span>
+        <span className="pos-sale-shortcuts__item">
+          <kbd>F4</kbd> Vaciar
+        </span>
+        <span className="pos-sale-shortcuts__item">
+          <kbd>Num Enter</kbd> Cobrar
         </span>
       </div>
 
@@ -1035,6 +1227,7 @@ export default function Vender({
             />
 
             <input
+              ref={searchInputRef}
               type="search"
               autoComplete="off"
               placeholder="Buscar por nombre o código..."
@@ -1743,7 +1936,7 @@ export default function Vender({
         <button
           type="button"
           onClick={
-            clearCart
+            handleClearTicket
           }
           className="
             mt-2.5

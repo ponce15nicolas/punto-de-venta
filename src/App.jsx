@@ -4,7 +4,7 @@
 // useLicenseCheck se ejecuta una sola vez para evitar
 // listeners, registros de sesión y heartbeats duplicados.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import { usePosData } from "./hooks/usePosData";
@@ -29,6 +29,40 @@ import Compras from "./pages/Compras";
 import Ganancias from "./pages/Ganancias";
 
 const THEME_STORAGE_KEY = "pos-theme";
+
+const DESKTOP_SHORTCUT_TABS = {
+  Numpad1: "vender",
+  Numpad2: "inventario",
+  Numpad3: "caja",
+  Numpad4: "compras",
+  Numpad5: "ganancias",
+  Numpad6: "historial",
+  Numpad7: "actividad",
+};
+
+function isEditableShortcutTarget(target) {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(
+    target.closest(
+      'input, textarea, select, [contenteditable="true"]'
+    )
+  );
+}
+
+function hasOpenBlockingDialog() {
+  if (typeof document === "undefined") {
+    return false;
+  }
+
+  return Boolean(
+    document.querySelector(
+      '[role="dialog"][aria-modal="true"]'
+    )
+  );
+}
 
 function getCurrentTheme() {
   if (typeof document === "undefined") {
@@ -139,6 +173,55 @@ function PosApp({ license }) {
   const [invFilter, setInvFilter] = useState("all");
   const [theme, setTheme] = useState(getCurrentTheme);
   const [moreOpen, setMoreOpen] = useState(false);
+
+  /* =========================================================
+     ATAJOS DE NAVEGACIÓN — SOLO PC / NUMPAD
+  ========================================================= */
+
+  useEffect(() => {
+    function handleDesktopNavigationShortcut(event) {
+      if (
+        event.defaultPrevented ||
+        event.repeat ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.shiftKey ||
+        isEditableShortcutTarget(event.target) ||
+        !window.matchMedia("(min-width: 900px)").matches ||
+        hasOpenBlockingDialog()
+      ) {
+        return;
+      }
+
+      const nextTab = DESKTOP_SHORTCUT_TABS[event.code];
+
+      if (!nextTab) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (nextTab === "inventario") {
+        setInvFilter("all");
+      }
+
+      setMoreOpen(false);
+      setTab(nextTab);
+    }
+
+    window.addEventListener(
+      "keydown",
+      handleDesktopNavigationShortcut
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleDesktopNavigationShortcut
+      );
+    };
+  }, []);
 
   function handleToggleTheme() {
     setTheme((current) => {
