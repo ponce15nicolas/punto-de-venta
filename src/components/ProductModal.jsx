@@ -552,6 +552,7 @@ export default function ProductModal({
 
         <Field label="Forma de venta">
           <div
+            data-modal-horizontal-group="true"
             className="
               grid
               grid-cols-1
@@ -573,6 +574,7 @@ export default function ProductModal({
                       tipo.id
                     }
                     type="button"
+                    data-modal-horizontal-item="true"
                     onClick={() =>
                       cambiarTipoVenta(
                         tipo.id
@@ -764,6 +766,7 @@ export default function ProductModal({
 
             <button
               type="button"
+              data-modal-skip-nav="true"
               className="
                 grid
                 h-12
@@ -1355,6 +1358,7 @@ export default function ProductModal({
 
         <button
           type="button"
+          data-modal-primary="true"
           className="
             inline-flex
             w-full

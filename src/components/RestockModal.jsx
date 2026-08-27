@@ -619,6 +619,7 @@ export default function RestockModal({
               >
                 <button
                   type="button"
+                  data-modal-skip-nav="true"
                   onClick={
                     restar
                   }
@@ -656,6 +657,7 @@ export default function RestockModal({
                   <input
                     id="restock-amount"
                     type="number"
+                    data-modal-autofocus="true"
                     step={
                       ventaPorPeso
                         ? "0.001"
@@ -739,6 +741,7 @@ export default function RestockModal({
 
                 <button
                   type="button"
+                  data-modal-skip-nav="true"
                   onClick={
                     sumar
                   }
@@ -920,6 +923,7 @@ export default function RestockModal({
 
             <button
               type="button"
+              data-modal-primary="true"
               onClick={
                 confirmar
               }

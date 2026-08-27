@@ -449,6 +449,7 @@ export default function Scanner({
 
             <input
               id="manual-barcode"
+              data-modal-autofocus="true"
               inputMode="numeric"
               autoComplete="off"
               className="
@@ -490,6 +491,7 @@ export default function Scanner({
 
           <button
             type="button"
+            data-modal-primary="true"
             disabled={!manual.trim()}
             onClick={submitManual}
             className="

@@ -342,7 +342,10 @@ export default function PaymentModal({
             Forma de cobro
           </label>
 
-          <div className="grid grid-cols-2 gap-2.5">
+          <div
+            data-modal-horizontal-group="true"
+            className="grid grid-cols-2 gap-2.5"
+          >
             {METHODS.map((item) => {
               const activo = method === item.id;
               const Icon = item.icon;
@@ -351,6 +354,7 @@ export default function PaymentModal({
                 <button
                   key={item.id}
                   type="button"
+                  data-modal-horizontal-item="true"
                   onClick={() => selectPrimaryMethod(item.id)}
                   className={
                     `
@@ -451,6 +455,7 @@ export default function PaymentModal({
                 <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-black text-[#FFC61A]">$</span>
                 <input
                   type="number"
+                  data-modal-autofocus="true"
                   min="0.01"
                   max={Math.max(0, total - 0.01)}
                   step="0.01"
@@ -464,7 +469,10 @@ export default function PaymentModal({
 
             <div className="mt-3">
               <span className="mb-1.5 block text-xs font-bold text-white/55">Segundo medio</span>
-              <div className="grid grid-cols-2 gap-2">
+              <div
+                data-modal-horizontal-group="true"
+                className="grid grid-cols-2 gap-2"
+              >
                 {SPLIT_METHODS.filter((item) => item.id !== method).map((item) => {
                   const Icon = item.icon;
                   const active = secondMethod === item.id;
@@ -472,6 +480,7 @@ export default function PaymentModal({
                     <button
                       key={item.id}
                       type="button"
+                      data-modal-horizontal-item="true"
                       onClick={() => { setSecondMethod(item.id); setSecondReceived(""); }}
                       className={
                         `flex items-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-extrabold transition ` +
@@ -493,7 +502,7 @@ export default function PaymentModal({
               <span className="text-base font-black text-[#FFC61A]">{money(secondSplitAmount)}</span>
             </div>
 
-            {!splitEnabled && method === "efectivo" && (
+            {method === "efectivo" && (
               <label className="mt-3 block">
                 <span className="mb-1.5 block text-xs font-bold text-white/55">Efectivo recibido · primer medio</span>
                 <input
@@ -541,7 +550,7 @@ export default function PaymentModal({
             EFECTIVO
         ================================================= */}
 
-        {method === "efectivo" && (
+        {!splitEnabled && method === "efectivo" && (
           <motion.div
             initial={{
               opacity: 0,
@@ -593,6 +602,7 @@ export default function PaymentModal({
               <input
                 id="payment-received"
                 type="number"
+                data-modal-autofocus="true"
                 step="0.01"
                 min="0"
                 inputMode="decimal"
@@ -1059,6 +1069,7 @@ export default function PaymentModal({
 
         <button
           type="button"
+          data-modal-primary="true"
           disabled={!canConfirm}
           onClick={confirmar}
           className="
@@ -1105,6 +1116,7 @@ function QuickAmount({
   return (
     <button
       type="button"
+      data-modal-skip-nav="true"
       onClick={onClick}
       className="
         rounded-xl

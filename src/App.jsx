@@ -4,7 +4,7 @@
 // useLicenseCheck se ejecuta una sola vez para evitar
 // listeners, registros de sesión y heartbeats duplicados.
 
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import { usePosData } from "./hooks/usePosData";
@@ -16,6 +16,7 @@ import BottomNav from "./components/BottomNav";
 import MoreDrawer from "./components/MoreDrawer";
 import Toast from "./components/Toast";
 import UpdateNotice from "./components/UpdateNotice";
+import OfflineStatusBar from "./components/OfflineStatusBar";
 import LicenseGate from "./components/LicenseGate";
 import { useOperator } from "./components/OperatorGate";
 import AdminRoute from "./components/AdminRoute";
@@ -52,6 +53,25 @@ const DESKTOP_SHORTCUT_TABS = {
   Numpad6: "historial",
   Numpad7: "actividad",
 };
+
+/*
+ * Alternativa para notebook sin depender de F1-F12 ni de Numpad.
+ * Las letras se ejecutan con una demora mínima para distinguir una
+ * pulsación humana de la ráfaga rápida que envía un lector HID.
+ */
+const NOTEBOOK_SHORTCUT_TABS = {
+  KeyV: "vender",
+  KeyS: "inventario",
+  KeyC: "caja",
+  KeyP: "compras",
+  KeyG: "ganancias",
+  KeyH: "historial",
+  KeyA: "actividad",
+};
+
+const NOTEBOOK_SHORTCUT_DELAY_MS = 145;
+const SCANNER_KEY_GAP_MS = 95;
+const SCANNER_IDLE_RESET_MS = 280;
 
 function isEditableShortcutTarget(target) {
   if (!(target instanceof Element)) {
@@ -239,6 +259,11 @@ function PosApp({ license }) {
     useState(getCurrentEffectsMode);
   const [moreOpen, setMoreOpen] = useState(false);
 
+  const notebookShortcutTimerRef = useRef(null);
+  const notebookScannerIdleTimerRef = useRef(null);
+  const notebookLastPrintableRef = useRef(0);
+  const notebookScannerBurstRef = useRef(false);
+
   useEffect(() => {
     applyEffectsMode(effectsMode);
   }, [effectsMode]);
@@ -282,32 +307,38 @@ function PosApp({ license }) {
   }, [pos.loaded]);
 
   /* =========================================================
-     ATAJOS DE NAVEGACIÓN — SOLO PC / NUMPAD
+     ATAJOS DE NAVEGACIÓN — PC + NOTEBOOK
+
+     Teclado completo: Num 1-7
+     Notebook: V / S / C / P / G / H / A
+
+     Las letras se demoran ~145 ms. Si llegan más caracteres a
+     velocidad de lector láser, se cancela el atajo y la ráfaga
+     queda reservada para el scanner HID.
   ========================================================= */
 
   useEffect(() => {
-    function handleDesktopNavigationShortcut(event) {
-      if (
-        event.defaultPrevented ||
-        event.repeat ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.altKey ||
-        event.shiftKey ||
-        isEditableShortcutTarget(event.target) ||
-        !window.matchMedia("(min-width: 900px)").matches ||
-        hasOpenBlockingDialog()
-      ) {
-        return;
+    function clearPendingNotebookShortcut() {
+      if (notebookShortcutTimerRef.current !== null) {
+        window.clearTimeout(notebookShortcutTimerRef.current);
+        notebookShortcutTimerRef.current = null;
       }
+    }
 
-      const nextTab = DESKTOP_SHORTCUT_TABS[event.code];
+    function resetScannerBurst() {
+      notebookScannerBurstRef.current = false;
+      notebookLastPrintableRef.current = 0;
 
+      if (notebookScannerIdleTimerRef.current !== null) {
+        window.clearTimeout(notebookScannerIdleTimerRef.current);
+        notebookScannerIdleTimerRef.current = null;
+      }
+    }
+
+    function navigateTo(nextTab) {
       if (!nextTab) {
         return;
       }
-
-      event.preventDefault();
 
       if (nextTab === "inventario") {
         setInvFilter("all");
@@ -317,16 +348,94 @@ function PosApp({ license }) {
       setTab(nextTab);
     }
 
-    window.addEventListener(
-      "keydown",
-      handleDesktopNavigationShortcut
-    );
+    function handleNavigationShortcut(event) {
+      if (
+        event.defaultPrevented ||
+        event.repeat ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        isEditableShortcutTarget(event.target) ||
+        !window.matchMedia("(min-width: 760px), (pointer: fine)").matches ||
+        hasOpenBlockingDialog()
+      ) {
+        return;
+      }
+
+      const numpadTab = DESKTOP_SHORTCUT_TABS[event.code];
+
+      if (numpadTab && !event.shiftKey) {
+        event.preventDefault();
+        clearPendingNotebookShortcut();
+        navigateTo(numpadTab);
+        return;
+      }
+
+      if (event.key === "Enter" || event.key === "Tab") {
+        clearPendingNotebookShortcut();
+        resetScannerBurst();
+        return;
+      }
+
+      const printable =
+        event.key.length === 1 &&
+        !event.shiftKey;
+
+      if (!printable) {
+        return;
+      }
+
+      const now = performance.now();
+      const previous = notebookLastPrintableRef.current;
+
+      if (
+        previous > 0 &&
+        now - previous <= SCANNER_KEY_GAP_MS
+      ) {
+        notebookScannerBurstRef.current = true;
+        clearPendingNotebookShortcut();
+      }
+
+      notebookLastPrintableRef.current = now;
+
+      if (notebookScannerIdleTimerRef.current !== null) {
+        window.clearTimeout(notebookScannerIdleTimerRef.current);
+      }
+
+      notebookScannerIdleTimerRef.current = window.setTimeout(
+        resetScannerBurst,
+        SCANNER_IDLE_RESET_MS
+      );
+
+      const nextTab = NOTEBOOK_SHORTCUT_TABS[event.code];
+
+      if (!nextTab || notebookScannerBurstRef.current) {
+        return;
+      }
+
+      clearPendingNotebookShortcut();
+
+      notebookShortcutTimerRef.current = window.setTimeout(() => {
+        notebookShortcutTimerRef.current = null;
+
+        if (
+          notebookScannerBurstRef.current ||
+          hasOpenBlockingDialog() ||
+          isEditableShortcutTarget(document.activeElement)
+        ) {
+          return;
+        }
+
+        navigateTo(nextTab);
+      }, NOTEBOOK_SHORTCUT_DELAY_MS);
+    }
+
+    window.addEventListener("keydown", handleNavigationShortcut);
 
     return () => {
-      window.removeEventListener(
-        "keydown",
-        handleDesktopNavigationShortcut
-      );
+      window.removeEventListener("keydown", handleNavigationShortcut);
+      clearPendingNotebookShortcut();
+      resetScannerBurst();
     };
   }, []);
 
@@ -361,6 +470,16 @@ function PosApp({ license }) {
   ========================================================= */
 
   async function handleCerrarSesion() {
+    if (
+      pos.pendingOfflineCount >
+      0
+    ) {
+      window.alert(
+        "Hay ventas pendientes de sincronización. Esperá a que se confirmen antes de cerrar sesión."
+      );
+      return;
+    }
+
     const confirmar = window.confirm(
       "¿Cerrar sesión?"
     );
@@ -471,6 +590,10 @@ function PosApp({ license }) {
           onRename={handleRename}
         />
       </div>
+
+      <OfflineStatusBar
+        pos={pos}
+      />
 
       {/* =====================================================
           CONTENIDO
@@ -609,6 +732,7 @@ function PosApp({ license }) {
         currentTab={tab}
         openSession={pos.openSession}
         allowOperatorChangeWithOpenSession={pos.migrationNeedsAdmin}
+        pendingOfflineCount={pos.pendingOfflineCount}
         deviceId={license.deviceId}
         theme={theme}
         onToggleTheme={handleToggleTheme}

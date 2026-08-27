@@ -15410,6 +15410,28 @@ exports.registrarVenta =
                         ?.timestamp
                 );
 
+            const expectedSessionId =
+                request.data?.sessionId === null ||
+                request.data?.sessionId === undefined ||
+                request.data?.sessionId === ""
+                    ? null
+                    : validarId(
+                        request.data?.sessionId,
+                        "sessionId"
+                    );
+
+            const offlineQueued =
+                request.data?.offlineQueued ===
+                true;
+
+            const offlineCreatedAt =
+                offlineQueued
+                    ? normalizarFechaIsoVenta(
+                        request.data?.offlineCreatedAt ||
+                        timestamp
+                    )
+                    : null;
+
             const expectedTotalRaw =
                 request.data
                     ?.expectedTotal;
@@ -15520,6 +15542,73 @@ exports.registrarVenta =
                          * Todas las lecturas se completan antes de
                          * iniciar las escrituras de la transacción.
                          */
+                        /*
+                         * Idempotencia antes de consultar la caja actual.
+                         * Si Firebase alcanzó a confirmar la venta pero la
+                         * respuesta se perdió por un corte de Internet, el
+                         * reintento devuelve la misma venta sin descontar
+                         * stock ni caja una segunda vez.
+                         */
+                        const existingSaleSnap =
+                            await transaction.get(
+                                saleRef
+                            );
+
+                        if (
+                            existingSaleSnap.exists
+                        ) {
+                            const existingSale =
+                                existingSaleSnap.data() ||
+                                {};
+
+                            const sameDevice =
+                                textoSeguro(
+                                    existingSale.deviceId,
+                                    180
+                                ) ===
+                                deviceId;
+
+                            const sameTimestamp =
+                                normalizarFechaIsoVenta(
+                                    existingSale.timestamp
+                                ) ===
+                                timestamp;
+
+                            const sameSession =
+                                !expectedSessionId ||
+                                textoSeguro(
+                                    existingSale.sessionId,
+                                    180
+                                ) ===
+                                expectedSessionId;
+
+                            if (
+                                !sameDevice ||
+                                !sameTimestamp ||
+                                !sameSession
+                            ) {
+                                throw new HttpsError(
+                                    "already-exists",
+                                    "El identificador de venta ya fue utilizado."
+                                );
+                            }
+
+                            return {
+                                alreadyExists:
+                                    true,
+
+                                sale: {
+                                    id:
+                                        existingSaleSnap.id,
+
+                                    ...existingSale,
+
+                                    createdAt:
+                                        null,
+                                },
+                            };
+                        }
+
                         const configSnap =
                             await transaction.get(
                                 configRef
@@ -15539,6 +15628,21 @@ exports.registrarVenta =
                                 {
                                     motivo:
                                         "cash-not-open",
+                                }
+                            );
+                        }
+
+                        if (
+                            expectedSessionId &&
+                            sessionId !==
+                                expectedSessionId
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La venta pendiente pertenece a otra sesión de caja.",
+                                {
+                                    motivo:
+                                        "cash-session-mismatch",
                                 }
                             );
                         }
@@ -15571,47 +15675,6 @@ exports.registrarVenta =
                                         "cash-not-open",
                                 }
                             );
-                        }
-
-                        const existingSaleSnap =
-                            await transaction.get(
-                                saleRef
-                            );
-
-                        if (
-                            existingSaleSnap.exists
-                        ) {
-                            const existingSale =
-                                existingSaleSnap.data() ||
-                                {};
-
-                            if (
-                                textoSeguro(
-                                    existingSale.sessionId,
-                                    180
-                                ) !==
-                                sessionId
-                            ) {
-                                throw new HttpsError(
-                                    "already-exists",
-                                    "El identificador de venta ya fue utilizado."
-                                );
-                            }
-
-                            return {
-                                alreadyExists:
-                                    true,
-
-                                sale: {
-                                    id:
-                                        existingSaleSnap.id,
-
-                                    ...existingSale,
-
-                                    createdAt:
-                                        null,
-                                },
-                            };
                         }
 
                         if (cuentaRef) {
@@ -16357,6 +16420,14 @@ exports.registrarVenta =
 
                             deviceId,
 
+                            offlineQueued,
+
+                            ...(offlineQueued
+                                ? {
+                                    offlineCreatedAt,
+                                }
+                                : {}),
+
                             createdAt:
                                 admin.firestore.FieldValue.serverTimestamp(),
                         };
@@ -16537,6 +16608,16 @@ exports.registrarVenta =
 
                                     ventaId:
                                         saleId,
+
+                                    sincronizadaOffline:
+                                        offlineQueued,
+
+                                    ...(offlineQueued
+                                        ? {
+                                            ventaOfflineCreadaEn:
+                                                offlineCreatedAt,
+                                        }
+                                        : {}),
 
                                     total,
 

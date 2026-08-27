@@ -44,6 +44,7 @@ export default function MoreDrawer({
   currentTab,
   openSession,
   allowOperatorChangeWithOpenSession = false,
+  pendingOfflineCount = 0,
   deviceId = null,
   theme = "dark",
   onToggleTheme,
@@ -181,6 +182,16 @@ export default function MoreDrawer({
 
   async function handleChangeUser() {
     if (changingUser) {
+      return;
+    }
+
+    if (
+      Number(pendingOfflineCount) >
+      0
+    ) {
+      window.alert(
+        "Hay ventas pendientes de sincronización. Esperá a que se confirmen antes de cambiar de usuario."
+      );
       return;
     }
 

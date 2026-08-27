@@ -480,9 +480,13 @@ export default function PromotionManagerModal({
         </div>
       ) : (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-2">
+          <div
+            data-modal-horizontal-group="true"
+            className="grid grid-cols-2 gap-2"
+          >
             <button
               type="button"
+              data-modal-horizontal-item="true"
               onClick={() => setType("cantidad")}
               className={`rounded-2xl border px-3 py-3 text-xs font-extrabold transition ${form.type === "cantidad" ? "border-[#FFC61A]/40 bg-[#FFC61A] text-black" : "border-white/10 bg-white/[0.035] text-white/55"}`}
             >
@@ -490,6 +494,7 @@ export default function PromotionManagerModal({
             </button>
             <button
               type="button"
+              data-modal-horizontal-item="true"
               onClick={() => setType("combo")}
               className={`rounded-2xl border px-3 py-3 text-xs font-extrabold transition ${form.type === "combo" ? "border-[#FFC61A]/40 bg-[#FFC61A] text-black" : "border-white/10 bg-white/[0.035] text-white/55"}`}
             >
@@ -644,6 +649,7 @@ export default function PromotionManagerModal({
             </button>
             <button
               type="button"
+              data-modal-primary="true"
               disabled={saving}
               onClick={save}
               className="rounded-2xl bg-[#FFC61A] px-3 py-3.5 text-sm font-extrabold text-black transition hover:bg-[#FFD248] disabled:opacity-40"

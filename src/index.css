@@ -2019,3 +2019,93 @@ html[data-effects="balanced"] .pos-ambient-orb {
     contain-intrinsic-size: auto 220px;
   }
 }
+
+/* =========================================================
+   MODO OFFLINE — ESTADO DE CONEXIÓN
+
+   El banner usa tonos propios para no depender de utilidades
+   pensadas para fondo oscuro. En tema claro aumenta contraste
+   de texto, borde y fondo para que el aviso siga siendo legible.
+========================================================= */
+
+.pos-offline-status {
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.18);
+}
+
+.pos-offline-status__message {
+  opacity: 0.82;
+}
+
+.pos-offline-status__retry {
+  border-color: color-mix(in srgb, currentColor 22%, transparent);
+  background: rgba(0, 0, 0, 0.10);
+}
+
+.pos-offline-status__retry:hover {
+  background: rgba(0, 0, 0, 0.20);
+}
+
+.pos-offline-status--amber {
+  border-color: rgba(255, 198, 26, 0.30);
+  background: rgba(255, 198, 26, 0.10);
+  color: #FFE18A;
+}
+
+.pos-offline-status--blue {
+  border-color: rgba(56, 189, 248, 0.30);
+  background: rgba(56, 189, 248, 0.10);
+  color: #E0F2FE;
+}
+
+.pos-offline-status--green {
+  border-color: rgba(52, 211, 153, 0.30);
+  background: rgba(52, 211, 153, 0.10);
+  color: #D1FAE5;
+}
+
+.pos-offline-status--red {
+  border-color: rgba(248, 113, 113, 0.30);
+  background: rgba(248, 113, 113, 0.10);
+  color: #FEE2E2;
+}
+
+html[data-theme="light"] .pos-offline-status {
+  box-shadow: 0 12px 30px rgba(36, 31, 20, 0.10);
+}
+
+html[data-theme="light"] .pos-offline-status__message {
+  opacity: 0.90;
+}
+
+html[data-theme="light"] .pos-offline-status__retry {
+  background: rgba(255, 255, 255, 0.58);
+  border-color: color-mix(in srgb, currentColor 30%, transparent);
+}
+
+html[data-theme="light"] .pos-offline-status__retry:hover {
+  background: rgba(255, 255, 255, 0.88);
+}
+
+html[data-theme="light"] .pos-offline-status--amber {
+  border-color: rgba(166, 113, 0, 0.34);
+  background: rgba(255, 198, 26, 0.24);
+  color: #604400;
+}
+
+html[data-theme="light"] .pos-offline-status--blue {
+  border-color: rgba(3, 105, 161, 0.28);
+  background: rgba(14, 165, 233, 0.14);
+  color: #075985;
+}
+
+html[data-theme="light"] .pos-offline-status--green {
+  border-color: rgba(4, 120, 87, 0.27);
+  background: rgba(16, 185, 129, 0.14);
+  color: #065F46;
+}
+
+html[data-theme="light"] .pos-offline-status--red {
+  border-color: rgba(185, 28, 28, 0.25);
+  background: rgba(239, 68, 68, 0.12);
+  color: #991B1B;
+}

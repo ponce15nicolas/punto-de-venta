@@ -4296,6 +4296,9 @@ export async function checkoutCloud(
     payment,
     deviceId = null,
     timestamp = null,
+    sessionId = null,
+    offlineQueued = false,
+    offlineCreatedAt = null,
     operadorSesion = null,
   }
 ) {
@@ -4316,6 +4319,19 @@ export async function checkoutCloud(
       deviceId,
       "deviceId"
     );
+
+  const cleanSessionId =
+    String(
+      sessionId ||
+        ""
+    ).trim();
+
+  const cleanOfflineCreatedAt =
+    offlineQueued
+      ? safeIsoDate(
+          offlineCreatedAt
+        )
+      : null;
 
   if (
     !operadorSesion?.id ||
@@ -4471,6 +4487,24 @@ export async function checkoutCloud(
             timestamp
           ),
 
+        ...(cleanSessionId
+          ? {
+              sessionId:
+                cleanSessionId,
+            }
+          : {}),
+
+        offlineQueued:
+          offlineQueued ===
+          true,
+
+        ...(offlineQueued
+          ? {
+              offlineCreatedAt:
+                cleanOfflineCreatedAt,
+            }
+          : {}),
+
         operadorSesion,
       });
 
@@ -4500,6 +4534,42 @@ export async function checkoutCloud(
     if (
       error instanceof
       PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const rawCode =
+      String(
+        error?.code ||
+          ""
+      )
+        .toLowerCase()
+        .split("/")
+        .pop();
+
+    const rawMessage =
+      String(
+        error?.message ||
+          ""
+      ).toLowerCase();
+
+    if (
+      [
+        "unavailable",
+        "deadline-exceeded",
+        "network-request-failed",
+        "cancelled",
+      ].includes(rawCode) ||
+      [
+        "failed to fetch",
+        "network",
+        "offline",
+        "internet",
+        "conexión",
+        "conexion",
+      ].some((fragment) =>
+        rawMessage.includes(fragment)
+      )
     ) {
       throw error;
     }
@@ -4552,6 +4622,17 @@ export async function checkoutCloud(
       code ===
       "failed-precondition"
     ) {
+      if (
+        motivo ===
+        "cash-session-mismatch"
+      ) {
+        fail(
+          "cash-session-mismatch",
+          serverMessage ||
+          "La venta pertenece a otra sesión de caja"
+        );
+      }
+
       if (
         motivo ===
         "cash-not-open"

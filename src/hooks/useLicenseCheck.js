@@ -53,6 +53,11 @@ import {
     uid,
 } from "../lib/format";
 
+import {
+    browserIsOnline,
+    isNetworkError,
+} from "../lib/network";
+
 /* =========================================================
    CONFIGURACIÓN
 ========================================================= */
@@ -1224,16 +1229,32 @@ export function useLicenseCheck() {
                         },
 
                         (error) => {
-                            console.error(
-                                "Error escuchando licencia:",
-                                error
-                            );
-
                             if (
                                 cancelado
                             ) {
                                 return;
                             }
+
+                            /*
+                             * Una pérdida de red NO invalida una licencia que
+                             * ya estaba autorizada. Firestore volverá a intentar
+                             * el listener al recuperar conectividad.
+                             */
+                            if (
+                                !browserIsOnline() ||
+                                isNetworkError(error)
+                            ) {
+                                console.warn(
+                                    "Licencia temporalmente sin conexión; se conserva el último estado válido."
+                                );
+
+                                return;
+                            }
+
+                            console.error(
+                                "Error escuchando licencia:",
+                                error
+                            );
 
                             setDatosCliente(
                                 null
@@ -1249,16 +1270,31 @@ export function useLicenseCheck() {
                         }
                     );
             } catch (error) {
-                console.error(
-                    "Error verificando licencia:",
-                    error
-                );
-
                 if (
                     cancelado
                 ) {
                     return;
                 }
+
+                /*
+                 * Si la aplicación ya estaba abierta y cae Internet, no
+                 * convertimos un fallo de transporte en licencia inactiva.
+                 */
+                if (
+                    !browserIsOnline() ||
+                    isNetworkError(error)
+                ) {
+                    console.warn(
+                        "No se pudo revalidar la licencia por falta de conexión; se conserva el último estado válido."
+                    );
+
+                    return;
+                }
+
+                console.error(
+                    "Error verificando licencia:",
+                    error
+                );
 
                 setDatosCliente(
                     null
@@ -1577,6 +1613,23 @@ export function useLicenseCheck() {
                     );
                 }
             } catch (error) {
+                /*
+                 * El heartbeat sirve para mantener la sesión activa en
+                 * backend, pero una caída de Internet no debe expulsar al
+                 * cajero del POS. Conservamos la autorización local y el
+                 * próximo heartbeat revalidará automáticamente al volver.
+                 */
+                if (
+                    !browserIsOnline() ||
+                    isNetworkError(error)
+                ) {
+                    console.warn(
+                        "Heartbeat de licencia omitido temporalmente por falta de conexión."
+                    );
+
+                    return;
+                }
+
                 console.error(
                     "Error actualizando sesión:",
                     error
@@ -1708,11 +1761,27 @@ export function useLicenseCheck() {
                         return;
                     }
 
+                    if (
+                        !browserIsOnline()
+                    ) {
+                        return;
+                    }
+
                     try {
                         await user.getIdToken(
                             true
                         );
                     } catch (error) {
+                        if (
+                            isNetworkError(error)
+                        ) {
+                            console.warn(
+                                "Renovación de token pospuesta hasta recuperar conexión."
+                            );
+
+                            return;
+                        }
+
                         console.error(
                             "Error renovando token:",
                             error

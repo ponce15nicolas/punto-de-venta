@@ -42,8 +42,7 @@ export default function PromotionSaleModal({
         })
         .filter(
           (promotion) =>
-            promotion.regularTotal > 0 &&
-            promotion.saving > 0
+            promotion.regularTotal > 0
         )
         .sort((a, b) =>
           String(a.name || "").localeCompare(
@@ -118,7 +117,9 @@ export default function PromotionSaleModal({
 
                 <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-emerald-500/[0.07] px-3 py-2">
                   <span className="text-[10px] font-extrabold text-emerald-400">
-                    Ahorrás {money(promotion.saving)}
+                    {promotion.saving > 0
+                      ? `Ahorrás ${money(promotion.saving)}`
+                      : "Sin ahorro · precio combo"}
                   </span>
 
                   <button

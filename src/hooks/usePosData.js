@@ -30,6 +30,7 @@ import {
 
 import {
   checkoutCloud,
+  getProductsOnce,
   closeCashSessionCloud,
   createManualReceivableCloud,
   registerReceivablePaymentCloud,
@@ -59,6 +60,19 @@ import {
   markLocalPosMigrationHandled,
   migrateLocalPosToFirestore,
 } from "../services/pos/posMigration";
+
+import {
+  enqueueOfflineSale,
+  listOfflineOperations,
+  patchOfflineOperation,
+  removeOfflineOperation,
+  subscribeOfflineQueue,
+} from "../lib/offlineQueue";
+
+import {
+  browserIsOnline,
+  isNetworkError,
+} from "../lib/network";
 
 /* =========================================================
    CONFIGURACIÓN
@@ -317,6 +331,164 @@ function normalizeArray(
   return Array.isArray(value)
     ? value.filter(Boolean)
     : [];
+}
+
+function applyOfflineSalesToCatalog(
+  baseCatalog,
+  operations,
+  confirmedSaleIds = new Set()
+) {
+  const nextCatalog = {
+    ...normalizeCatalog(
+      baseCatalog
+    ),
+  };
+
+  for (
+    const operation of
+    normalizeArray(operations)
+  ) {
+    if (
+      operation?.type !==
+        "sale" ||
+      confirmedSaleIds.has(
+        String(
+          operation?.saleId ||
+            ""
+        )
+      )
+    ) {
+      continue;
+    }
+
+    for (
+      const [
+        barcode,
+        rawRequired,
+      ] of Object.entries(
+        operation?.stockNeeded ||
+          {}
+      )
+    ) {
+      const current =
+        nextCatalog[barcode];
+
+      if (!current) {
+        continue;
+      }
+
+      const required =
+        Math.max(
+          0,
+          toNumber(
+            rawRequired
+          )
+        );
+
+      if (required <= 0) {
+        continue;
+      }
+
+      const tipoVenta =
+        normalizeProductType(
+          current.tipoVenta
+        );
+
+      const nextStock =
+        Math.max(
+          0,
+          toNumber(
+            current.stock
+          ) - required
+        );
+
+      nextCatalog[barcode] = {
+        ...current,
+        stock:
+          tipoVenta ===
+          "peso"
+            ? roundQuantity(
+                nextStock
+              )
+            : Math.trunc(
+                nextStock
+              ),
+      };
+    }
+  }
+
+  return nextCatalog;
+}
+
+function mergeOfflineSales(
+  cloudSales,
+  operations
+) {
+  const next = [
+    ...normalizeArray(
+      cloudSales
+    ),
+  ];
+
+  const cloudIds =
+    new Set(
+      next.map((sale) =>
+        String(
+          sale?.id ||
+            ""
+        )
+      )
+    );
+
+  for (
+    const operation of
+    normalizeArray(operations)
+  ) {
+    const localSale =
+      operation?.localSale;
+
+    if (
+      !localSale?.id ||
+      cloudIds.has(
+        String(localSale.id)
+      )
+    ) {
+      continue;
+    }
+
+    next.push({
+      ...localSale,
+      offlinePending:
+        operation.status !==
+        "synced",
+      offlineStatus:
+        operation.status ||
+        "pending",
+      offlineError:
+        operation.lastError ||
+        null,
+    });
+  }
+
+  return next.sort((a, b) =>
+    String(
+      a?.timestamp ||
+        ""
+    ).localeCompare(
+      String(
+        b?.timestamp ||
+          ""
+      )
+    )
+  );
+}
+
+function offlineErrorText(error) {
+  return String(
+    error?.message ||
+      mapCloudError(error) ||
+      "No se pudo sincronizar la venta"
+  ).trim();
 }
 
 function getItemSubtotal(
@@ -586,6 +758,39 @@ export function usePosData({
     setToastMsg,
   ] = useState(null);
 
+  const [
+    isOnline,
+    setIsOnline,
+  ] = useState(
+    browserIsOnline
+  );
+
+  const [
+    offlineOperations,
+    setOfflineOperations,
+  ] = useState([]);
+
+  const [
+    offlineQueueLoaded,
+    setOfflineQueueLoaded,
+  ] = useState(
+    !cloudRequested
+  );
+
+  const [
+    offlineSyncState,
+    setOfflineSyncState,
+  ] = useState(
+    browserIsOnline()
+      ? "idle"
+      : "offline"
+  );
+
+  const [
+    offlineLastSyncAt,
+    setOfflineLastSyncAt,
+  ] = useState(null);
+
   /* =========================================================
      REFS
   ========================================================= */
@@ -618,6 +823,18 @@ export function usePosData({
 
   const cloudCacheCompleteRef =
     useRef(false);
+
+  const offlineOperationsRef =
+    useRef([]);
+
+  const syncingOfflineRef =
+    useRef(false);
+
+  const confirmedCloudSaleIdsRef =
+    useRef(new Set());
+
+  const offlineSyncedTimerRef =
+    useRef(null);
 
   /*
    * Firestore puede emitir varios snapshots seguidos por una sola operación.
@@ -670,6 +887,13 @@ export function usePosData({
   ]);
 
   useEffect(() => {
+    offlineOperationsRef.current =
+      offlineOperations;
+  }, [
+    offlineOperations,
+  ]);
+
+  useEffect(() => {
     accountsReceivableRef.current =
       accountsReceivable;
   }, [
@@ -690,6 +914,84 @@ export function usePosData({
   }, [
     promotions,
   ]);
+
+  useEffect(() => {
+    if (
+      typeof window ===
+      "undefined"
+    ) {
+      return undefined;
+    }
+
+    function handleOnline() {
+      setIsOnline(true);
+    }
+
+    function handleOffline() {
+      setIsOnline(false);
+      setOfflineSyncState(
+        "offline"
+      );
+
+      if (cloudRequested) {
+        cloudActiveRef.current =
+          false;
+        setSyncStatus(
+          "offline"
+        );
+      }
+    }
+
+    window.addEventListener(
+      "online",
+      handleOnline
+    );
+
+    window.addEventListener(
+      "offline",
+      handleOffline
+    );
+
+    const recoveryTimer =
+      window.setInterval(() => {
+        if (
+          !isOnline &&
+          browserIsOnline()
+        ) {
+          setIsOnline(true);
+        }
+      }, 8000);
+
+    return () => {
+      window.removeEventListener(
+        "online",
+        handleOnline
+      );
+      window.removeEventListener(
+        "offline",
+        handleOffline
+      );
+      window.clearInterval(
+        recoveryTimer
+      );
+    };
+  }, [
+    cloudRequested,
+    isOnline,
+  ]);
+
+  useEffect(() => () => {
+    if (
+      offlineSyncedTimerRef.current !==
+      null &&
+      typeof window !==
+      "undefined"
+    ) {
+      window.clearTimeout(
+        offlineSyncedTimerRef.current
+      );
+    }
+  }, []);
 
   /* =========================================================
      TOAST
@@ -724,7 +1026,9 @@ export function usePosData({
   const persistCompleteCloudCache =
     useCallback(() => {
       if (
-        !cleanClienteId
+        !cleanClienteId ||
+        offlineOperationsRef.current
+          .length > 0
       ) {
         return false;
       }
@@ -899,7 +1203,9 @@ export function usePosData({
             cloudActiveRef
               .current &&
             cloudCacheCompleteRef
-              .current
+              .current &&
+            offlineOperationsRef.current
+              .length === 0
           ) {
             scheduleCompleteCloudCachePersist();
           }
@@ -938,7 +1244,9 @@ export function usePosData({
             cloudActiveRef
               .current &&
             cloudCacheCompleteRef
-              .current
+              .current &&
+            offlineOperationsRef.current
+              .length === 0
           ) {
             scheduleCompleteCloudCachePersist();
           }
@@ -979,7 +1287,9 @@ export function usePosData({
             cloudActiveRef
               .current &&
             cloudCacheCompleteRef
-              .current
+              .current &&
+            offlineOperationsRef.current
+              .length === 0
           ) {
             scheduleCompleteCloudCachePersist();
           }
@@ -1018,7 +1328,9 @@ export function usePosData({
             cloudActiveRef
               .current &&
             cloudCacheCompleteRef
-              .current
+              .current &&
+            offlineOperationsRef.current
+              .length === 0
           ) {
             scheduleCompleteCloudCachePersist();
           }
@@ -1059,7 +1371,9 @@ export function usePosData({
             cloudActiveRef
               .current &&
             cloudCacheCompleteRef
-              .current
+              .current &&
+            offlineOperationsRef.current
+              .length === 0
           ) {
             scheduleCompleteCloudCachePersist();
           }
@@ -1274,6 +1588,140 @@ export function usePosData({
     cleanClienteId,
   ]);
 
+  /* =========================================================
+     COLA OFFLINE
+  ========================================================= */
+
+  useEffect(() => {
+    if (
+      !cloudRequested
+    ) {
+      offlineOperationsRef.current =
+        [];
+      setOfflineOperations([]);
+      setOfflineQueueLoaded(true);
+      setOfflineSyncState(
+        "idle"
+      );
+      return undefined;
+    }
+
+    let cancelled = false;
+    let firstLoad = true;
+
+    setOfflineQueueLoaded(false);
+
+    async function loadQueue() {
+      try {
+        const operations =
+          await listOfflineOperations(
+            cleanClienteId
+          );
+
+        if (cancelled) {
+          return;
+        }
+
+        offlineOperationsRef.current =
+          operations;
+        setOfflineOperations(
+          operations
+        );
+
+        if (
+          firstLoad &&
+          operations.length > 0
+        ) {
+          /*
+           * La caché Cloud se mantiene sin descuentos provisionales.
+           * Al montar el POS reconstruimos el estado visible aplicando
+           * exactamente una vez las operaciones que viven en IndexedDB.
+           */
+          persistCatalog(
+            applyOfflineSalesToCatalog(
+              catalogRef.current,
+              operations,
+              confirmedCloudSaleIdsRef.current
+            )
+          );
+
+          persistSales(
+            mergeOfflineSales(
+              salesRef.current,
+              operations
+            )
+          );
+        } else if (
+          !firstLoad
+        ) {
+          persistSales(
+            mergeOfflineSales(
+              salesRef.current,
+              operations
+            )
+          );
+        }
+
+        firstLoad = false;
+
+        const attentionCount =
+          operations.filter(
+            (operation) =>
+              operation?.status ===
+              "attention"
+          ).length;
+
+        if (attentionCount > 0) {
+          setOfflineSyncState(
+            "attention"
+          );
+        } else if (operations.length > 0) {
+          setOfflineSyncState(
+            browserIsOnline()
+              ? "pending"
+              : "offline"
+          );
+        } else if (!browserIsOnline()) {
+          setOfflineSyncState(
+            "offline"
+          );
+        }
+      } catch (error) {
+        console.error(
+          "No se pudo cargar la cola offline:",
+          error
+        );
+
+        if (!cancelled) {
+          setOfflineSyncState(
+            "storage-error"
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setOfflineQueueLoaded(true);
+        }
+      }
+    }
+
+    loadQueue();
+
+    const unsubscribe =
+      subscribeOfflineQueue(() => {
+        loadQueue();
+      });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [
+    cloudRequested,
+    cleanClienteId,
+    persistCatalog,
+    persistSales,
+  ]);
+
     /* =========================================================
      MIGRACIÓN + FIRESTORE
   ========================================================= */
@@ -1300,6 +1748,30 @@ export function usePosData({
         true
       );
 
+      return undefined;
+    }
+
+    if (
+      !offlineQueueLoaded
+    ) {
+      cloudActiveRef.current =
+        false;
+      setLoaded(false);
+      return undefined;
+    }
+
+    if (
+      !isOnline
+    ) {
+      cloudActiveRef.current =
+        false;
+      setSyncStatus(
+        "offline"
+      );
+      setOfflineSyncState(
+        "offline"
+      );
+      setLoaded(true);
       return undefined;
     }
 
@@ -1719,7 +2191,12 @@ export function usePosData({
             cloudCacheCompleteRef.current =
               true;
 
-            persistCompleteCloudCache();
+            if (
+              offlineOperationsRef.current
+                .length === 0
+            ) {
+              persistCompleteCloudCache();
+            }
 
             setSyncStatus(
               "synced"
@@ -1742,6 +2219,22 @@ export function usePosData({
           if (
             cancelled
           ) {
+            return;
+          }
+
+          if (
+            isNetworkError(error)
+          ) {
+            cloudActiveRef.current =
+              false;
+            setIsOnline(false);
+            setSyncStatus(
+              "offline"
+            );
+            setOfflineSyncState(
+              "offline"
+            );
+            setLoaded(true);
             return;
           }
 
@@ -1854,7 +2347,11 @@ export function usePosData({
               }
 
               persistCatalog(
-                nextCatalog
+                applyOfflineSalesToCatalog(
+                  nextCatalog,
+                  offlineOperationsRef.current,
+                  confirmedCloudSaleIdsRef.current
+                )
               );
 
               markSnapshot(
@@ -1877,8 +2374,23 @@ export function usePosData({
                 return;
               }
 
+              confirmedCloudSaleIdsRef.current =
+                new Set(
+                  normalizeArray(
+                    nextSales
+                  ).map((sale) =>
+                    String(
+                      sale?.id ||
+                        ""
+                    )
+                  )
+                );
+
               persistSales(
-                nextSales
+                mergeOfflineSales(
+                  nextSales,
+                  offlineOperationsRef.current
+                )
               );
 
               markSnapshot(
@@ -1974,11 +2486,26 @@ export function usePosData({
           return;
         }
 
+        if (
+          isNetworkError(error)
+        ) {
+          cloudActiveRef.current =
+            false;
+          setIsOnline(false);
+          setSyncStatus(
+            "offline"
+          );
+          setOfflineSyncState(
+            "offline"
+          );
+          setLoaded(true);
+          return;
+        }
+
         /*
-         * Si Firestore todavía no puede inicializarse,
-         * conservamos la caché sólo para consulta. Mientras
-         * exista identidad Cloud, todas las mutaciones quedan
-         * bloqueadas para evitar divergencias o pérdida de datos.
+         * Si Firestore todavía no puede inicializarse por un error
+         * no relacionado con la red, conservamos la caché sólo
+         * para consulta y bloqueamos mutaciones Cloud.
          */
         cloudActiveRef.current =
           false;
@@ -2036,6 +2563,8 @@ export function usePosData({
     };
   }, [
     cloudRequested,
+    offlineQueueLoaded,
+    isOnline,
     cleanClienteId,
     cleanDeviceId,
     cleanDeviceSessionId,
@@ -4459,6 +4988,603 @@ export function usePosData({
     );
 
   /* =========================================================
+     VENTAS OFFLINE
+  ========================================================= */
+
+  const pendingOfflineCount =
+    useMemo(
+      () =>
+        offlineOperations.filter(
+          (operation) =>
+            operation?.type ===
+              "sale" &&
+            operation?.status !==
+              "synced"
+        ).length,
+      [offlineOperations]
+    );
+
+  const offlineAttentionCount =
+    useMemo(
+      () =>
+        offlineOperations.filter(
+          (operation) =>
+            operation?.type ===
+              "sale" &&
+            operation?.status ===
+              "attention"
+        ).length,
+      [offlineOperations]
+    );
+
+  const persistOfflineSale =
+    useCallback(
+      async ({
+        saleId,
+        timestamp,
+        saleItems,
+        total,
+        totalCost,
+        grossProfit,
+        pricing,
+        normalizedPayment,
+        sessionId,
+        stockNecesario,
+      }) => {
+        if (
+          !cloudRequested ||
+          !offlineQueueLoaded
+        ) {
+          return null;
+        }
+
+        const localSale = {
+          id: saleId,
+          timestamp,
+          items: saleItems,
+          total,
+          totalCost,
+          grossProfit,
+          promotionDiscountTotal:
+            pricing.discountTotal,
+          promotionsApplied:
+            pricing.applications,
+          profitCostStatus:
+            "exact",
+          sessionId,
+          payment:
+            normalizedPayment,
+          deviceId:
+            cleanDeviceId ||
+            null,
+          offlinePending:
+            true,
+          offlineStatus:
+            "pending",
+          offlineCreatedAt:
+            timestamp,
+        };
+
+        try {
+          const record =
+            await enqueueOfflineSale(
+              cleanClienteId,
+              {
+                saleId,
+                createdAt:
+                  timestamp,
+                sessionId,
+                stockNeeded:
+                  stockNecesario,
+                payload: {
+                  saleId,
+                  items:
+                    saleItems,
+                  payment:
+                    normalizedPayment,
+                  deviceId:
+                    cleanDeviceId,
+                  timestamp,
+                  sessionId,
+                },
+                localSale,
+              }
+            );
+
+          const nextOperations = [
+            ...offlineOperationsRef.current.filter(
+              (operation) =>
+                operation?.id !==
+                record.id
+            ),
+            record,
+          ].sort((a, b) =>
+            String(
+              a?.createdAt ||
+                ""
+            ).localeCompare(
+              String(
+                b?.createdAt ||
+                  ""
+              )
+            )
+          );
+
+          offlineOperationsRef.current =
+            nextOperations;
+          setOfflineOperations(
+            nextOperations
+          );
+
+          /*
+           * El catálogo visible descuenta la venta inmediatamente.
+           * No escribimos esta versión provisional en la caché Cloud:
+           * IndexedDB es la fuente durable de pendientes.
+           */
+          persistCatalog(
+            applyOfflineSalesToCatalog(
+              catalogRef.current,
+              [record]
+            )
+          );
+
+          persistSales(
+            mergeOfflineSales(
+              salesRef.current,
+              nextOperations
+            )
+          );
+
+          setOfflineSyncState(
+            browserIsOnline()
+              ? "pending"
+              : "offline"
+          );
+
+          return localSale;
+        } catch (error) {
+          console.error(
+            "No se pudo guardar la venta en IndexedDB:",
+            error
+          );
+
+          setOfflineSyncState(
+            "storage-error"
+          );
+
+          return null;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        cloudRequested,
+        offlineQueueLoaded,
+        persistCatalog,
+        persistSales,
+      ]
+    );
+
+  const processOfflineQueue =
+    useCallback(
+      async ({
+        includeAttention = false,
+      } = {}) => {
+        if (
+          !cloudRequested ||
+          !offlineQueueLoaded ||
+          !cloudActiveRef.current ||
+          !browserIsOnline() ||
+          syncingOfflineRef.current
+        ) {
+          return false;
+        }
+
+        syncingOfflineRef.current =
+          true;
+        setOfflineSyncState(
+          "syncing"
+        );
+
+        let stoppedByNetwork = false;
+        let hasAttention = false;
+
+        try {
+          const operations =
+            await listOfflineOperations(
+              cleanClienteId
+            );
+
+          for (const operation of operations) {
+            if (
+              operation?.type !==
+                "sale" ||
+              (
+                operation?.status ===
+                  "attention" &&
+                !includeAttention
+              )
+            ) {
+              if (
+                operation?.status ===
+                "attention"
+              ) {
+                hasAttention = true;
+              }
+              continue;
+            }
+
+            const payload =
+              operation?.payload ||
+              {};
+
+            try {
+              const result =
+                await checkoutCloud(
+                  cleanClienteId,
+                  {
+                    saleId:
+                      operation.saleId,
+                    items:
+                      payload.items ||
+                      operation?.localSale?.items ||
+                      [],
+                    payment:
+                      payload.payment ||
+                      operation?.localSale?.payment ||
+                      {},
+                    deviceId:
+                      payload.deviceId ||
+                      cleanDeviceId,
+                    timestamp:
+                      payload.timestamp ||
+                      operation.createdAt,
+                    sessionId:
+                      operation.sessionId ||
+                      payload.sessionId ||
+                      null,
+                    offlineQueued:
+                      true,
+                    offlineCreatedAt:
+                      operation.createdAt,
+                    operadorSesion,
+                  }
+                );
+
+              const confirmedSale =
+                result?.sale ||
+                {
+                  ...operation.localSale,
+                  offlinePending:
+                    false,
+                };
+
+              confirmedCloudSaleIdsRef.current.add(
+                String(
+                  operation.saleId
+                )
+              );
+
+              const nextSales =
+                salesRef.current.some(
+                  (sale) =>
+                    String(
+                      sale?.id ||
+                        ""
+                    ) ===
+                    String(
+                      operation.saleId
+                    )
+                )
+                  ? salesRef.current.map(
+                      (sale) =>
+                        String(
+                          sale?.id ||
+                            ""
+                        ) ===
+                        String(
+                          operation.saleId
+                        )
+                          ? confirmedSale
+                          : sale
+                    )
+                  : [
+                      ...salesRef.current,
+                      confirmedSale,
+                    ];
+
+              persistSales(
+                nextSales
+              );
+
+              await removeOfflineOperation(
+                operation.id
+              );
+            } catch (error) {
+              if (
+                isNetworkError(error)
+              ) {
+                stoppedByNetwork =
+                  true;
+
+                await patchOfflineOperation(
+                  operation.id,
+                  {
+                    status:
+                      "pending",
+                    attempts:
+                      Math.max(
+                        0,
+                        Math.trunc(
+                          toNumber(
+                            operation.attempts
+                          )
+                        )
+                      ) + 1,
+                    lastError:
+                      offlineErrorText(
+                        error
+                      ),
+                  }
+                );
+
+                cloudActiveRef.current =
+                  false;
+                setIsOnline(false);
+                setSyncStatus(
+                  "offline"
+                );
+                setOfflineSyncState(
+                  "offline"
+                );
+                break;
+              }
+
+              hasAttention = true;
+
+              const patched =
+                await patchOfflineOperation(
+                  operation.id,
+                  {
+                    status:
+                      "attention",
+                    attempts:
+                      Math.max(
+                        0,
+                        Math.trunc(
+                          toNumber(
+                            operation.attempts
+                          )
+                        )
+                      ) + 1,
+                    lastError:
+                      offlineErrorText(
+                        error
+                      ),
+                  }
+                );
+
+              if (patched?.localSale) {
+                persistSales(
+                  salesRef.current.map(
+                    (sale) =>
+                      String(
+                        sale?.id ||
+                          ""
+                      ) ===
+                      String(
+                        operation.saleId
+                      )
+                        ? {
+                            ...sale,
+                            offlinePending:
+                              true,
+                            offlineStatus:
+                              "attention",
+                            offlineError:
+                              offlineErrorText(
+                                error
+                              ),
+                          }
+                        : sale
+                  )
+                );
+              }
+            }
+          }
+
+          const remaining =
+            await listOfflineOperations(
+              cleanClienteId
+            );
+
+          offlineOperationsRef.current =
+            remaining;
+          setOfflineOperations(
+            remaining
+          );
+
+          if (
+            !stoppedByNetwork &&
+            cloudActiveRef.current
+          ) {
+            try {
+              const authoritativeCatalog =
+                await getProductsOnce(
+                  cleanClienteId
+                );
+
+              persistCatalog(
+                applyOfflineSalesToCatalog(
+                  authoritativeCatalog,
+                  remaining,
+                  confirmedCloudSaleIdsRef.current
+                )
+              );
+            } catch (refreshError) {
+              if (
+                isNetworkError(
+                  refreshError
+                )
+              ) {
+                stoppedByNetwork =
+                  true;
+                cloudActiveRef.current =
+                  false;
+                setIsOnline(false);
+                setSyncStatus(
+                  "offline"
+                );
+              } else {
+                console.error(
+                  "No se pudo refrescar el stock después de sincronizar:",
+                  refreshError
+                );
+              }
+            }
+          }
+
+          persistSales(
+            mergeOfflineSales(
+              salesRef.current,
+              remaining
+            )
+          );
+
+          hasAttention =
+            hasAttention ||
+            remaining.some(
+              (operation) =>
+                operation?.status ===
+                "attention"
+            );
+
+          if (stoppedByNetwork) {
+            setOfflineSyncState(
+              "offline"
+            );
+            return false;
+          }
+
+          if (hasAttention) {
+            setOfflineSyncState(
+              "attention"
+            );
+            return false;
+          }
+
+          if (remaining.length > 0) {
+            setOfflineSyncState(
+              "pending"
+            );
+            return false;
+          }
+
+          persistCompleteCloudCache();
+          setOfflineLastSyncAt(
+            new Date().toISOString()
+          );
+          setOfflineSyncState(
+            "synced"
+          );
+
+          if (
+            typeof window !==
+            "undefined"
+          ) {
+            if (
+              offlineSyncedTimerRef.current !==
+              null
+            ) {
+              window.clearTimeout(
+                offlineSyncedTimerRef.current
+              );
+            }
+
+            offlineSyncedTimerRef.current =
+              window.setTimeout(() => {
+                setOfflineSyncState(
+                  "idle"
+                );
+                offlineSyncedTimerRef.current =
+                  null;
+              }, 4500);
+          }
+
+          return true;
+        } catch (error) {
+          console.error(
+            "No se pudo procesar la cola offline:",
+            error
+          );
+
+          if (isNetworkError(error)) {
+            cloudActiveRef.current =
+              false;
+            setIsOnline(false);
+            setSyncStatus(
+              "offline"
+            );
+            setOfflineSyncState(
+              "offline"
+            );
+          } else {
+            setOfflineSyncState(
+              "attention"
+            );
+          }
+
+          return false;
+        } finally {
+          syncingOfflineRef.current =
+            false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        cloudRequested,
+        offlineQueueLoaded,
+        operadorSesion,
+        persistCatalog,
+        persistCompleteCloudCache,
+        persistSales,
+      ]
+    );
+
+  const retryOfflineSync =
+    useCallback(
+      () =>
+        processOfflineQueue({
+          includeAttention: true,
+        }),
+      [processOfflineQueue]
+    );
+
+  useEffect(() => {
+    if (
+      !cloudRequested ||
+      !offlineQueueLoaded ||
+      !isOnline ||
+      syncStatus !==
+        "synced" ||
+      offlineOperations.length ===
+        0
+    ) {
+      return;
+    }
+
+    processOfflineQueue();
+  }, [
+    cloudRequested,
+    offlineQueueLoaded,
+    isOnline,
+    syncStatus,
+    offlineOperations.length,
+    processOfflineQueue,
+  ]);
+
+  /* =========================================================
      CHECKOUT
   ========================================================= */
 
@@ -4973,85 +6099,138 @@ export function usePosData({
              CLOUD
           --------------------------------------------------- */
 
+          let savedOffline =
+            false;
+
           if (
             cloudActiveRef
               .current
           ) {
-            /*
-             * checkoutCloud utiliza una transacción:
-             *
-             * - verifica stock real en Firestore;
-             * - descuenta stock;
-             * - registra la venta;
-             * - actualiza los totales de caja;
-             * - registra la auditoría del operador;
-             * - evita repetir el mismo saleId.
-             */
-            const result =
-              await checkoutCloud(
-                cleanClienteId,
+            try {
+              /*
+               * La misma saleId viaja también en reintentos.
+               * El backend es idempotente y además valida que
+               * la venta pertenezca a esta sesión de caja.
+               */
+              const result =
+                await checkoutCloud(
+                  cleanClienteId,
+                  {
+                    saleId,
+
+                    items:
+                      saleItems,
+
+                    payment:
+                      normalizedPayment,
+
+                    deviceId:
+                      cleanDeviceId,
+
+                    timestamp,
+
+                    sessionId:
+                      currentOpenSession.id,
+
+                    operadorSesion,
+                  }
+                );
+
+              sale =
+                result?.sale ||
                 {
-                  saleId,
+                  id:
+                    saleId,
+
+                  timestamp,
 
                   items:
                     saleItems,
+
+                  total,
+
+                  totalCost,
+
+                  grossProfit,
+
+                  promotionDiscountTotal:
+                    pricing.discountTotal,
+
+                  promotionsApplied:
+                    pricing.applications,
+
+                  profitCostStatus:
+                    "exact",
+
+                  sessionId:
+                    currentOpenSession.id,
 
                   payment:
                     normalizedPayment,
 
                   deviceId:
-                    cleanDeviceId,
+                    cleanDeviceId ||
+                    null,
+                };
+            } catch (cloudError) {
+              if (
+                !isNetworkError(
+                  cloudError
+                )
+              ) {
+                throw cloudError;
+              }
 
-                  timestamp,
-
-                  operadorSesion,
-                }
+              cloudActiveRef.current =
+                false;
+              setIsOnline(false);
+              setSyncStatus(
+                "offline"
+              );
+              setOfflineSyncState(
+                "offline"
               );
 
-            sale =
-              result?.sale ||
-              {
-                id:
+              if (
+                method ===
+                "cuenta"
+              ) {
+                showToast(
+                  "La conexión se interrumpió. Las ventas a cuenta requieren conexión y el ticket quedó sin registrar",
+                  true
+                );
+                return false;
+              }
+
+              sale =
+                await persistOfflineSale({
                   saleId,
-
-                timestamp,
-
-                items:
+                  timestamp,
                   saleItems,
-
-                total,
-
-                totalCost,
-
-                grossProfit,
-
-                promotionDiscountTotal:
-                  pricing.discountTotal,
-
-                promotionsApplied:
-                  pricing.applications,
-
-                profitCostStatus:
-                  "exact",
-
-                sessionId:
-                  currentOpenSession.id,
-
-                payment:
+                  total,
+                  totalCost,
+                  grossProfit,
+                  pricing,
                   normalizedPayment,
+                  sessionId:
+                    currentOpenSession.id,
+                  stockNecesario,
+                });
 
-                deviceId:
-                  cleanDeviceId ||
-                  null,
-              };
+              if (!sale) {
+                showToast(
+                  "No se pudo guardar la venta sin conexión. El ticket se conserva para reintentar",
+                  true
+                );
+                return false;
+              }
 
-            /*
-             * Lo mostramos de inmediato.
-             *
-             * El listener reemplazará luego
-             * el estado con la versión Cloud.
-             */
+              savedOffline =
+                true;
+            }
+
             if (
+              !savedOffline &&
               !salesRef.current.some(
                 (item) =>
                   item.id ===
@@ -5066,12 +6245,53 @@ export function usePosData({
           } else if (
             cloudRequested
           ) {
-            showToast(
-              "Necesitás conexión con la nube para registrar la venta",
-              true
-            );
+            if (
+              isOnline &&
+              browserIsOnline()
+            ) {
+              showToast(
+                "La nube todavía se está reconectando. Esperá unos segundos e intentá nuevamente",
+                true
+              );
+              return false;
+            }
 
-            return false;
+            if (
+              method ===
+              "cuenta"
+            ) {
+              showToast(
+                "Las ventas a cuenta requieren conexión con la nube",
+                true
+              );
+              return false;
+            }
+
+            sale =
+              await persistOfflineSale({
+                saleId,
+                timestamp,
+                saleItems,
+                total,
+                totalCost,
+                grossProfit,
+                pricing,
+                normalizedPayment,
+                sessionId:
+                  currentOpenSession.id,
+                stockNecesario,
+              });
+
+            if (!sale) {
+              showToast(
+                "No se pudo guardar la venta sin conexión. El ticket se conserva para reintentar",
+                true
+              );
+              return false;
+            }
+
+            savedOffline =
+              true;
           } else {
             /* -------------------------------------------------
                MODO LOCAL
@@ -5178,14 +6398,16 @@ export function usePosData({
           setCart([]);
 
           showToast(
-            method ===
-              "cuenta"
-              ? `Venta a cuenta registrada · ${total.toFixed(
-                  2
-                )}`
-              : `Venta registrada · ${total.toFixed(
-                  2
-                )}`
+            savedOffline
+              ? "Venta guardada en este dispositivo · se sincronizará al recuperar la conexión"
+              : method ===
+                  "cuenta"
+                ? `Venta a cuenta registrada · ${total.toFixed(
+                    2
+                  )}`
+                : `Venta registrada · ${total.toFixed(
+                    2
+                  )}`
           );
 
           return true;
@@ -5240,8 +6462,10 @@ export function usePosData({
         cleanClienteId,
         cleanDeviceId,
         cloudRequested,
+        isOnline,
         operadorSesion,
         persistCatalog,
+        persistOfflineSale,
         persistPromotions,
         persistSales,
         showToast,
@@ -5475,6 +6699,38 @@ export function usePosData({
         ) {
           showToast(
             "No hay una caja abierta",
+            true
+          );
+
+          return false;
+        }
+
+        const pendingForSession =
+          offlineOperationsRef.current.filter(
+            (operation) =>
+              operation?.type ===
+                "sale" &&
+              operation?.status !==
+                "synced" &&
+              String(
+                operation?.sessionId ||
+                  ""
+              ) ===
+                String(
+                  currentOpenSession.id ||
+                    ""
+                )
+          );
+
+        if (
+          pendingForSession.length > 0
+        ) {
+          showToast(
+            `Hay ${pendingForSession.length} ${
+              pendingForSession.length === 1
+                ? "venta pendiente"
+                : "ventas pendientes"
+            } de sincronización. Conectate y esperá su confirmación antes de cerrar la caja.`,
             true
           );
 
@@ -6483,6 +7739,14 @@ export function usePosData({
     loaded,
 
     syncStatus,
+
+    isOnline,
+    offlineQueueLoaded,
+    offlineSyncState,
+    offlineLastSyncAt,
+    pendingOfflineCount,
+    offlineAttentionCount,
+    retryOfflineSync,
 
     migrationNeedsAdmin,
 

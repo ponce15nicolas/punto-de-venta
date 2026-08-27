@@ -104,6 +104,21 @@ function displayBarcode(barcode) {
   return value;
 }
 
+function getCartLineKey(item, index) {
+  if (item?.cartLineId) {
+    return String(item.cartLineId);
+  }
+
+  const barcode = String(item?.barcode || "line");
+  const tipo = getTipoVenta(item);
+
+  if (tipo === "unidad") {
+    return `unit:${barcode}`;
+  }
+
+  return `${tipo}:${barcode}:${index}`;
+}
+
 /* =========================================================
    COMPONENTE
 ========================================================= */
@@ -139,8 +154,18 @@ export default function Vender({
   const [weightInput, setWeightInput] = useState("");
   const [amountInput, setAmountInput] = useState("");
 
+  const [selectedLineKey, setSelectedLineKey] = useState(null);
+  const [quantityEditor, setQuantityEditor] = useState(null);
+  const [searchResultIndex, setSearchResultIndex] = useState(0);
+
   const checkoutInFlightRef = useRef(false);
   const searchInputRef = useRef(null);
+  const cartRowRefs = useRef(new Map());
+  const pendingSelectBarcodeRef = useRef(null);
+  const notebookShortcutTimerRef = useRef(null);
+  const scannerSequenceActiveRef = useRef(false);
+  const quickQuantityArmedRef = useRef(false);
+  const quickQuantityTimerRef = useRef(null);
 
   /*
    * Los lectores USB comunes se presentan como teclado (HID).
@@ -285,6 +310,73 @@ export default function Vender({
     searchFocused &&
     search.trim().length > 0;
 
+
+  useEffect(() => {
+    if (searchResults.length === 0) {
+      setSearchResultIndex(0);
+      return;
+    }
+
+    setSearchResultIndex((current) =>
+      Math.min(current, searchResults.length - 1)
+    );
+  }, [searchResults]);
+
+  /* =========================================================
+     SELECCIÓN DEL TICKET — TECLADO / LECTOR
+  ========================================================= */
+
+  useEffect(() => {
+    if (cart.length === 0) {
+      setSelectedLineKey(null);
+      setQuantityEditor(null);
+      pendingSelectBarcodeRef.current = null;
+      return;
+    }
+
+    const pendingBarcode = pendingSelectBarcodeRef.current;
+
+    if (pendingBarcode) {
+      for (let index = cart.length - 1; index >= 0; index -= 1) {
+        const item = cart[index];
+
+        if (String(item?.barcode || "") === String(pendingBarcode)) {
+          setSelectedLineKey(getCartLineKey(item, index));
+          pendingSelectBarcodeRef.current = null;
+          return;
+        }
+      }
+    }
+
+    const selectedStillExists = cart.some(
+      (item, index) => getCartLineKey(item, index) === selectedLineKey
+    );
+
+    if (!selectedStillExists) {
+      const lastIndex = cart.length - 1;
+      setSelectedLineKey(getCartLineKey(cart[lastIndex], lastIndex));
+      setQuantityEditor(null);
+    }
+  }, [cart, selectedLineKey]);
+
+  useEffect(() => {
+    if (!selectedLineKey || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      cartRowRefs.current
+        .get(selectedLineKey)
+        ?.scrollIntoView({
+          block: "nearest",
+          inline: "nearest",
+          behavior: "auto",
+        });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedLineKey]);
+
   /* =========================================================
      TOTALES
   ========================================================= */
@@ -318,6 +410,33 @@ export default function Vender({
      PRODUCTO ESPECIAL
   ========================================================= */
 
+  function disarmQuickQuantity() {
+    quickQuantityArmedRef.current = false;
+
+    if (quickQuantityTimerRef.current !== null) {
+      window.clearTimeout(quickQuantityTimerRef.current);
+      quickQuantityTimerRef.current = null;
+    }
+  }
+
+  function armQuickQuantity() {
+    disarmQuickQuantity();
+    quickQuantityArmedRef.current = true;
+
+    quickQuantityTimerRef.current = window.setTimeout(() => {
+      quickQuantityArmedRef.current = false;
+      quickQuantityTimerRef.current = null;
+    }, 2200);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (quickQuantityTimerRef.current !== null) {
+        window.clearTimeout(quickQuantityTimerRef.current);
+      }
+    };
+  }, []);
+
   function closeSaleModal() {
     setSaleProduct(null);
     setEditingIndex(null);
@@ -340,6 +459,9 @@ export default function Vender({
         );
 
       if (ok) {
+        pendingSelectBarcodeRef.current = product.barcode;
+        setQuantityEditor(null);
+        armQuickQuantity();
         setSearch("");
         setSearchFocused(false);
       }
@@ -368,6 +490,7 @@ export default function Vender({
     function clearUsbBuffer() {
       usbScannerBufferRef.current = "";
       usbScannerLastKeyRef.current = 0;
+      scannerSequenceActiveRef.current = false;
 
       if (usbScannerResetTimerRef.current) {
         window.clearTimeout(
@@ -424,6 +547,15 @@ export default function Vender({
         return;
       }
 
+      /*
+       * El Numpad queda reservado para cantidades/atajos del POS.
+       * Los lectores HID estándar envían Digit0-9, no Numpad0-9.
+       */
+      if (event.code.startsWith("Numpad")) {
+        clearUsbBuffer();
+        return;
+      }
+
       const key = event.key;
 
       if (key === "Enter" || key === "Tab") {
@@ -468,6 +600,20 @@ export default function Vender({
       const last =
         usbScannerLastKeyRef.current;
 
+      const rapidSequence =
+        last > 0 &&
+        now - last <= MAX_GAP_MS &&
+        usbScannerBufferRef.current.length > 0;
+
+      if (rapidSequence) {
+        scannerSequenceActiveRef.current = true;
+
+        if (notebookShortcutTimerRef.current !== null) {
+          window.clearTimeout(notebookShortcutTimerRef.current);
+          notebookShortcutTimerRef.current = null;
+        }
+      }
+
       /*
        * Si entre caracteres pasa demasiado tiempo, lo tratamos
        * como escritura humana y comenzamos una lectura nueva.
@@ -477,6 +623,7 @@ export default function Vender({
         now - last > MAX_GAP_MS
       ) {
         usbScannerBufferRef.current = "";
+        scannerSequenceActiveRef.current = false;
       }
 
       usbScannerBufferRef.current += key;
@@ -521,16 +668,173 @@ export default function Vender({
     showToast,
   ]);
 
-  /* =========================================================
-     ATAJOS DE VENTA — SOLO PC
+  function getSelectedCartIndex() {
+    if (cart.length === 0) {
+      return -1;
+    }
 
-     F2              -> buscar producto
-     F4              -> vaciar ticket con confirmación
-     Numpad Enter    -> cobrar venta
-     Esc             -> cerrar/cancelar la acción activa
+    const index = cart.findIndex(
+      (item, itemIndex) =>
+        getCartLineKey(item, itemIndex) === selectedLineKey
+    );
+
+    return index >= 0 ? index : cart.length - 1;
+  }
+
+  function selectTicketRelative(direction) {
+    if (cart.length === 0) {
+      return;
+    }
+
+    const currentIndex = getSelectedCartIndex();
+    const baseIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = Math.min(
+      cart.length - 1,
+      Math.max(0, baseIndex + direction)
+    );
+
+    setSelectedLineKey(
+      getCartLineKey(cart[nextIndex], nextIndex)
+    );
+    setQuantityEditor(null);
+  }
+
+  function beginQuantityEdit(initialValue = null) {
+    const index = getSelectedCartIndex();
+
+    if (index < 0) {
+      return false;
+    }
+
+    const item = cart[index];
+
+    if (getTipoVenta(item) !== "unidad") {
+      showToast(
+        getTipoVenta(item) === "peso"
+          ? "Este producto se edita por peso"
+          : "Este producto usa importe libre"
+      );
+      return false;
+    }
+
+    const key = getCartLineKey(item, index);
+    const value =
+      initialValue === null
+        ? String(Math.max(1, Math.trunc(toNumber(item.qty, 1))))
+        : String(initialValue);
+
+    setSelectedLineKey(key);
+    setQuantityEditor({ key, value });
+    return true;
+  }
+
+  function appendQuantityDigit(digit) {
+    const index = getSelectedCartIndex();
+
+    if (index < 0 || getTipoVenta(cart[index]) !== "unidad") {
+      return;
+    }
+
+    const key = getCartLineKey(cart[index], index);
+
+    setSelectedLineKey(key);
+    setQuantityEditor((current) => {
+      if (!current || current.key !== key) {
+        return { key, value: String(digit) };
+      }
+
+      const next = `${current.value}${digit}`.replace(/^0+(?=\d)/, "");
+      return { key, value: next.slice(0, 5) };
+    });
+  }
+
+  function confirmQuantityEditor() {
+    if (!quantityEditor) {
+      return false;
+    }
+
+    const index = cart.findIndex(
+      (item, itemIndex) =>
+        getCartLineKey(item, itemIndex) === quantityEditor.key
+    );
+
+    if (index < 0) {
+      setQuantityEditor(null);
+      return false;
+    }
+
+    const item = cart[index];
+    const targetQty = Math.trunc(Number(quantityEditor.value));
+
+    if (!Number.isFinite(targetQty) || targetQty <= 0) {
+      showToast("Ingresá una cantidad mayor a cero", true);
+      return true;
+    }
+
+    const currentQty = Math.max(1, Math.trunc(toNumber(item.qty, 1)));
+    const delta = targetQty - currentQty;
+
+    if (delta === 0) {
+      setQuantityEditor(null);
+      return true;
+    }
+
+    const ok = changeCartQty(index, delta);
+
+    if (ok !== false) {
+      disarmQuickQuantity();
+      setQuantityEditor(null);
+    }
+
+    return true;
+  }
+
+  function adjustSelectedQuantity(delta) {
+    const index = getSelectedCartIndex();
+
+    if (index < 0) {
+      return;
+    }
+
+    const item = cart[index];
+
+    if (getTipoVenta(item) !== "unidad") {
+      return;
+    }
+
+    setQuantityEditor(null);
+    changeCartQty(index, delta);
+  }
+
+  function deleteSelectedLine() {
+    const index = getSelectedCartIndex();
+
+    if (index < 0) {
+      return;
+    }
+
+    removeFromCart(index);
+    setQuantityEditor(null);
+  }
+
+  /* =========================================================
+     ATAJOS DE VENTA — PC + NOTEBOOK + LECTOR HID
+
+     /                 -> buscar producto
+     Q                 -> editar cantidad exacta
+     ↑ / ↓             -> seleccionar línea del ticket
+     + / -             -> ajustar una unidad
+     Delete/Backspace  -> eliminar línea seleccionada
+     Shift + Delete    -> vaciar ticket con confirmación
+     Enter             -> confirmar cantidad / cobrar
+     Esc               -> cancelar edición / búsqueda
+
+     Se conservan F2, F4 y Numpad Enter para teclado completo.
   ========================================================= */
 
   useEffect(() => {
+    const NOTEBOOK_ACTION_DELAY_MS = 145;
+
     function isEditableShortcutTarget(target) {
       if (!(target instanceof Element)) {
         return false;
@@ -544,15 +848,6 @@ export default function Vender({
     }
 
     function hasExternalDialog() {
-      if (
-        payOpen ||
-        scanOpen ||
-        promotionOpen ||
-        saleProduct
-      ) {
-        return false;
-      }
-
       return Boolean(
         document.querySelector(
           '[role="dialog"][aria-modal="true"]'
@@ -560,51 +855,82 @@ export default function Vender({
       );
     }
 
-    function handleDesktopSaleShortcut(event) {
+    function clearNotebookTimer() {
+      if (notebookShortcutTimerRef.current !== null) {
+        window.clearTimeout(notebookShortcutTimerRef.current);
+        notebookShortcutTimerRef.current = null;
+      }
+    }
+
+    function scheduleNotebookAction(callback) {
+      clearNotebookTimer();
+
+      notebookShortcutTimerRef.current = window.setTimeout(() => {
+        notebookShortcutTimerRef.current = null;
+
+        if (
+          scannerSequenceActiveRef.current ||
+          hasExternalDialog() ||
+          isEditableShortcutTarget(document.activeElement)
+        ) {
+          return;
+        }
+
+        callback();
+      }, NOTEBOOK_ACTION_DELAY_MS);
+    }
+
+    function openSearch() {
+      if (!openSession) {
+        return;
+      }
+
+      disarmQuickQuantity();
+      setQuantityEditor(null);
+      setSearchFocused(true);
+
+      window.requestAnimationFrame(() => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      });
+    }
+
+    function handleSaleShortcut(event) {
       if (
         event.defaultPrevented ||
         event.repeat ||
         event.ctrlKey ||
         event.metaKey ||
         event.altKey ||
-        event.shiftKey ||
-        !window.matchMedia("(min-width: 900px)").matches
+        !window.matchMedia("(min-width: 760px), (pointer: fine)").matches
       ) {
         return;
       }
 
+      const editable = isEditableShortcutTarget(event.target);
+      const externalDialogOpen = hasExternalDialog();
       const code = event.code;
+      const key = event.key;
 
-      if (code === "Escape") {
-        if (isEditableShortcutTarget(event.target)) {
+      /* Modal.jsx resuelve ESC de cualquier modal en capture. */
+      if (key === "Escape") {
+        if (externalDialogOpen || checkoutInFlightRef.current) {
           return;
         }
 
-        if (checkoutInFlightRef.current) {
-          return;
-        }
-
-        if (promotionOpen) {
+        if (quantityEditor) {
           event.preventDefault();
-          setPromotionOpen(false);
+          setQuantityEditor(null);
           return;
         }
 
-        if (payOpen) {
-          event.preventDefault();
-          setPayOpen(false);
-          return;
-        }
-
-        if (scanOpen) {
-          event.preventDefault();
-          setScanOpen(false);
-          return;
-        }
-
-        if (saleProduct) {
-          event.preventDefault();
-          closeSaleModal();
+        if (editable) {
+          if (event.target === searchInputRef.current) {
+            event.preventDefault();
+            setSearch("");
+            setSearchFocused(false);
+            searchInputRef.current?.blur();
+          }
           return;
         }
 
@@ -619,85 +945,131 @@ export default function Vender({
       }
 
       if (
-        isEditableShortcutTarget(event.target) ||
-        hasExternalDialog() ||
-        payOpen ||
-        scanOpen ||
-        promotionOpen ||
-        saleProduct ||
+        editable ||
+        externalDialogOpen ||
         checkoutInFlightRef.current
       ) {
         return;
       }
 
       if (code === "F2") {
-        if (!openSession) {
-          return;
-        }
-
         event.preventDefault();
-        setSearchFocused(true);
-
-        window.requestAnimationFrame(() => {
-          searchInputRef.current?.focus();
-          searchInputRef.current?.select();
-        });
-
+        openSearch();
         return;
       }
 
       if (code === "F4") {
-        if (cart.length === 0) {
-          return;
+        if (cart.length > 0) {
+          event.preventDefault();
+          handleClearTicket();
         }
-
-        event.preventDefault();
-
-        const confirmar = window.confirm(
-          "¿Vaciar el ticket actual?"
-        );
-
-        if (confirmar) {
-          clearCart();
-        }
-
         return;
       }
 
-      if (code === "NumpadEnter") {
-        if (
-          !openSession ||
-          cart.length === 0
-        ) {
+      if (key === "/" && !event.shiftKey) {
+        event.preventDefault();
+        scheduleNotebookAction(openSearch);
+        return;
+      }
+
+      if (code === "KeyQ" && !event.shiftKey) {
+        event.preventDefault();
+        scheduleNotebookAction(() => {
+          disarmQuickQuantity();
+          beginQuantityEdit();
+        });
+        return;
+      }
+
+      if (code.startsWith("Numpad") && /^Numpad\d$/.test(code)) {
+        if (quantityEditor || quickQuantityArmedRef.current) {
+          const digit = code.slice(-1);
+          event.preventDefault();
+          disarmQuickQuantity();
+          appendQuantityDigit(digit);
+        }
+        return;
+      }
+
+      if (key === "ArrowUp") {
+        event.preventDefault();
+        disarmQuickQuantity();
+        selectTicketRelative(-1);
+        return;
+      }
+
+      if (key === "ArrowDown") {
+        event.preventDefault();
+        disarmQuickQuantity();
+        selectTicketRelative(1);
+        return;
+      }
+
+      if (code === "NumpadAdd" || key === "+") {
+        event.preventDefault();
+        disarmQuickQuantity();
+        adjustSelectedQuantity(1);
+        return;
+      }
+
+      if (code === "NumpadSubtract" || key === "-") {
+        event.preventDefault();
+        disarmQuickQuantity();
+        adjustSelectedQuantity(-1);
+        return;
+      }
+
+      if (key === "Delete" && event.shiftKey) {
+        if (cart.length > 0) {
+          event.preventDefault();
+          handleClearTicket();
+        }
+        return;
+      }
+
+      if ((key === "Delete" || key === "Backspace") && !event.shiftKey) {
+        if (cart.length > 0) {
+          event.preventDefault();
+          disarmQuickQuantity();
+          deleteSelectedLine();
+        }
+        return;
+      }
+
+      if (key === "Enter" || code === "NumpadEnter") {
+        if (scannerSequenceActiveRef.current) {
+          return;
+        }
+
+        if (quantityEditor) {
+          event.preventDefault();
+          confirmQuantityEditor();
+          return;
+        }
+
+        if (!openSession || cart.length === 0) {
           return;
         }
 
         event.preventDefault();
+        disarmQuickQuantity();
         setPayOpen(true);
       }
     }
 
-    window.addEventListener(
-      "keydown",
-      handleDesktopSaleShortcut
-    );
+    window.addEventListener("keydown", handleSaleShortcut, true);
 
     return () => {
-      window.removeEventListener(
-        "keydown",
-        handleDesktopSaleShortcut
-      );
+      window.removeEventListener("keydown", handleSaleShortcut, true);
+      clearNotebookTimer();
     };
   }, [
-    cart.length,
-    clearCart,
+    cart,
     openSession,
-    payOpen,
-    promotionOpen,
-    saleProduct,
-    scanOpen,
+    quantityEditor,
     search,
     searchFocused,
+    selectedLineKey,
   ]);
 
   function editarItem(item, index) {
@@ -870,6 +1242,7 @@ export default function Vender({
         );
 
       if (ok) {
+        pendingSelectBarcodeRef.current = saleProduct.barcode;
         closeSaleModal();
       }
 
@@ -932,6 +1305,7 @@ export default function Vender({
       );
 
     if (ok) {
+      pendingSelectBarcodeRef.current = saleProduct.barcode;
       closeSaleModal();
     }
   }
@@ -1108,6 +1482,8 @@ export default function Vender({
     );
 
     if (confirmar) {
+      disarmQuickQuantity();
+      setQuantityEditor(null);
       clearCart();
     }
   }
@@ -1228,13 +1604,22 @@ export default function Vender({
         <BarcodeIcon className="h-4 w-4 shrink-0 text-[#FFC61A]" />
         <span className="mr-auto">Lector USB listo</span>
         <span className="pos-sale-shortcuts__item">
-          <kbd>F2</kbd> Buscar
+          <kbd>/</kbd> Buscar
         </span>
         <span className="pos-sale-shortcuts__item">
-          <kbd>F4</kbd> Vaciar
+          <kbd>Q</kbd> Cantidad
         </span>
         <span className="pos-sale-shortcuts__item">
-          <kbd>Num Enter</kbd> Cobrar
+          <kbd>↑↓</kbd> Línea
+        </span>
+        <span className="pos-sale-shortcuts__item">
+          <kbd>Enter</kbd> Cobrar
+        </span>
+        <span className="pos-sale-shortcuts__item">
+          <kbd>Esc</kbd> Cerrar
+        </span>
+        <span className="pos-sale-shortcuts__item">
+          <kbd>V/S/C…</kbd> Secciones
         </span>
       </div>
 
@@ -1276,24 +1661,47 @@ export default function Vender({
                 );
               }}
               onKeyDown={(event) => {
-                if (
-                  event.key ===
-                  "Enter"
-                ) {
-                  event.preventDefault();
-
-                  handleSearchSubmit();
+                if (event.key === "ArrowDown") {
+                  if (searchResults.length > 0) {
+                    event.preventDefault();
+                    setSearchResultIndex((current) =>
+                      Math.min(searchResults.length - 1, current + 1)
+                    );
+                  }
+                  return;
                 }
 
-                if (
-                  event.key ===
-                  "Escape"
-                ) {
-                  setSearch("");
+                if (event.key === "ArrowUp") {
+                  if (searchResults.length > 0) {
+                    event.preventDefault();
+                    setSearchResultIndex((current) =>
+                      Math.max(0, current - 1)
+                    );
+                  }
+                  return;
+                }
 
-                  setSearchFocused(
-                    false
-                  );
+                if (event.key === "Enter") {
+                  event.preventDefault();
+
+                  const highlighted =
+                    showSearchResults && searchResults.length > 0
+                      ? searchResults[searchResultIndex]
+                      : null;
+
+                  if (highlighted) {
+                    agregarProducto(highlighted);
+                  } else {
+                    handleSearchSubmit();
+                  }
+                  return;
+                }
+
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setSearch("");
+                  setSearchFocused(false);
+                  searchInputRef.current?.blur();
                 }
               }}
               className="
@@ -1539,26 +1947,34 @@ export default function Vender({
                             onMouseDown={(event) =>
                               event.preventDefault()
                             }
+                            onMouseEnter={() =>
+                              setSearchResultIndex(index)
+                            }
                             onClick={() =>
                               agregarProducto(
                                 product
                               )
                             }
-                            className="
-                              group
-                              flex
-                              w-full
-                              items-center
-                              gap-3
-                              border-b
-                              border-white/[0.06]
-                              px-3.5
-                              py-3
-                              text-left
-                              transition
-                              last:border-b-0
-                              hover:bg-white/[0.045]
-                            "
+                            className={
+                              `
+                                group
+                                flex
+                                w-full
+                                items-center
+                                gap-3
+                                border-b
+                                border-white/[0.06]
+                                px-3.5
+                                py-3
+                                text-left
+                                transition
+                                last:border-b-0
+                                hover:bg-white/[0.045]
+                              ` +
+                              (index === searchResultIndex
+                                ? " bg-[#FFC61A]/[0.08] ring-1 ring-inset ring-[#FFC61A]/20"
+                                : "")
+                            }
                           >
                             <div
                               className="
@@ -1765,12 +2181,39 @@ export default function Vender({
                         promotionDiscount
                       );
 
+                    const lineKey =
+                      getCartLineKey(
+                        item,
+                        index
+                      );
+
+                    const selected =
+                      lineKey ===
+                      selectedLineKey;
+
+                    const editingQty =
+                      quantityEditor?.key ===
+                      lineKey;
+
                     return (
                       <motion.div
                         key={
                           item.cartLineId ||
                           `${item.barcode}-${index}`
                         }
+                        ref={(element) => {
+                          if (element) {
+                            cartRowRefs.current.set(lineKey, element);
+                          } else {
+                            cartRowRefs.current.delete(lineKey);
+                          }
+                        }}
+                        onMouseDown={() => {
+                          setSelectedLineKey(lineKey);
+                          if (!editingQty) {
+                            setQuantityEditor(null);
+                          }
+                        }}
                         layout
                         initial={{
                           opacity: 0,
@@ -1792,7 +2235,12 @@ export default function Vender({
                           duration:
                             0.18,
                         }}
-                        className="overflow-hidden border-b border-black/8 py-3 last:border-b-0"
+                        className={
+                          `overflow-hidden border-b border-black/8 py-3 transition last:border-b-0 ` +
+                          (selected
+                            ? "rounded-2xl bg-[#FFF8DE] px-2 ring-2 ring-inset ring-[#FFC61A]/45"
+                            : "")
+                        }
                       >
                         <div className="flex items-start gap-3">
                           <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#FFF5CC] text-[#9A7100]">
@@ -1881,11 +2329,66 @@ export default function Vender({
                               <MinusIcon className="h-3.5 w-3.5" />
                             </button>
 
-                            <span className="min-w-[34px] text-center text-sm font-black text-[#111318]">
-                              {
-                                item.qty
-                              }
-                            </span>
+                            {editingQty ? (
+                              <input
+                                autoFocus
+                                type="text"
+                                inputMode="numeric"
+                                aria-label={`Cantidad de ${item.name}`}
+                                value={quantityEditor?.value || ""}
+                                onChange={(event) => {
+                                  const next = event.target.value
+                                    .replace(/\D/g, "")
+                                    .slice(0, 5);
+
+                                  setQuantityEditor({
+                                    key: lineKey,
+                                    value: next,
+                                  });
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    confirmQuantityEditor();
+                                    return;
+                                  }
+
+                                  if (event.key === "Escape") {
+                                    event.preventDefault();
+                                    setQuantityEditor(null);
+                                    return;
+                                  }
+
+                                  if (event.key === "ArrowUp") {
+                                    event.preventDefault();
+                                    setQuantityEditor(null);
+                                    selectTicketRelative(-1);
+                                    return;
+                                  }
+
+                                  if (event.key === "ArrowDown") {
+                                    event.preventDefault();
+                                    setQuantityEditor(null);
+                                    selectTicketRelative(1);
+                                  }
+                                }}
+                                className="h-8 w-[64px] rounded-xl border-2 border-[#FFC61A] bg-white px-2 text-center text-sm font-black text-[#111318] outline-none ring-2 ring-[#FFC61A]/15"
+                              />
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => beginQuantityEdit()}
+                                className={
+                                  `min-w-[42px] rounded-xl px-2 py-1 text-center text-sm font-black transition ` +
+                                  (selected
+                                    ? "bg-[#FFC61A]/20 text-[#7A5900]"
+                                    : "text-[#111318]")
+                                }
+                                title="Editar cantidad (Q)"
+                              >
+                                {item.qty}
+                              </button>
+                            )}
 
                             <button
                               type="button"
