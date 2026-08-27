@@ -1788,3 +1788,234 @@ html[data-theme="light"] .pos-sale-shortcuts__item kbd {
     flex-wrap: wrap;
   }
 }
+
+
+/* =========================================================
+   CONFIGURACIÓN — NIVELES DE EFECTOS VISUALES
+
+   data-effects="complete"    -> Liquid Glass completo.
+   data-effects="balanced"    -> misma identidad, blur reducido.
+   data-effects="performance" -> sin backdrop-filter dinámico y
+                                 con superficies más opacas.
+
+   La selección se gestiona desde Configuración y se guarda
+   localmente en el dispositivo.
+========================================================= */
+
+html[data-effects="complete"] {
+  --pos-effects-level: 1;
+}
+
+html[data-effects="balanced"] {
+  --pos-effects-level: 0.55;
+  --pos-glass-blur: 10px;
+  --pos-glass-saturation: 125%;
+  --pos-glass-shadow-card:
+    0 16px 38px rgba(0, 0, 0, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  --pos-glass-shadow-float:
+    0 20px 56px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+
+html[data-theme="light"][data-effects="balanced"] {
+  --pos-glass-shadow-card:
+    0 14px 34px rgba(69, 58, 35, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  --pos-glass-shadow-float:
+    0 18px 50px rgba(55, 47, 31, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96);
+}
+
+html[data-effects="balanced"] .pos-bottom-nav {
+  -webkit-backdrop-filter: blur(10px) saturate(125%);
+  backdrop-filter: blur(10px) saturate(125%);
+}
+
+html[data-effects="balanced"] .pos-more-overlay:not(.is-desktop),
+html[data-effects="balanced"] .pos-modal-overlay,
+html[data-effects="balanced"] .pos-user-management-overlay {
+  -webkit-backdrop-filter: blur(3px) saturate(105%);
+  backdrop-filter: blur(3px) saturate(105%);
+}
+
+html[data-effects="balanced"] .pos-more-drawer,
+html[data-effects="balanced"] .pos-modal-panel,
+html[data-effects="balanced"] .pos-user-management-panel {
+  -webkit-backdrop-filter: blur(12px) saturate(128%);
+  backdrop-filter: blur(12px) saturate(128%);
+}
+
+html[data-effects="balanced"] .pos-card,
+html[data-effects="balanced"] .pos-glass-surface,
+html[data-effects="balanced"] .pos-card-light,
+html[data-effects="balanced"] .pos-app-shell [class~="bg-white"][class*="shadow-"],
+html[data-effects="balanced"] .pos-admin-header,
+html[data-effects="balanced"] .pos-user-management-header {
+  -webkit-backdrop-filter: blur(10px) saturate(122%);
+  backdrop-filter: blur(10px) saturate(122%);
+}
+
+html[data-effects="balanced"] [class~="bg-[#11151C]"],
+html[data-effects="balanced"] [class~="bg-[#11151C]/95"],
+html[data-effects="balanced"] [class~="bg-[#151A22]"],
+html[data-effects="balanced"] [class~="bg-[#151A22]/95"],
+html[data-effects="balanced"] [class~="bg-[#171B23]"],
+html[data-effects="balanced"] [class~="bg-[#171B23]/95"],
+html[data-effects="balanced"] [class~="bg-[#191E27]"],
+html[data-effects="balanced"] [class~="bg-[#1A2029]"],
+html[data-effects="balanced"] [class~="bg-[#202630]"],
+html[data-effects="balanced"] [class~="bg-white/5"],
+html[data-effects="balanced"] [class~="bg-white/[0.08]"],
+html[data-effects="balanced"] [class~="bg-white/[0.06]"],
+html[data-effects="balanced"] [class~="bg-white/[0.055]"],
+html[data-effects="balanced"] [class~="bg-white/[0.045]"],
+html[data-effects="balanced"] [class~="bg-white/[0.04]"],
+html[data-effects="balanced"] [class~="bg-white/[0.035]"],
+html[data-effects="balanced"] .pos-sale-shortcuts {
+  -webkit-backdrop-filter: blur(6px) saturate(112%);
+  backdrop-filter: blur(6px) saturate(112%);
+}
+
+/* Rendimiento: se mantiene la paleta y la jerarquía visual,
+   pero se evita la recomposición GPU provocada por blur dinámico. */
+html[data-effects="performance"] {
+  --pos-effects-level: 0;
+  --pos-glass-blur: 0px;
+  --pos-glass-saturation: 100%;
+  --pos-glass-bg: rgba(17, 21, 28, 0.96);
+  --pos-glass-bg-strong: rgba(17, 21, 28, 0.985);
+  --pos-glass-surface: rgba(20, 25, 34, 0.98);
+  --pos-glass-surface-strong: rgba(15, 19, 27, 0.99);
+  --pos-glass-shadow-card:
+    0 10px 24px rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --pos-glass-shadow-float:
+    0 14px 36px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme="light"][data-effects="performance"] {
+  --pos-glass-bg: rgba(250, 248, 241, 0.985);
+  --pos-glass-bg-strong: rgba(250, 248, 241, 0.995);
+  --pos-glass-surface: rgba(255, 255, 255, 0.985);
+  --pos-glass-surface-strong: rgba(255, 255, 255, 0.995);
+  --pos-glass-shadow-card:
+    0 9px 22px rgba(55, 47, 31, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  --pos-glass-shadow-float:
+    0 12px 32px rgba(55, 47, 31, 0.11),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96);
+}
+
+html[data-effects="performance"] body {
+  background-attachment: scroll !important;
+}
+
+html[data-effects="performance"] .pos-ambient-layer {
+  display: none !important;
+}
+
+html[data-effects="performance"] .pos-bottom-nav,
+html[data-effects="performance"] .pos-more-overlay,
+html[data-effects="performance"] .pos-more-drawer,
+html[data-effects="performance"] .pos-card,
+html[data-effects="performance"] .pos-glass-surface,
+html[data-effects="performance"] .pos-card-light,
+html[data-effects="performance"] .pos-modal-overlay,
+html[data-effects="performance"] .pos-modal-panel,
+html[data-effects="performance"] .pos-auth-card,
+html[data-effects="performance"] .pos-admin-header,
+html[data-effects="performance"] .pos-user-management-overlay,
+html[data-effects="performance"] .pos-user-management-panel,
+html[data-effects="performance"] .pos-user-management-header,
+html[data-effects="performance"] .pos-sale-shortcuts,
+html[data-effects="performance"] .pos-app-shell [class~="bg-white"][class*="shadow-"],
+html[data-effects="performance"] [class~="bg-[#11151C]"],
+html[data-effects="performance"] [class~="bg-[#11151C]/95"],
+html[data-effects="performance"] [class~="bg-[#151A22]"],
+html[data-effects="performance"] [class~="bg-[#151A22]/95"],
+html[data-effects="performance"] [class~="bg-[#171B23]"],
+html[data-effects="performance"] [class~="bg-[#171B23]/95"],
+html[data-effects="performance"] [class~="bg-[#191E27]"],
+html[data-effects="performance"] [class~="bg-[#1A2029]"],
+html[data-effects="performance"] [class~="bg-[#202630]"],
+html[data-effects="performance"] [class~="bg-white/5"],
+html[data-effects="performance"] [class~="bg-white/[0.08]"],
+html[data-effects="performance"] [class~="bg-white/[0.06]"],
+html[data-effects="performance"] [class~="bg-white/[0.055]"],
+html[data-effects="performance"] [class~="bg-white/[0.045]"],
+html[data-effects="performance"] [class~="bg-white/[0.04]"],
+html[data-effects="performance"] [class~="bg-white/[0.035]"],
+html[data-effects="performance"] body.pos-admin-active button {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+html[data-effects="performance"] .pos-more-overlay:not(.is-desktop) {
+  background: rgba(5, 7, 10, 0.68);
+}
+
+html[data-theme="light"][data-effects="performance"] .pos-more-overlay:not(.is-desktop) {
+  background: rgba(31, 29, 25, 0.36);
+}
+
+html[data-effects="performance"] .pos-modal-overlay,
+html[data-effects="performance"] .pos-user-management-overlay {
+  background: rgba(4, 6, 9, 0.68) !important;
+}
+
+html[data-theme="light"][data-effects="performance"] .pos-modal-overlay,
+html[data-theme="light"][data-effects="performance"] .pos-user-management-overlay {
+  background: rgba(37, 33, 25, 0.34) !important;
+}
+
+html[data-effects="performance"] .pos-more-drawer,
+html[data-effects="performance"] .pos-modal-panel,
+html[data-effects="performance"] .pos-user-management-panel {
+  box-shadow: var(--pos-glass-shadow-float) !important;
+}
+
+html[data-effects="performance"] .pos-card,
+html[data-effects="performance"] .pos-card-light,
+html[data-effects="performance"] .pos-app-shell [class~="bg-white"][class*="shadow-"] {
+  box-shadow: var(--pos-glass-shadow-card) !important;
+}
+
+html[data-effects="performance"] .pos-desktop-cash-status__dot {
+  box-shadow: none !important;
+}
+
+/* En escritorio el drawer es navegación fija, no un modal.
+   Nunca debe aplicar velo ni blur sobre el contenido principal. */
+html[data-effects="balanced"] .pos-more-overlay.is-desktop,
+html[data-effects="performance"] .pos-more-overlay.is-desktop {
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* El modo equilibrado mantiene los destellos ambientales pero
+   reduce su área de composición. */
+html[data-effects="balanced"] .pos-ambient-orb {
+  filter: blur(54px) !important;
+  opacity: 0.72;
+}
+
+
+
+/* =========================================================
+   FLUIDEZ — CONTENIDO FUERA DE PANTALLA
+
+   Las tarjetas largas de Stock y Caja pueden crecer mucho.
+   content-visibility permite que el navegador omita layout/pintado
+   de tarjetas que todavía están fuera del viewport sin alterar
+   su apariencia cuando entran en pantalla.
+========================================================= */
+
+@supports (content-visibility: auto) {
+  .pos-content-auto {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 220px;
+  }
+}

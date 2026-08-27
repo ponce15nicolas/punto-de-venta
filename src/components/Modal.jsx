@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 /* =========================================================
    CONTROL GLOBAL DEL SCROLL
@@ -92,6 +92,19 @@ export default function Modal({
   title,
   children,
 }) {
+  const prefersReducedMotion =
+    useReducedMotion();
+
+  const performanceMode =
+    typeof document !== "undefined" &&
+    document.documentElement
+      .dataset.effects ===
+      "performance";
+
+  const reduceMotion =
+    prefersReducedMotion ||
+    performanceMode;
+
   /* =========================================================
      BLOQUEAR SCROLL DEL FONDO
   ========================================================= */
@@ -164,17 +177,30 @@ export default function Modal({
             sm:items-center
             sm:p-4
           "
-          initial={{
-            opacity: 0,
-          }}
+          initial={
+            reduceMotion
+              ? false
+              : {
+                  opacity: 0,
+                }
+          }
           animate={{
             opacity: 1,
           }}
-          exit={{
-            opacity: 0,
-          }}
+          exit={
+            reduceMotion
+              ? {
+                  opacity: 1,
+                }
+              : {
+                  opacity: 0,
+                }
+          }
           transition={{
-            duration: 0.18,
+            duration:
+              reduceMotion
+                ? 0
+                : 0.18,
           }}
           onClick={(event) => {
             if (
@@ -206,23 +232,40 @@ export default function Modal({
               sm:max-h-[calc(100dvh-32px)]
               sm:rounded-[30px]
             "
-            initial={{
-              y: "100%",
-              opacity: 0.98,
-            }}
+            initial={
+              reduceMotion
+                ? false
+                : {
+                    y: "100%",
+                    opacity: 0.98,
+                  }
+            }
             animate={{
               y: 0,
               opacity: 1,
             }}
-            exit={{
-              y: "100%",
-              opacity: 0.98,
-            }}
-            transition={{
-              type: "spring",
-              stiffness: 400,
-              damping: 38,
-            }}
+            exit={
+              reduceMotion
+                ? {
+                    y: 0,
+                    opacity: 1,
+                  }
+                : {
+                    y: "100%",
+                    opacity: 0.98,
+                  }
+            }
+            transition={
+              reduceMotion
+                ? {
+                    duration: 0,
+                  }
+                : {
+                    type: "spring",
+                    stiffness: 400,
+                    damping: 38,
+                  }
+            }
             role="dialog"
             aria-modal="true"
             aria-label={title}

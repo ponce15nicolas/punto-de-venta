@@ -619,6 +619,15 @@ export function usePosData({
   const cloudCacheCompleteRef =
     useRef(false);
 
+  /*
+   * Firestore puede emitir varios snapshots seguidos por una sola operación.
+   * Serializar toda la caché Cloud en localStorage en cada snapshot bloquea
+   * el hilo principal, especialmente cuando el historial de ventas crece.
+   * Este timer agrupa esas escrituras y las ejecuta fuera del camino crítico.
+   */
+  const cloudCachePersistTimerRef =
+    useRef(null);
+
   const syncErrorShownRef =
     useRef(false);
 
@@ -755,6 +764,119 @@ export function usePosData({
       cleanClienteId,
     ]);
 
+  const scheduleCompleteCloudCachePersist =
+    useCallback(() => {
+      if (
+        !cleanClienteId ||
+        typeof window === "undefined"
+      ) {
+        return;
+      }
+
+      if (
+        cloudCachePersistTimerRef
+          .current !== null
+      ) {
+        window.clearTimeout(
+          cloudCachePersistTimerRef
+            .current
+        );
+      }
+
+      /*
+       * Esperamos a que termine la ráfaga de snapshots. En uso Cloud
+       * Firestore sigue siendo la fuente autoritativa; esta copia local
+       * es solamente respaldo para arranque/consulta.
+       */
+      cloudCachePersistTimerRef.current =
+        window.setTimeout(
+          () => {
+            cloudCachePersistTimerRef.current =
+              null;
+
+            persistCompleteCloudCache();
+          },
+          700
+        );
+    }, [
+      cleanClienteId,
+      persistCompleteCloudCache,
+    ]);
+
+  useEffect(() => {
+    if (
+      typeof document === "undefined" ||
+      typeof window === "undefined"
+    ) {
+      return undefined;
+    }
+
+    function flushPendingCloudCache() {
+      if (
+        cloudCachePersistTimerRef
+          .current === null
+      ) {
+        return;
+      }
+
+      window.clearTimeout(
+        cloudCachePersistTimerRef
+          .current
+      );
+
+      cloudCachePersistTimerRef.current =
+        null;
+
+      persistCompleteCloudCache();
+    }
+
+    function handleVisibilityChange() {
+      if (
+        document.visibilityState ===
+        "hidden"
+      ) {
+        flushPendingCloudCache();
+      }
+    }
+
+    document.addEventListener(
+      "visibilitychange",
+      handleVisibilityChange
+    );
+
+    window.addEventListener(
+      "pagehide",
+      flushPendingCloudCache
+    );
+
+    return () => {
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibilityChange
+      );
+
+      window.removeEventListener(
+        "pagehide",
+        flushPendingCloudCache
+      );
+
+      if (
+        cloudCachePersistTimerRef
+          .current !== null
+      ) {
+        window.clearTimeout(
+          cloudCachePersistTimerRef
+            .current
+        );
+
+        cloudCachePersistTimerRef.current =
+          null;
+      }
+    };
+  }, [
+    persistCompleteCloudCache,
+  ]);
+
   const persistCatalog =
     useCallback(
       (next) => {
@@ -779,7 +901,7 @@ export function usePosData({
             cloudCacheCompleteRef
               .current
           ) {
-            persistCompleteCloudCache();
+            scheduleCompleteCloudCachePersist();
           }
         } else {
           storeSet(
@@ -790,7 +912,7 @@ export function usePosData({
       },
       [
         cloudRequested,
-        persistCompleteCloudCache,
+        scheduleCompleteCloudCachePersist,
       ]
     );
 
@@ -818,7 +940,7 @@ export function usePosData({
             cloudCacheCompleteRef
               .current
           ) {
-            persistCompleteCloudCache();
+            scheduleCompleteCloudCachePersist();
           }
         } else {
           storeSet(
@@ -829,7 +951,7 @@ export function usePosData({
       },
       [
         cloudRequested,
-        persistCompleteCloudCache,
+        scheduleCompleteCloudCachePersist,
       ]
     );
 
@@ -859,7 +981,7 @@ export function usePosData({
             cloudCacheCompleteRef
               .current
           ) {
-            persistCompleteCloudCache();
+            scheduleCompleteCloudCachePersist();
           }
         } else {
           storeSet(
@@ -870,7 +992,7 @@ export function usePosData({
       },
       [
         cloudRequested,
-        persistCompleteCloudCache,
+        scheduleCompleteCloudCachePersist,
       ]
     );
 
@@ -898,7 +1020,7 @@ export function usePosData({
             cloudCacheCompleteRef
               .current
           ) {
-            persistCompleteCloudCache();
+            scheduleCompleteCloudCachePersist();
           }
         } else {
           storeSet(
@@ -909,7 +1031,7 @@ export function usePosData({
       },
       [
         cloudRequested,
-        persistCompleteCloudCache,
+        scheduleCompleteCloudCachePersist,
       ]
     );
 
@@ -939,7 +1061,7 @@ export function usePosData({
             cloudCacheCompleteRef
               .current
           ) {
-            persistCompleteCloudCache();
+            scheduleCompleteCloudCachePersist();
           }
         } else {
           storeSet(
@@ -950,7 +1072,7 @@ export function usePosData({
       },
       [
         cloudRequested,
-        persistCompleteCloudCache,
+        scheduleCompleteCloudCachePersist,
       ]
     );
 
@@ -1559,12 +1681,26 @@ export function usePosData({
           config: false,
         };
 
+        let initialSyncCompleted =
+          false;
+
         function markSnapshot(
           key
         ) {
           initialSnapshots[
             key
           ] = true;
+
+          /*
+           * Después de completar la carga inicial, los snapshots nuevos
+           * ya programan su propia persistencia diferida. Evitamos volver
+           * a serializar toda la caché desde este marcador.
+           */
+          if (
+            initialSyncCompleted
+          ) {
+            return;
+          }
 
           const ready =
             Object.values(
@@ -1577,6 +1713,9 @@ export function usePosData({
             ready &&
             !cancelled
           ) {
+            initialSyncCompleted =
+              true;
+
             cloudCacheCompleteRef.current =
               true;
 

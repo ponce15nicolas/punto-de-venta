@@ -4,7 +4,7 @@
 // useLicenseCheck se ejecuta una sola vez para evitar
 // listeners, registros de sesión y heartbeats duplicados.
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import { usePosData } from "./hooks/usePosData";
@@ -21,14 +21,27 @@ import { useOperator } from "./components/OperatorGate";
 import AdminRoute from "./components/AdminRoute";
 
 import Vender from "./pages/Vender";
-import Inventario from "./pages/Inventario";
-import Caja from "./pages/Caja";
-import Historial from "./pages/Historial";
-import Actividad from "./pages/Actividad";
-import Compras from "./pages/Compras";
-import Ganancias from "./pages/Ganancias";
+
+/*
+ * Vender queda en el bundle inicial porque es la pantalla crítica del POS.
+ * Las secciones secundarias se cargan en chunks separados para reducir el
+ * trabajo de parseo/ejecución durante el arranque.
+ */
+const Inventario = lazy(() => import("./pages/Inventario"));
+const Caja = lazy(() => import("./pages/Caja"));
+const Historial = lazy(() => import("./pages/Historial"));
+const Actividad = lazy(() => import("./pages/Actividad"));
+const Compras = lazy(() => import("./pages/Compras"));
+const Ganancias = lazy(() => import("./pages/Ganancias"));
 
 const THEME_STORAGE_KEY = "pos-theme";
+const EFFECTS_STORAGE_KEY = "pos-effects";
+
+const EFFECTS_MODES = new Set([
+  "complete",
+  "balanced",
+  "performance",
+]);
 
 const DESKTOP_SHORTCUT_TABS = {
   Numpad1: "vender",
@@ -97,6 +110,56 @@ function applyTheme(theme) {
     window.localStorage.setItem(THEME_STORAGE_KEY, normalized);
   } catch {
     // La preferencia visual sigue funcionando aunque el navegador bloquee storage.
+  }
+}
+
+function applyEffectsMode(mode) {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const normalized = EFFECTS_MODES.has(mode)
+    ? mode
+    : "complete";
+
+  document.documentElement.dataset.effects = normalized;
+
+  try {
+    window.localStorage.setItem(
+      EFFECTS_STORAGE_KEY,
+      normalized
+    );
+  } catch {
+    // La preferencia visual sigue funcionando aunque el navegador bloquee storage.
+  }
+}
+
+function getCurrentEffectsMode() {
+  if (
+    typeof document === "undefined" ||
+    typeof window === "undefined"
+  ) {
+    return "complete";
+  }
+
+  const fromDataset =
+    document.documentElement.dataset.effects;
+
+  if (EFFECTS_MODES.has(fromDataset)) {
+    return fromDataset;
+  }
+
+  try {
+    const stored =
+      window.localStorage.getItem(
+        EFFECTS_STORAGE_KEY
+      );
+
+    return EFFECTS_MODES.has(stored)
+      ? stored
+      : "complete";
+  } catch {
+    return "complete";
   }
 }
 
@@ -172,7 +235,51 @@ function PosApp({ license }) {
   const [tab, setTab] = useState("vender");
   const [invFilter, setInvFilter] = useState("all");
   const [theme, setTheme] = useState(getCurrentTheme);
+  const [effectsMode, setEffectsMode] =
+    useState(getCurrentEffectsMode);
   const [moreOpen, setMoreOpen] = useState(false);
+
+  useEffect(() => {
+    applyEffectsMode(effectsMode);
+  }, [effectsMode]);
+
+  /*
+   * Precarga las pantallas secundarias cuando el navegador queda libre.
+   * Así el primer render de Vender es más liviano sin agregar espera al
+   * primer acceso posterior a Stock, Caja o Reportes.
+   */
+  useEffect(() => {
+    if (!pos.loaded || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const preloadSecondaryPages = () => {
+      void import("./pages/Inventario");
+      void import("./pages/Caja");
+      void import("./pages/Compras");
+      void import("./pages/Ganancias");
+      void import("./pages/Historial");
+      void import("./pages/Actividad");
+    };
+
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(
+        preloadSecondaryPages,
+        { timeout: 1800 }
+      );
+
+      return () => {
+        window.cancelIdleCallback?.(idleId);
+      };
+    }
+
+    /*
+     * En navegadores sin requestIdleCallback preferimos no forzar una
+     * ráfaga de parseo en segundo plano. El chunk se cargará al entrar
+     * por primera vez a esa sección.
+     */
+    return undefined;
+  }, [pos.loaded]);
 
   /* =========================================================
      ATAJOS DE NAVEGACIÓN — SOLO PC / NUMPAD
@@ -229,6 +336,15 @@ function PosApp({ license }) {
       applyTheme(next);
       return next;
     });
+  }
+
+  function handleEffectsModeChange(nextMode) {
+    const normalized = EFFECTS_MODES.has(nextMode)
+      ? nextMode
+      : "complete";
+
+    applyEffectsMode(normalized);
+    setEffectsMode(normalized);
   }
 
   /* =========================================================
@@ -306,6 +422,7 @@ function PosApp({ license }) {
 
       <div
         className="
+          pos-ambient-layer
           pointer-events-none
           fixed
           inset-0
@@ -316,6 +433,7 @@ function PosApp({ license }) {
       >
         <div
           className="
+            pos-ambient-orb
             absolute
             -left-28
             -top-40
@@ -329,6 +447,7 @@ function PosApp({ license }) {
 
         <div
           className="
+            pos-ambient-orb
             absolute
             -right-32
             top-[32%]
@@ -377,10 +496,10 @@ function PosApp({ license }) {
         =================================================== */}
 
         <div className="pos-page-heading mb-3 flex min-h-9 items-center justify-between gap-3">
-          <PageLabel tab={tab} />
+          <PageLabel tab={tab} effectsMode={effectsMode} />
 
           {tab === "vender" && pos.openSession && (
-            <DesktopCashStatus openSession={pos.openSession} />
+            <DesktopCashStatus openSession={pos.openSession} effectsMode={effectsMode} />
           )}
         </div>
 
@@ -388,36 +507,45 @@ function PosApp({ license }) {
             PÁGINAS
         =================================================== */}
 
-        <AnimatePresence
-          mode="wait"
-          initial={false}
+        <motion.div
+          key={tab}
+          initial={
+            effectsMode === "performance"
+              ? false
+              : {
+                  opacity: 0,
+                  x: effectsMode === "balanced" ? 5 : 8,
+                  y: 1,
+                }
+          }
+          animate={{
+            opacity: 1,
+            x: 0,
+            y: 0,
+          }}
+          transition={{
+            duration:
+              effectsMode === "performance"
+                ? 0
+                : effectsMode === "balanced"
+                  ? 0.07
+                  : 0.13,
+            ease: "easeOut",
+          }}
         >
-          <motion.div
-            key={tab}
-            initial={{
-              opacity: 0,
-              x: 10,
-              y: 2,
-            }}
-            animate={{
-              opacity: 1,
-              x: 0,
-              y: 0,
-            }}
-            exit={{
-              opacity: 0,
-              x: -10,
-              y: 1,
-            }}
-            transition={{
-              duration: 0.16,
-              ease: "easeOut",
-            }}
+          <Suspense
+            fallback={
+              <div
+                className="min-h-[180px]"
+                aria-hidden="true"
+              />
+            }
           >
             {tab === "vender" && (
               <Vender
                 pos={pos}
                 goInventario={goInventario}
+                effectsMode={effectsMode}
               />
             )}
 
@@ -426,11 +554,15 @@ function PosApp({ license }) {
                 pos={pos}
                 filter={invFilter}
                 setFilter={setInvFilter}
+                effectsMode={effectsMode}
               />
             )}
 
             {tab === "caja" && (
-              <Caja pos={pos} />
+              <Caja
+                pos={pos}
+                effectsMode={effectsMode}
+              />
             )}
 
             {tab === "compras" && (
@@ -450,8 +582,8 @@ function PosApp({ license }) {
                 clienteId={license.clienteId}
               />
             )}
-          </motion.div>
-        </AnimatePresence>
+          </Suspense>
+        </motion.div>
       </main>
 
       {/* =====================================================
@@ -480,6 +612,8 @@ function PosApp({ license }) {
         deviceId={license.deviceId}
         theme={theme}
         onToggleTheme={handleToggleTheme}
+        effectsMode={effectsMode}
+        onEffectsModeChange={handleEffectsModeChange}
         onLogout={handleCerrarSesion}
       />
 
@@ -501,7 +635,7 @@ function PosApp({ license }) {
    ETIQUETA DE SECCIÓN
 ========================================================= */
 
-function PageLabel({ tab }) {
+function PageLabel({ tab, effectsMode = "complete" }) {
   const pages = {
     vender: {
       eyebrow: "Operación",
@@ -554,13 +688,25 @@ function PageLabel({ tab }) {
   return (
     <motion.div
       key={tab}
-      initial={{
-        opacity: 0,
-        x: -4,
-      }}
+      initial={
+        effectsMode === "performance"
+          ? false
+          : {
+              opacity: 0,
+              x: -4,
+            }
+      }
       animate={{
         opacity: 1,
         x: 0,
+      }}
+      transition={{
+        duration:
+          effectsMode === "performance"
+            ? 0
+            : effectsMode === "balanced"
+              ? 0.06
+              : 0.12,
       }}
       className="
         flex
@@ -617,7 +763,7 @@ function PageLabel({ tab }) {
   );
 }
 
-function DesktopCashStatus({ openSession }) {
+function DesktopCashStatus({ openSession, effectsMode = "complete" }) {
   if (!openSession) {
     return null;
   }
@@ -631,12 +777,23 @@ function DesktopCashStatus({ openSession }) {
       className="pos-desktop-cash-status"
       aria-label={`Caja abierta desde ${fmtTime(openSession.openTime)}`}
     >
-      <motion.span
-        animate={{ scale: [1, 1.32, 1], opacity: [1, 0.68, 1] }}
-        transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-        className="pos-desktop-cash-status__dot"
-        aria-hidden="true"
-      />
+      {effectsMode === "performance" ? (
+        <span
+          className="pos-desktop-cash-status__dot"
+          aria-hidden="true"
+        />
+      ) : (
+        <motion.span
+          animate={{ scale: [1, 1.32, 1], opacity: [1, 0.68, 1] }}
+          transition={{
+            duration: effectsMode === "balanced" ? 2.6 : 2,
+            repeat: Infinity,
+            ease: "easeInOut",
+          }}
+          className="pos-desktop-cash-status__dot"
+          aria-hidden="true"
+        />
+      )}
 
       <span className="whitespace-nowrap">
         Caja abierta · {fmtTime(openSession.openTime)}

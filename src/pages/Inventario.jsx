@@ -1,6 +1,7 @@
 // src/pages/Inventario.jsx
 
 import {
+  useDeferredValue,
   useMemo,
   useRef,
   useState,
@@ -252,6 +253,7 @@ export default function Inventario({
   pos,
   filter,
   setFilter,
+  effectsMode = "complete",
 }) {
   const {
     catalog,
@@ -297,6 +299,15 @@ export default function Inventario({
     setScannedCode,
   ] = useState(null);
 
+  const performanceMode =
+    effectsMode === "performance";
+
+  const balancedMode =
+    effectsMode === "balanced";
+
+  const deferredSearch =
+    useDeferredValue(search);
+
   /*
    * Evitan disparar dos veces una operación
    * mientras Firestore todavía está respondiendo.
@@ -329,99 +340,115 @@ export default function Inventario({
      PRODUCTOS
   ========================================================= */
 
-  const allProducts =
+  /*
+   * Índice derivado del catálogo. Normaliza nombre/código y calcula
+   * vencimiento/stock una sola vez por snapshot de Firestore.
+   */
+  const indexedProducts =
     useMemo(
       () =>
         Object.values(
           catalog || {}
-        ).filter(Boolean),
-      [
-        catalog,
-      ]
-    );
-
-  const list =
-    useMemo(() => {
-      let products = [
-        ...allProducts,
-      ];
-
-      const query =
-        String(
-          search || ""
         )
-          .trim()
-          .toLowerCase();
-
-      if (query) {
-        products =
-          products.filter(
-            (product) => {
-              const name =
-                String(
-                  product?.name ||
-                    ""
-                ).toLowerCase();
-
-              const barcode =
-                String(
-                  product?.barcode ||
-                    ""
-                ).toLowerCase();
-
-              return (
-                name.includes(
-                  query
-                ) ||
-                barcode.includes(
-                  query
-                )
-              );
-            }
-          );
-      }
-
-      if (
-        activeFilter ===
-        "low"
-      ) {
-        products =
-          products.filter(
-            isLowStock
-          );
-      }
-
-      if (
-        activeFilter ===
-        "expiring"
-      ) {
-        products =
-          products.filter(
+          .filter(Boolean)
+          .map(
             (product) => {
               const days =
                 daysUntil(
                   product?.expiry
                 );
 
-              return (
-                days !== null &&
-                days <= 7
-              );
+              return {
+                product,
+                searchName:
+                  String(
+                    product?.name ||
+                      ""
+                  ).toLowerCase(),
+                searchBarcode:
+                  String(
+                    product?.barcode ||
+                      ""
+                  ).toLowerCase(),
+                days,
+                lowStock:
+                  isLowStock(
+                    product
+                  ),
+              };
             }
-          );
-      }
+          ),
+      [
+        catalog,
+      ]
+    );
 
-      products.sort(
+  const allProducts =
+    useMemo(
+      () =>
+        indexedProducts.map(
+          (entry) =>
+            entry.product
+        ),
+      [
+        indexedProducts,
+      ]
+    );
+
+  const list =
+    useMemo(() => {
+      const query =
+        String(
+          deferredSearch || ""
+        )
+          .trim()
+          .toLowerCase();
+
+      const entries =
+        indexedProducts.filter(
+          (entry) => {
+            if (
+              query &&
+              !entry.searchName.includes(
+                query
+              ) &&
+              !entry.searchBarcode.includes(
+                query
+              )
+            ) {
+              return false;
+            }
+
+            if (
+              activeFilter ===
+                "low" &&
+              !entry.lowStock
+            ) {
+              return false;
+            }
+
+            if (
+              activeFilter ===
+                "expiring" &&
+              !(
+                entry.days !== null &&
+                entry.days <= 7
+              )
+            ) {
+              return false;
+            }
+
+            return true;
+          }
+        );
+
+      entries.sort(
         (a, b) => {
           const daysA =
-            daysUntil(
-              a?.expiry
-            );
+            a.days;
 
           const daysB =
-            daysUntil(
-              b?.expiry
-            );
+            b.days;
 
           if (
             daysA !== null &&
@@ -448,13 +475,8 @@ export default function Inventario({
             return 1;
           }
 
-          return String(
-            a?.name || ""
-          ).localeCompare(
-            String(
-              b?.name ||
-                ""
-            ),
+          return a.searchName.localeCompare(
+            b.searchName,
             "es",
             {
               sensitivity:
@@ -464,10 +486,13 @@ export default function Inventario({
         }
       );
 
-      return products;
+      return entries.map(
+        (entry) =>
+          entry.product
+      );
     }, [
-      allProducts,
-      search,
+      indexedProducts,
+      deferredSearch,
       activeFilter,
     ]);
 
@@ -475,40 +500,44 @@ export default function Inventario({
      RESUMEN
   ========================================================= */
 
-  const totalProducts =
-    allProducts.length;
+  const inventorySummary =
+    useMemo(() => {
+      let lowStockCount = 0;
+      let expiringCount = 0;
 
-  const lowStockCount =
-    useMemo(
-      () =>
-        allProducts.filter(
-          isLowStock
-        ).length,
-      [
-        allProducts,
-      ]
-    );
+      for (
+        const entry of
+        indexedProducts
+      ) {
+        if (
+          entry.lowStock
+        ) {
+          lowStockCount += 1;
+        }
 
-  const expiringCount =
-    useMemo(
-      () =>
-        allProducts.filter(
-          (product) => {
-            const days =
-              daysUntil(
-                product?.expiry
-              );
+        if (
+          entry.days !== null &&
+          entry.days <= 7
+        ) {
+          expiringCount += 1;
+        }
+      }
 
-            return (
-              days !== null &&
-              days <= 7
-            );
-          }
-        ).length,
-      [
-        allProducts,
-      ]
-    );
+      return {
+        totalProducts:
+          indexedProducts.length,
+        lowStockCount,
+        expiringCount,
+      };
+    }, [
+      indexedProducts,
+    ]);
+
+  const {
+    totalProducts,
+    lowStockCount,
+    expiringCount,
+  } = inventorySummary;
 
   /* =========================================================
      PRODUCTO
@@ -1281,23 +1310,41 @@ export default function Inventario({
                     product.barcode ||
                     `${product.name}-${index}`
                   }
-                  layout
-                  initial={{
-                    opacity: 0,
-                    y: 8,
-                  }}
+                  layout={
+                    performanceMode
+                      ? false
+                      : "position"
+                  }
+                  initial={
+                    performanceMode
+                      ? false
+                      : {
+                          opacity: 0,
+                          y: 8,
+                        }
+                  }
                   animate={{
                     opacity: 1,
                     y: 0,
                   }}
                   transition={{
-                    duration: 0.18,
-                    delay: Math.min(
-                      index * 0.025,
-                      0.15
-                    ),
+                    duration:
+                      performanceMode
+                        ? 0
+                        : balancedMode
+                          ? 0.08
+                          : 0.18,
+                    delay:
+                      performanceMode ||
+                      balancedMode
+                        ? 0
+                        : Math.min(
+                            index * 0.025,
+                            0.15
+                          ),
                   }}
                   className="
+                    pos-content-auto
                     overflow-hidden
                     rounded-[28px]
                     bg-white

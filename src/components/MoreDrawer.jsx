@@ -15,6 +15,7 @@ import {
 
 import { useOperator } from "./OperatorGate";
 import UserManagementModal from "./UserManagementModal";
+import Modal from "./Modal";
 
 const FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
@@ -46,6 +47,8 @@ export default function MoreDrawer({
   deviceId = null,
   theme = "dark",
   onToggleTheme,
+  effectsMode = "complete",
+  onEffectsModeChange,
   onLogout,
 }) {
   const {
@@ -60,11 +63,15 @@ export default function MoreDrawer({
   const previousFocusRef = useRef(null);
 
   const [showUsers, setShowUsers] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [changingUser, setChangingUser] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [isDesktop, setIsDesktop] = useState(getDesktopLayout);
 
   const visible = open || isDesktop;
+  const reduceEffects =
+    reduceMotion ||
+    effectsMode === "performance";
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -99,7 +106,7 @@ export default function MoreDrawer({
 
     const focusTimer = window.setTimeout(() => {
       closeButtonRef.current?.focus();
-    }, reduceMotion ? 0 : 80);
+    }, reduceEffects ? 0 : 80);
 
     function handleKeyDown(event) {
       if (event.key === "Escape") {
@@ -146,7 +153,7 @@ export default function MoreDrawer({
         window.setTimeout(() => previousFocus.focus(), 0);
       }
     };
-  }, [isDesktop, open, onClose, reduceMotion]);
+  }, [isDesktop, open, onClose, reduceEffects]);
 
   function navigate(tab) {
     onNavigate?.(tab);
@@ -158,6 +165,14 @@ export default function MoreDrawer({
 
   function openUsers() {
     setShowUsers(true);
+
+    if (!isDesktop) {
+      onClose?.();
+    }
+  }
+
+  function openSettings() {
+    setShowSettings(true);
 
     if (!isDesktop) {
       onClose?.();
@@ -209,10 +224,10 @@ export default function MoreDrawer({
       {visible && (
         <motion.div
           className={`pos-more-overlay ${isDesktop ? "is-desktop" : ""}`}
-          initial={reduceMotion ? false : { opacity: 0 }}
+          initial={reduceEffects ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: reduceMotion ? 0 : 0.24, ease: "easeOut" }}
+          transition={{ duration: reduceEffects ? 0 : 0.24, ease: "easeOut" }}
           onMouseDown={(event) => {
             if (!isDesktop && event.target === event.currentTarget) {
               onClose?.();
@@ -226,11 +241,11 @@ export default function MoreDrawer({
             aria-modal={isDesktop ? undefined : "true"}
             aria-labelledby="pos-more-title"
             className={`pos-more-drawer ${isDesktop ? "is-desktop" : ""}`}
-            initial={reduceMotion || isDesktop ? false : { x: "100%", opacity: 0.88 }}
+            initial={reduceEffects || isDesktop ? false : { x: "100%", opacity: 0.88 }}
             animate={{ x: 0, opacity: 1 }}
-            exit={reduceMotion || isDesktop ? { opacity: 0 } : { x: "100%", opacity: 0.88 }}
+            exit={reduceEffects || isDesktop ? { opacity: 0 } : { x: "100%", opacity: 0.88 }}
             transition={{
-              duration: reduceMotion ? 0 : 0.27,
+              duration: reduceEffects ? 0 : 0.27,
               ease: [0.22, 1, 0.36, 1],
             }}
             onMouseDown={(event) => event.stopPropagation()}
@@ -366,6 +381,12 @@ export default function MoreDrawer({
                 />
               </nav>
 
+              <DrawerRow
+                icon={SettingsIcon}
+                label="Configuración"
+                onClick={openSettings}
+              />
+
               <button
                 type="button"
                 role="switch"
@@ -418,7 +439,168 @@ export default function MoreDrawer({
         deviceId={deviceId}
         onClose={() => setShowUsers(false)}
       />
+
+      <SettingsModal
+        open={showSettings}
+        effectsMode={effectsMode}
+        onEffectsModeChange={onEffectsModeChange}
+        onClose={() => setShowSettings(false)}
+      />
     </>
+  );
+}
+
+
+function SettingsModal({
+  open,
+  effectsMode,
+  onEffectsModeChange,
+  onClose,
+}) {
+  const options = [
+    {
+      id: "complete",
+      label: "Completo",
+      badge: "Liquid Glass",
+      description:
+        "Desenfoque, transparencias, sombras y animaciones completas.",
+      icon: SparklesIcon,
+    },
+    {
+      id: "balanced",
+      label: "Equilibrado",
+      badge: "Recomendado",
+      description:
+        "Conserva el estilo Glass con menos desenfoque y composición gráfica.",
+      icon: BalanceIcon,
+    },
+    {
+      id: "performance",
+      label: "Rendimiento",
+      badge: "Más fluido",
+      description:
+        "Elimina el blur dinámico pesado y reduce efectos sin cambiar el diseño.",
+      icon: BoltIcon,
+    },
+  ];
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Configuración"
+    >
+      <section className="space-y-3">
+        <div className="rounded-[22px] border border-white/10 bg-white/[0.035] p-3.5">
+          <span className="block text-[9px] font-extrabold uppercase tracking-[0.15em] text-[#FFC61A]">
+            Rendimiento visual
+          </span>
+          <h3 className="mt-1 text-base font-black text-white">
+            Efectos visuales
+          </h3>
+          <p className="mt-1 text-xs leading-relaxed text-white/45">
+            Podés cambiar el nivel en cualquier momento. La opción queda guardada en este dispositivo.
+          </p>
+        </div>
+
+        <div
+          className="grid gap-2.5"
+          role="radiogroup"
+          aria-label="Nivel de efectos visuales"
+        >
+          {options.map((option) => {
+            const active =
+              effectsMode === option.id;
+            const Icon = option.icon;
+
+            return (
+              <button
+                key={option.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                onClick={() =>
+                  onEffectsModeChange?.(
+                    option.id
+                  )
+                }
+                className={
+                  `relative w-full rounded-[20px] border p-3.5 text-left transition ` +
+                  (active
+                    ? "border-[#FFC61A]/45 bg-[#FFC61A]/10 shadow-[0_10px_28px_rgba(255,198,26,0.08)]"
+                    : "border-white/10 bg-white/[0.035] hover:border-white/20 hover:bg-white/[0.055]")
+                }
+              >
+                <div className="flex items-start gap-3">
+                  <span
+                    className={
+                      `grid h-10 w-10 shrink-0 place-items-center rounded-2xl border ` +
+                      (active
+                        ? "border-[#FFC61A]/35 bg-[#FFC61A] text-black"
+                        : "border-white/10 bg-white/5 text-white/60")
+                    }
+                  >
+                    <Icon className="h-[18px] w-[18px]" />
+                  </span>
+
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <strong
+                        className={
+                          active
+                            ? "text-sm font-black text-white"
+                            : "text-sm font-black text-white/80"
+                        }
+                      >
+                        {option.label}
+                      </strong>
+
+                      <span
+                        className={
+                          `rounded-full px-2 py-1 text-[8px] font-extrabold uppercase tracking-[0.10em] ` +
+                          (active
+                            ? "bg-[#FFC61A]/15 text-[#FFC61A]"
+                            : "bg-white/5 text-white/35")
+                        }
+                      >
+                        {option.badge}
+                      </span>
+                    </span>
+
+                    <span className="mt-1.5 block text-[11px] leading-relaxed text-white/40">
+                      {option.description}
+                    </span>
+                  </span>
+
+                  <span
+                    className={
+                      `mt-1 grid h-5 w-5 shrink-0 place-items-center rounded-full border ` +
+                      (active
+                        ? "border-[#FFC61A] bg-[#FFC61A]"
+                        : "border-white/20 bg-transparent")
+                    }
+                    aria-hidden="true"
+                  >
+                    {active && (
+                      <span className="h-1.5 w-1.5 rounded-full bg-black" />
+                    )}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="rounded-2xl border border-[#FFC61A]/15 bg-[#FFC61A]/[0.06] px-3.5 py-3">
+          <p className="text-[10px] leading-relaxed text-white/45">
+            <strong className="text-[#FFC61A]">
+              Consejo:
+            </strong>{" "}
+            si una PC se siente lenta, probá primero Equilibrado. Rendimiento prioriza fluidez y mantiene colores, tamaños y estructura del POS.
+          </p>
+        </div>
+      </section>
+    </Modal>
   );
 }
 
@@ -607,6 +789,46 @@ function MoonIcon({ className = "" }) {
   return (
     <IconBase className={className}>
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" />
+    </IconBase>
+  );
+}
+
+
+function SettingsIcon({ className = "" }) {
+  return (
+    <IconBase className={className}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1a1.7 1.7 0 0 0 1.1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.14.37.35.7.6 1 .3.26.68.4 1.1.4h.1v4h-.1a1.7 1.7 0 0 0-1.7.6Z" />
+    </IconBase>
+  );
+}
+
+function SparklesIcon({ className = "" }) {
+  return (
+    <IconBase className={className}>
+      <path d="m12 3 1.3 3.7L17 8l-3.7 1.3L12 13l-1.3-3.7L7 8l3.7-1.3L12 3Z" />
+      <path d="m18.5 14 0.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
+      <path d="m5 13 .7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2Z" />
+    </IconBase>
+  );
+}
+
+function BalanceIcon({ className = "" }) {
+  return (
+    <IconBase className={className}>
+      <path d="M12 3v18" />
+      <path d="M5 6h14" />
+      <path d="m5 6-3 6h6L5 6Z" />
+      <path d="m19 6-3 6h6l-3-6Z" />
+      <path d="M8 21h8" />
+    </IconBase>
+  );
+}
+
+function BoltIcon({ className = "" }) {
+  return (
+    <IconBase className={className}>
+      <path d="M13 2 4.5 13H11l-1 9L19.5 10H13l0-8Z" />
     </IconBase>
   );
 }

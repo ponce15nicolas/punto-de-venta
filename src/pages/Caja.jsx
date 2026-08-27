@@ -12,7 +12,7 @@
 //
 // No requiere dependencias nuevas.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "motion/react";
 
 import {
@@ -155,6 +155,7 @@ function getPaymentMethod(
 
 export default function Caja({
   pos,
+  effectsMode = "complete",
 }) {
   const {
     openSession,
@@ -162,6 +163,12 @@ export default function Caja({
     closeCashSession,
     paymentBreakdown,
   } = pos;
+
+  const performanceMode =
+    effectsMode === "performance";
+
+  const balancedMode =
+    effectsMode === "balanced";
 
   const [
     openAmount,
@@ -194,8 +201,54 @@ export default function Caja({
   ] = useState("cash");
 
   const receivablesSummary =
-    getAccountsReceivableSummary(
-      pos?.accountsReceivable
+    useMemo(
+      () =>
+        getAccountsReceivableSummary(
+          pos?.accountsReceivable
+        ),
+      [
+        pos?.accountsReceivable,
+      ]
+    );
+
+  /*
+   * paymentBreakdown recorre ventas y movimientos del turno. Estos hooks
+   * permanecen antes de cualquier return condicional para respetar el
+   * orden estable de Hooks cuando se abre o cierra la caja.
+   */
+  const breakdown =
+    useMemo(
+      () =>
+        openSession
+          ? paymentBreakdown(
+              openSession.id
+            ) || {}
+          : {},
+      [
+        paymentBreakdown,
+        openSession?.id,
+        pos?.sales,
+        pos?.accountsReceivable,
+        pos?.accountsPayable,
+      ]
+    );
+
+  const sessSales =
+    Array.isArray(
+      breakdown.sessSales
+    )
+      ? breakdown.sessSales
+      : [];
+
+  const reversedSessSales =
+    useMemo(
+      () =>
+        sessSales
+          .slice()
+          .reverse(),
+      [
+        sessSales,
+      ]
     );
 
   if (section === "receivables") {
@@ -545,18 +598,6 @@ export default function Caja({
   /* =========================================================
      CAJA ABIERTA
   ========================================================= */
-
-  const breakdown =
-    paymentBreakdown(
-      openSession.id
-    ) || {};
-
-  const sessSales =
-    Array.isArray(
-      breakdown.sessSales
-    )
-      ? breakdown.sessSales
-      : [];
 
   const totals =
     breakdown.totals ||
@@ -1205,9 +1246,7 @@ export default function Caja({
           </div>
 
           <div className="space-y-2.5">
-            {sessSales
-              .slice()
-              .reverse()
+            {reversedSessSales
               .map(
                 (
                   sale,
@@ -1282,25 +1321,39 @@ export default function Caja({
                         sale.id ||
                         `${sale.timestamp}-${index}`
                       }
-                      initial={{
-                        opacity:
-                          0,
-                        y: 6,
-                      }}
+                      initial={
+                        performanceMode
+                          ? false
+                          : {
+                              opacity:
+                                0,
+                              y: 6,
+                            }
+                      }
                       animate={{
                         opacity:
                           1,
                         y: 0,
                       }}
                       transition={{
+                        duration:
+                          performanceMode
+                            ? 0
+                            : balancedMode
+                              ? 0.08
+                              : 0.16,
                         delay:
-                          Math.min(
-                            index *
-                              0.03,
-                            0.18
-                          ),
+                          performanceMode ||
+                          balancedMode
+                            ? 0
+                            : Math.min(
+                                index *
+                                  0.03,
+                                0.18
+                              ),
                       }}
                       className="
+                        pos-content-auto
                         rounded-[22px]
                         border
                         border-white/10
