@@ -41,6 +41,7 @@ const PAYMENT_METHOD_LABELS = Object.freeze({
   qr: "QR",
   tarjeta: "Tarjeta",
   cuenta: "A cuenta",
+  mixto: "Pago combinado",
 });
 
 const ACTION_META = {
@@ -601,6 +602,36 @@ function getEventDetails(event) {
             d.metodoPago
           ),
         },
+        ...(Array.isArray(
+          d.mediosPago
+        )
+          ? d.mediosPago
+              .filter(
+                (part) =>
+                  part &&
+                  Number.isFinite(
+                    Number(
+                      part.importe
+                    )
+                  ) &&
+                  Number(
+                    part.importe
+                  ) > 0
+              )
+              .map(
+                (part) => ({
+                  label:
+                    formatPaymentMethod(
+                      part.metodo
+                    ) ||
+                    "Método",
+                  value:
+                    formatMoney(
+                      part.importe
+                    ),
+                })
+              )
+          : []),
         {
           label: "Ítems",
           value: finiteString(d.cantidadItems),

@@ -36,6 +36,22 @@ const METHODS = [
   },
 ];
 
+const SPLIT_METHODS = METHODS.filter((item) => item.id !== "cuenta");
+
+function toMoneyNumber(value, fallback = Number.NaN) {
+  const normalized =
+    typeof value === "string"
+      ? value.replace(",", ".")
+      : value;
+
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function roundMoney(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
 function todayDateOnly() {
   const now = new Date();
   const offset = now.getTimezoneOffset() * 60 * 1000;
@@ -53,6 +69,10 @@ export default function PaymentModal({
 }) {
   const [method, setMethod] = useState("efectivo");
   const [received, setReceived] = useState("");
+  const [splitEnabled, setSplitEnabled] = useState(false);
+  const [secondMethod, setSecondMethod] = useState("transferencia");
+  const [splitAmount, setSplitAmount] = useState("");
+  const [secondReceived, setSecondReceived] = useState("");
   const [clienteNombre, setClienteNombre] = useState("");
   const [clienteTelefono, setClienteTelefono] = useState("");
   const [vencimiento, setVencimiento] = useState("");
@@ -62,6 +82,10 @@ export default function PaymentModal({
     if (open) {
       setMethod("efectivo");
       setReceived("");
+      setSplitEnabled(false);
+      setSecondMethod("transferencia");
+      setSplitAmount("");
+      setSecondReceived("");
       setClienteNombre("");
       setClienteTelefono("");
       setVencimiento("");
@@ -69,30 +93,63 @@ export default function PaymentModal({
     }
   }, [open]);
 
-  const receivedNum = parseFloat(received);
+  const receivedNum = toMoneyNumber(received);
+  const secondReceivedNum = toMoneyNumber(secondReceived);
   const fechaOrigen = todayDateOnly();
 
-  const change =
-    method === "efectivo" && !isNaN(receivedNum)
-      ? receivedNum - total
+  const rawSplitAmount = toMoneyNumber(splitAmount, 0);
+  const firstSplitAmount = splitEnabled
+    ? roundMoney(Math.min(Math.max(rawSplitAmount, 0), total))
+    : total;
+  const secondSplitAmount = splitEnabled
+    ? roundMoney(total - firstSplitAmount)
+    : 0;
+
+  const firstCashChange =
+    method === "efectivo" && Number.isFinite(receivedNum)
+      ? roundMoney(receivedNum - firstSplitAmount)
       : 0;
+
+  const secondCashChange =
+    splitEnabled &&
+    secondMethod === "efectivo" &&
+    Number.isFinite(secondReceivedNum)
+      ? roundMoney(secondReceivedNum - secondSplitAmount)
+      : 0;
+
+  const change = splitEnabled ? firstCashChange + secondCashChange : firstCashChange;
 
   const validReceivable =
     method !== "cuenta" ||
     (
       clienteNombre.trim().length > 0 &&
-      (
-        !vencimiento ||
-        vencimiento >= fechaOrigen
-      )
+      (!vencimiento || vencimiento >= fechaOrigen)
+    );
+
+  const validFirstCash =
+    method !== "efectivo" ||
+    (Number.isFinite(receivedNum) && receivedNum >= firstSplitAmount);
+
+  const validSecondCash =
+    !splitEnabled ||
+    secondMethod !== "efectivo" ||
+    (Number.isFinite(secondReceivedNum) && secondReceivedNum >= secondSplitAmount);
+
+  const validSplit =
+    !splitEnabled ||
+    (
+      method !== "cuenta" &&
+      secondMethod !== method &&
+      firstSplitAmount > 0 &&
+      secondSplitAmount > 0 &&
+      validFirstCash &&
+      validSecondCash
     );
 
   const canConfirm =
     validReceivable &&
-    (
-      method !== "efectivo" ||
-      (!isNaN(receivedNum) && receivedNum >= total)
-    );
+    validSplit &&
+    (!splitEnabled ? validFirstCash : true);
 
   const selectedMethod =
     METHODS.find((item) => item.id === method) || METHODS[0];
@@ -101,6 +158,37 @@ export default function PaymentModal({
 
   const confirmar = () => {
     if (!canConfirm) return;
+
+    if (splitEnabled) {
+      const parts = [
+        {
+          method,
+          amount: firstSplitAmount,
+          received:
+            method === "efectivo" ? roundMoney(receivedNum) : firstSplitAmount,
+          change:
+            method === "efectivo" ? roundMoney(firstCashChange) : 0,
+        },
+        {
+          method: secondMethod,
+          amount: secondSplitAmount,
+          received:
+            secondMethod === "efectivo"
+              ? roundMoney(secondReceivedNum)
+              : secondSplitAmount,
+          change:
+            secondMethod === "efectivo" ? roundMoney(secondCashChange) : 0,
+        },
+      ];
+
+      onConfirm({
+        method: "mixto",
+        parts,
+        received: roundMoney(parts.reduce((sum, part) => sum + part.received, 0)),
+        change: roundMoney(parts.reduce((sum, part) => sum + part.change, 0)),
+      });
+      return;
+    }
 
     if (method === "cuenta") {
       onConfirm({
@@ -120,12 +208,42 @@ export default function PaymentModal({
 
     onConfirm({
       method,
-      received:
-        method === "efectivo"
-          ? receivedNum
-          : total,
+      received: method === "efectivo" ? receivedNum : total,
     });
   };
+
+  function selectPrimaryMethod(nextMethod) {
+    setMethod(nextMethod);
+
+    if (nextMethod === "cuenta") {
+      setSplitEnabled(false);
+      setSplitAmount("");
+      setSecondReceived("");
+      return;
+    }
+
+    if (nextMethod === secondMethod) {
+      const alternative = SPLIT_METHODS.find((item) => item.id !== nextMethod);
+      if (alternative) setSecondMethod(alternative.id);
+    }
+  }
+
+  function toggleSplitPayment() {
+    if (method === "cuenta") return;
+
+    setSplitEnabled((current) => {
+      const next = !current;
+      if (next) {
+        setSplitAmount(String(roundMoney(total / 2)));
+        setReceived("");
+        setSecondReceived("");
+      } else {
+        setSplitAmount("");
+        setSecondReceived("");
+      }
+      return next;
+    });
+  }
 
   return (
     <Modal
@@ -233,7 +351,7 @@ export default function PaymentModal({
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setMethod(item.id)}
+                  onClick={() => selectPrimaryMethod(item.id)}
                   className={
                     `
                       flex
@@ -293,6 +411,131 @@ export default function PaymentModal({
             })}
           </div>
         </div>
+
+        {method !== "cuenta" && (
+          <div className="mb-4">
+            <button
+              type="button"
+              onClick={toggleSplitPayment}
+              className={
+                `w-full rounded-2xl border px-4 py-3 text-sm font-extrabold transition active:scale-[0.99] ` +
+                (splitEnabled
+                  ? "border-[#FFC61A]/50 bg-[#FFC61A]/12 text-[#FFC61A]"
+                  : "border-white/10 bg-[#151A22] text-white/65 hover:border-white/20")
+              }
+            >
+              {splitEnabled ? "✓ Cobro dividido en 2 medios" : "+ Cobrar con 2 medios de pago"}
+            </button>
+          </div>
+        )}
+
+        {splitEnabled && (
+          <motion.div
+            initial={{ opacity: 0, y: -5 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-4 rounded-[22px] border border-[#FFC61A]/20 bg-[#151A22] p-3.5"
+          >
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-extrabold text-white">Pago combinado</p>
+                <p className="mt-0.5 text-[11px] text-white/40">Ingresá cuánto se paga con el primer medio. El resto se calcula solo.</p>
+              </div>
+              <span className="shrink-0 rounded-xl bg-[#FFC61A]/10 px-2.5 py-1.5 text-[10px] font-black text-[#FFC61A]">2 medios</span>
+            </div>
+
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-bold text-white/55">
+                {selectedMethod.label} · importe
+              </span>
+              <div className="relative">
+                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-black text-[#FFC61A]">$</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  max={Math.max(0, total - 0.01)}
+                  step="0.01"
+                  inputMode="decimal"
+                  value={splitAmount}
+                  onChange={(event) => setSplitAmount(event.target.value)}
+                  className="w-full rounded-2xl border border-white/10 bg-[#171B23] py-3.5 pl-9 pr-4 text-base font-black text-white outline-none transition focus:border-[#FFC61A] focus:ring-2 focus:ring-[#FFC61A]/10"
+                />
+              </div>
+            </label>
+
+            <div className="mt-3">
+              <span className="mb-1.5 block text-xs font-bold text-white/55">Segundo medio</span>
+              <div className="grid grid-cols-2 gap-2">
+                {SPLIT_METHODS.filter((item) => item.id !== method).map((item) => {
+                  const Icon = item.icon;
+                  const active = secondMethod === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => { setSecondMethod(item.id); setSecondReceived(""); }}
+                      className={
+                        `flex items-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-extrabold transition ` +
+                        (active
+                          ? "border-[#FFC61A] bg-[#FFC61A] text-black"
+                          : "border-white/10 bg-[#171B23] text-white/65 hover:border-white/20")
+                      }
+                    >
+                      <Icon className="h-4 w-4" />
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.035] px-3.5 py-3">
+              <span className="text-xs font-bold text-white/50">Resto con {METHODS.find((item) => item.id === secondMethod)?.label || "Segundo medio"}</span>
+              <span className="text-base font-black text-[#FFC61A]">{money(secondSplitAmount)}</span>
+            </div>
+
+            {!splitEnabled && method === "efectivo" && (
+              <label className="mt-3 block">
+                <span className="mb-1.5 block text-xs font-bold text-white/55">Efectivo recibido · primer medio</span>
+                <input
+                  type="number" min="0" step="0.01" inputMode="decimal"
+                  value={received}
+                  onChange={(event) => setReceived(event.target.value)}
+                  placeholder={String(firstSplitAmount)}
+                  className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-4 py-3.5 text-sm font-black text-white outline-none focus:border-[#FFC61A]"
+                />
+                {Number.isFinite(receivedNum) && (
+                  <span className={`mt-1.5 block text-xs font-bold ${firstCashChange < 0 ? "text-red-400" : "text-emerald-400"}`}>
+                    {firstCashChange < 0 ? `Falta ${money(Math.abs(firstCashChange))}` : `Vuelto ${money(firstCashChange)}`}
+                  </span>
+                )}
+              </label>
+            )}
+
+            {secondMethod === "efectivo" && (
+              <label className="mt-3 block">
+                <span className="mb-1.5 block text-xs font-bold text-white/55">Efectivo recibido · segundo medio</span>
+                <input
+                  type="number" min="0" step="0.01" inputMode="decimal"
+                  value={secondReceived}
+                  onChange={(event) => setSecondReceived(event.target.value)}
+                  placeholder={String(secondSplitAmount)}
+                  className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-4 py-3.5 text-sm font-black text-white outline-none focus:border-[#FFC61A]"
+                />
+                {Number.isFinite(secondReceivedNum) && (
+                  <span className={`mt-1.5 block text-xs font-bold ${secondCashChange < 0 ? "text-red-400" : "text-emerald-400"}`}>
+                    {secondCashChange < 0 ? `Falta ${money(Math.abs(secondCashChange))}` : `Vuelto ${money(secondCashChange)}`}
+                  </span>
+                )}
+              </label>
+            )}
+
+            {(!Number.isFinite(rawSplitAmount) || firstSplitAmount <= 0 || secondSplitAmount <= 0) && (
+              <p className="mt-3 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-300">
+                El importe del primer medio debe ser mayor a $0 y menor al total.
+              </p>
+            )}
+          </motion.div>
+        )}
 
         {/* =================================================
             EFECTIVO
@@ -533,7 +776,7 @@ export default function PaymentModal({
             VENTA A CUENTA
         ================================================= */}
 
-        {method === "cuenta" && (
+        {!splitEnabled && method === "cuenta" && (
           <motion.div
             initial={{
               opacity: 0,
@@ -732,7 +975,7 @@ export default function PaymentModal({
             RESUMEN MÉTODO NO EFECTIVO
         ================================================= */}
 
-        {method !== "efectivo" && method !== "cuenta" && (
+        {!splitEnabled && method !== "efectivo" && method !== "cuenta" && (
           <motion.div
             key={method}
             initial={{
@@ -840,9 +1083,11 @@ export default function PaymentModal({
           "
         >
           <CheckIcon className="h-4 w-4" />
-          {method === "cuenta"
-            ? `Registrar a cuenta · ${money(total)}`
-            : `Confirmar cobro · ${money(total)}`}
+          {splitEnabled
+            ? `Confirmar pago combinado · ${money(total)}`
+            : method === "cuenta"
+              ? `Registrar a cuenta · ${money(total)}`
+              : `Confirmar cobro · ${money(total)}`}
         </button>
       </div>
     </Modal>

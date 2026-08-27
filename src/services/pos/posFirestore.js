@@ -42,6 +42,7 @@ const PAYMENT_METHODS = Object.freeze([
 const SALE_METHODS = Object.freeze([
   ...PAYMENT_METHODS,
   "cuenta",
+  "mixto",
 ]);
 
 const MAX_CART_LINES = 100;
@@ -261,6 +262,138 @@ function normalizeSaleMethod(
   )
     ? value
     : "efectivo";
+}
+
+function normalizeMixedPaymentParts(
+  parts,
+  total
+) {
+  if (
+    !Array.isArray(parts) ||
+    parts.length !== 2
+  ) {
+    fail(
+      "invalid-mixed-payment",
+      "El pago combinado debe tener exactamente 2 medios"
+    );
+  }
+
+  const normalized =
+    parts.map((part) => {
+      const method =
+        PAYMENT_METHODS.includes(
+          part?.method
+        )
+          ? part.method
+          : null;
+
+      const rawAmount =
+        Number(part?.amount);
+
+      if (
+        !method ||
+        !Number.isFinite(
+          rawAmount
+        )
+      ) {
+        fail(
+          "invalid-mixed-payment",
+          "Revisá los medios e importes del pago combinado"
+        );
+      }
+
+      const amount =
+        roundMoney(
+          rawAmount
+        );
+
+      const rawReceived =
+        method === "efectivo"
+          ? Number(
+              part?.received ??
+                amount
+            )
+          : amount;
+
+      if (
+        !Number.isFinite(
+          rawReceived
+        )
+      ) {
+        fail(
+          "invalid-mixed-payment",
+          "El importe recibido del pago combinado no es válido"
+        );
+      }
+
+      const received =
+        roundMoney(
+          rawReceived
+        );
+
+      const change =
+        method === "efectivo"
+          ? roundMoney(
+              received -
+                amount
+            )
+          : 0;
+
+      if (
+        amount <= 0 ||
+        (
+          method ===
+            "efectivo" &&
+          received < amount
+        )
+      ) {
+        fail(
+          "invalid-mixed-payment",
+          "Revisá los importes del pago combinado"
+        );
+      }
+
+      return {
+        method,
+        amount,
+        received,
+        change,
+      };
+    });
+
+  if (
+    normalized[0].method ===
+    normalized[1].method
+  ) {
+    fail(
+      "invalid-mixed-payment",
+      "Elegí dos medios de pago diferentes"
+    );
+  }
+
+  const allocatedTotal =
+    roundMoney(
+      normalized.reduce(
+        (sum, part) =>
+          sum +
+          part.amount,
+        0
+      )
+    );
+
+  if (
+    Math.abs(
+      allocatedTotal -
+        total
+    ) > 0.01
+  ) {
+    fail(
+      "invalid-mixed-payment",
+      "Los importes del pago combinado deben completar el total de la venta"
+    );
+  }
+
+  return normalized;
 }
 
 function isPlainObject(value) {
@@ -3750,19 +3883,36 @@ export async function checkoutCloud(
         )
       : null;
 
+  const paymentParts =
+    method === "mixto"
+      ? normalizeMixedPaymentParts(
+          payment?.parts,
+          total
+        )
+      : [];
+
   const received =
-    method ===
-    "efectivo"
+    method === "mixto"
       ? roundMoney(
-          toNumber(
-            payment?.received,
-            total
+          paymentParts.reduce(
+            (sum, part) =>
+              sum +
+              part.received,
+            0
           )
         )
       : method ===
-          "cuenta"
-        ? 0
-        : total;
+          "efectivo"
+        ? roundMoney(
+            toNumber(
+              payment?.received,
+              total
+            )
+          )
+        : method ===
+            "cuenta"
+          ? 0
+          : total;
 
   if (
     method ===
@@ -3776,13 +3926,22 @@ export async function checkoutCloud(
   }
 
   const change =
-    method ===
-    "efectivo"
+    method === "mixto"
       ? roundMoney(
-          received -
-          total
+          paymentParts.reduce(
+            (sum, part) =>
+              sum +
+              part.change,
+            0
+          )
         )
-      : 0;
+      : method ===
+          "efectivo"
+        ? roundMoney(
+            received -
+            total
+          )
+        : 0;
 
   try {
     const response =
@@ -3800,6 +3959,14 @@ export async function checkoutCloud(
           method,
           received,
           change,
+
+          ...(method ===
+            "mixto"
+            ? {
+                parts:
+                  paymentParts,
+              }
+            : {}),
         },
 
         ...(method ===

@@ -65,6 +65,7 @@ const PAYMENT_METHODS = [
 const SALE_METHODS = [
   ...PAYMENT_METHODS,
   "cuenta",
+  "mixto",
 ];
 
 const PRODUCT_TYPES = [
@@ -3537,35 +3538,37 @@ export function usePosData({
           const sale of
           sessSales
         ) {
-          const requestedMethod =
-            sale.payment?.method ||
-            "efectivo";
+          const parts = Array.isArray(sale.payment?.parts)
+            ? sale.payment.parts
+            : [];
 
-          if (
-            requestedMethod ===
-            "cuenta"
-          ) {
+          if (parts.length > 0) {
+            for (const part of parts) {
+              const partMethod = PAYMENT_METHODS.includes(part?.method)
+                ? part.method
+                : null;
+
+              if (!partMethod) continue;
+
+              saleTotals[partMethod] = roundMoney(
+                saleTotals[partMethod] + Math.max(0, toNumber(part?.amount))
+              );
+            }
+
             continue;
           }
 
-          const method =
-            PAYMENT_METHODS.includes(
-              requestedMethod
-            )
-              ? requestedMethod
-              : "efectivo";
+          const requestedMethod = sale.payment?.method || "efectivo";
 
-          saleTotals[
-            method
-          ] =
-            roundMoney(
-              saleTotals[
-                method
-              ] +
-                toNumber(
-                  sale.total
-                )
-            );
+          if (requestedMethod === "cuenta") continue;
+
+          const method = PAYMENT_METHODS.includes(requestedMethod)
+            ? requestedMethod
+            : "efectivo";
+
+          saleTotals[method] = roundMoney(
+            saleTotals[method] + toNumber(sale.total)
+          );
         }
 
         const receivablePayments =
@@ -4070,8 +4073,51 @@ export function usePosData({
           };
         }
 
+        let paymentParts = [];
+
+        if (method === "mixto") {
+          const rawParts = Array.isArray(payment?.parts) ? payment.parts : [];
+
+          if (rawParts.length !== 2) {
+            showToast("El pago combinado debe tener exactamente 2 medios", true);
+            return false;
+          }
+
+          paymentParts = rawParts.map((part) => {
+            const partMethod = PAYMENT_METHODS.includes(part?.method)
+              ? part.method
+              : null;
+            const amount = roundMoney(Math.max(0, toNumber(part?.amount)));
+            const partReceived = partMethod === "efectivo"
+              ? roundMoney(toNumber(part?.received, amount))
+              : amount;
+            const partChange = partMethod === "efectivo"
+              ? roundMoney(partReceived - amount)
+              : 0;
+
+            return {
+              method: partMethod,
+              amount,
+              received: partReceived,
+              change: partChange,
+            };
+          });
+
+          if (
+            paymentParts.some((part) => !part.method || part.amount <= 0) ||
+            paymentParts[0].method === paymentParts[1].method ||
+            Math.abs(paymentParts.reduce((sum, part) => sum + part.amount, 0) - total) > 0.01 ||
+            paymentParts.some((part) => part.method === "efectivo" && part.received < part.amount)
+          ) {
+            showToast("Revisá los importes y medios del pago combinado", true);
+            return false;
+          }
+        }
+
         const received =
-          method ===
+          method === "mixto"
+            ? roundMoney(paymentParts.reduce((sum, part) => sum + part.received, 0))
+            : method ===
           "efectivo"
             ? toNumber(
                 payment?.received,
@@ -4096,13 +4142,11 @@ export function usePosData({
         }
 
         const change =
-          method ===
-          "efectivo"
-            ? roundMoney(
-                received -
-                  total
-              )
-            : 0;
+          method === "mixto"
+            ? roundMoney(paymentParts.reduce((sum, part) => sum + part.change, 0))
+            : method === "efectivo"
+              ? roundMoney(received - total)
+              : 0;
 
         const saleId =
           uid();
@@ -4216,6 +4260,10 @@ export function usePosData({
             ),
 
           change,
+
+          ...(method === "mixto"
+            ? { parts: paymentParts }
+            : {}),
 
           ...(method ===
             "cuenta"

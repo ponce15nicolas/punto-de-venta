@@ -55,6 +55,7 @@ const METHOD_LABELS = {
   qr: "QR",
   tarjeta: "Tarjeta",
   cuenta: "A cuenta",
+  mixto: "Pago combinado",
 };
 
 const AUDIT_ACTION_META = {
@@ -645,6 +646,35 @@ function getAuditDetailRows(event) {
             detail.metodoPago
           ),
         ],
+        ...(Array.isArray(
+          detail.mediosPago
+        )
+          ? detail.mediosPago
+              .filter(
+                (part) =>
+                  part &&
+                  Number.isFinite(
+                    Number(
+                      part.importe
+                    )
+                  ) &&
+                  Number(
+                    part.importe
+                  ) > 0
+              )
+              .map(
+                (part) => [
+                  formatAuditPaymentMethod(
+                    part.metodo
+                  ),
+                  money(
+                    roundMoney(
+                      part.importe
+                    )
+                  ),
+                ]
+              )
+          : []),
         [
           "Productos",
           String(
@@ -3933,6 +3963,10 @@ function SaleDetailCard({
       sale?.payment?.received
     );
 
+  const paymentParts = Array.isArray(sale?.payment?.parts)
+    ? sale.payment.parts
+    : [];
+
   const total =
     roundMoney(
       sale?.total
@@ -4117,6 +4151,33 @@ function SaleDetailCard({
       )}
 
       {/* PAGO */}
+
+      {method === "mixto" && paymentParts.length > 0 && (
+        <div className="border-t border-white/[0.07] px-3.5 py-3">
+          <div className="grid gap-2 sm:grid-cols-2">
+            {paymentParts.map((part, partIndex) => (
+              <div
+                key={`${part?.method || "metodo"}-${partIndex}`}
+                className="rounded-xl border border-white/[0.07] bg-white/[0.03] px-3 py-2.5"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-white/40">
+                    {METHOD_LABELS[part?.method] || "Método"}
+                  </span>
+                  <span className="text-xs font-black text-[#FFC61A]">
+                    {money(roundMoney(part?.amount))}
+                  </span>
+                </div>
+                {part?.method === "efectivo" && roundMoney(part?.change) > 0 && (
+                  <p className="mt-1 text-[10px] font-semibold text-white/35">
+                    Recibido {money(roundMoney(part?.received))} · Vuelto {money(roundMoney(part?.change))}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {method ===
         "efectivo" && (

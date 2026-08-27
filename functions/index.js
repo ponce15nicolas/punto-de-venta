@@ -13709,6 +13709,7 @@ const POS_METODOS_VENTA =
     new Set([
         ...POS_METODOS_COBRO,
         "cuenta",
+        "mixto",
     ]);
 
 const POS_MAX_LINEAS_VENTA = 100;
@@ -14612,35 +14613,76 @@ exports.registrarVenta =
                             );
                         }
 
-                        const receivedRaw =
-                            rawMethod ===
-                                "efectivo"
-                                ? Number(
-                                    request.data
-                                        ?.payment
-                                        ?.received ??
-                                    total
-                                )
-                                : rawMethod ===
-                                    "cuenta"
-                                    ? 0
-                                    : total;
+                        let paymentParts = [];
 
-                        const received =
-                            redondearDineroVenta(
-                                receivedRaw
+                        if (rawMethod === "mixto") {
+                            const rawParts = Array.isArray(
+                                request.data?.payment?.parts
+                            )
+                                ? request.data.payment.parts
+                                : [];
+
+                            if (rawParts.length !== 2) {
+                                throw new HttpsError(
+                                    "invalid-argument",
+                                    "El pago combinado debe tener exactamente 2 medios."
+                                );
+                            }
+
+                            paymentParts = rawParts.map((part) => {
+                                const method = textoSeguro(part?.method, 40);
+                                const amount = redondearDineroVenta(part?.amount);
+                                const received = method === "efectivo"
+                                    ? redondearDineroVenta(part?.received ?? amount)
+                                    : amount;
+                                const change = method === "efectivo"
+                                    ? redondearDineroVenta(received - amount)
+                                    : 0;
+
+                                return { method, amount, received, change };
+                            });
+
+                            const invalidPart = paymentParts.some((part) =>
+                                !POS_METODOS_COBRO.has(part.method) ||
+                                !Number.isFinite(part.amount) ||
+                                part.amount <= 0 ||
+                                !Number.isFinite(part.received) ||
+                                (part.method === "efectivo" && part.received < part.amount)
                             );
 
+                            const duplicatedMethod =
+                                paymentParts[0]?.method === paymentParts[1]?.method;
+
+                            const allocatedTotal = redondearDineroVenta(
+                                paymentParts.reduce((sum, part) => sum + part.amount, 0)
+                            );
+
+                            if (
+                                invalidPart ||
+                                duplicatedMethod ||
+                                Math.abs(allocatedTotal - total) > 0.01
+                            ) {
+                                throw new HttpsError(
+                                    "invalid-argument",
+                                    "El detalle del pago combinado no es válido."
+                                );
+                            }
+                        }
+
+                        const receivedRaw =
+                            rawMethod === "mixto"
+                                ? paymentParts.reduce((sum, part) => sum + part.received, 0)
+                                : rawMethod === "efectivo"
+                                    ? Number(request.data?.payment?.received ?? total)
+                                    : rawMethod === "cuenta"
+                                        ? 0
+                                        : total;
+
+                        const received = redondearDineroVenta(receivedRaw);
+
                         if (
-                            !Number.isFinite(
-                                received
-                            ) ||
-                            (
-                                rawMethod ===
-                                    "efectivo" &&
-                                received <
-                                    total
-                            )
+                            !Number.isFinite(received) ||
+                            (rawMethod === "efectivo" && received < total)
                         ) {
                             throw new HttpsError(
                                 "invalid-argument",
@@ -14649,65 +14691,33 @@ exports.registrarVenta =
                         }
 
                         const change =
-                            rawMethod ===
-                                "efectivo"
+                            rawMethod === "mixto"
                                 ? redondearDineroVenta(
-                                    received -
-                                    total
+                                    paymentParts.reduce((sum, part) => sum + part.change, 0)
                                 )
-                                : 0;
+                                : rawMethod === "efectivo"
+                                    ? redondearDineroVenta(received - total)
+                                    : 0;
 
-                        const sessionData =
-                            sessionSnap.data() ||
-                            {};
+                        const sessionData = sessionSnap.data() || {};
 
                         const paymentTotals = {
-                            efectivo:
-                                redondearDineroVenta(
-                                    sessionData
-                                        ?.paymentTotals
-                                        ?.efectivo ||
-                                    0
-                                ),
-
-                            transferencia:
-                                redondearDineroVenta(
-                                    sessionData
-                                        ?.paymentTotals
-                                        ?.transferencia ||
-                                    0
-                                ),
-
-                            qr:
-                                redondearDineroVenta(
-                                    sessionData
-                                        ?.paymentTotals
-                                        ?.qr ||
-                                    0
-                                ),
-
-                            tarjeta:
-                                redondearDineroVenta(
-                                    sessionData
-                                        ?.paymentTotals
-                                        ?.tarjeta ||
-                                    0
-                                ),
+                            efectivo: redondearDineroVenta(sessionData?.paymentTotals?.efectivo || 0),
+                            transferencia: redondearDineroVenta(sessionData?.paymentTotals?.transferencia || 0),
+                            qr: redondearDineroVenta(sessionData?.paymentTotals?.qr || 0),
+                            tarjeta: redondearDineroVenta(sessionData?.paymentTotals?.tarjeta || 0),
                         };
 
-                        if (
-                            rawMethod !==
-                            "cuenta"
-                        ) {
-                            paymentTotals[
-                                rawMethod
-                            ] =
-                                redondearDineroVenta(
-                                    paymentTotals[
-                                        rawMethod
-                                    ] +
-                                    total
+                        if (rawMethod === "mixto") {
+                            for (const part of paymentParts) {
+                                paymentTotals[part.method] = redondearDineroVenta(
+                                    paymentTotals[part.method] + part.amount
                                 );
+                            }
+                        } else if (rawMethod !== "cuenta") {
+                            paymentTotals[rawMethod] = redondearDineroVenta(
+                                paymentTotals[rawMethod] + total
+                            );
                         }
 
                         const nextTotalSales =
@@ -14757,6 +14767,10 @@ exports.registrarVenta =
                                 received,
 
                                 change,
+
+                                ...(rawMethod === "mixto"
+                                    ? { parts: paymentParts }
+                                    : {}),
                             },
 
                             ...(cuentaRef
@@ -14959,6 +14973,15 @@ exports.registrarVenta =
 
                                     metodoPago:
                                         rawMethod,
+
+                                    ...(rawMethod === "mixto"
+                                        ? {
+                                            mediosPago: paymentParts.map((part) => ({
+                                                metodo: part.method,
+                                                importe: part.amount,
+                                            })),
+                                        }
+                                        : {}),
 
                                     cantidadItems:
                                         items.length,

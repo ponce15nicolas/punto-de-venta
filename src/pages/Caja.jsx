@@ -60,8 +60,15 @@ const ACCOUNT_METHOD = {
   icon: DebtIcon,
 };
 
+const MIXED_METHOD = {
+  id: "mixto",
+  label: "Pago combinado",
+  icon: WalletIcon,
+};
+
 const SALE_METHODS = [
   ...METHODS,
+  MIXED_METHOD,
   ACCOUNT_METHOD,
 ];
 
@@ -71,6 +78,7 @@ const METHOD_LABEL = {
   qr: "QR",
   tarjeta: "Tarjeta",
   cuenta: "A cuenta",
+  mixto: "Pago combinado",
 };
 
 /* =========================================================
@@ -1237,6 +1245,25 @@ export default function Caja({
                         ?.change
                     );
 
+                  const paymentParts =
+                    Array.isArray(
+                      sale?.payment
+                        ?.parts
+                    )
+                      ? sale.payment.parts
+                          .filter(
+                            (part) =>
+                              METHODS.some(
+                                (item) =>
+                                  item.id ===
+                                  part?.method
+                              ) &&
+                              roundMoney(
+                                part?.amount
+                              ) > 0
+                          )
+                      : [];
+
                   return (
                     <motion.article
                       key={
@@ -1392,6 +1419,108 @@ export default function Caja({
                           </span>
                         </div>
                       </div>
+
+                      {method ===
+                        "mixto" &&
+                        paymentParts.length >
+                          0 && (
+                        <div
+                          className="
+                            mt-3
+                            grid
+                            gap-2
+                            border-t
+                            border-white/[0.07]
+                            pt-3
+                            sm:grid-cols-2
+                          "
+                        >
+                          {paymentParts.map(
+                            (
+                              part,
+                              partIndex
+                            ) => (
+                              <div
+                                key={`${part.method}-${partIndex}`}
+                                className="
+                                  rounded-xl
+                                  border
+                                  border-white/[0.07]
+                                  bg-white/[0.03]
+                                  px-3
+                                  py-2.5
+                                "
+                              >
+                                <div
+                                  className="
+                                    flex
+                                    items-center
+                                    justify-between
+                                    gap-3
+                                  "
+                                >
+                                  <span
+                                    className="
+                                      text-[10px]
+                                      font-extrabold
+                                      uppercase
+                                      tracking-[0.08em]
+                                      text-white/40
+                                    "
+                                  >
+                                    {METHOD_LABEL[
+                                      part.method
+                                    ] ||
+                                      "Método"}
+                                  </span>
+
+                                  <strong
+                                    className="
+                                      text-xs
+                                      font-black
+                                      text-[#FFC61A]
+                                    "
+                                  >
+                                    {money(
+                                      roundMoney(
+                                        part.amount
+                                      )
+                                    )}
+                                  </strong>
+                                </div>
+
+                                {part.method ===
+                                  "efectivo" &&
+                                  roundMoney(
+                                    part.change
+                                  ) > 0 && (
+                                    <p
+                                      className="
+                                        mt-1
+                                        text-[10px]
+                                        font-semibold
+                                        text-white/35
+                                      "
+                                    >
+                                      Recibido{" "}
+                                      {money(
+                                        roundMoney(
+                                          part.received
+                                        )
+                                      )}{" "}
+                                      · Vuelto{" "}
+                                      {money(
+                                        roundMoney(
+                                          part.change
+                                        )
+                                      )}
+                                    </p>
+                                  )}
+                              </div>
+                            )
+                          )}
+                        </div>
+                      )}
                     </motion.article>
                   );
                 }

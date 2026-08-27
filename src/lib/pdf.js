@@ -37,6 +37,7 @@ const PAYMENT_LABELS = {
   qr: "QR",
   tarjeta: "Tarjeta",
   cuenta: "A cuenta",
+  mixto: "Pago combinado",
 };
 
 const PAYMENT_ORDER = [
@@ -504,6 +505,52 @@ function getPaymentTotals(
           sale?.payment
             ?.method
         );
+
+      if (
+        method === "mixto"
+      ) {
+        const parts =
+          Array.isArray(
+            sale?.payment
+              ?.parts
+          )
+            ? sale.payment.parts
+            : [];
+
+        for (
+          const part of parts
+        ) {
+          const partMethod =
+            String(
+              part?.method ||
+              ""
+            );
+
+          if (
+            !PAYMENT_ORDER.includes(
+              partMethod
+            ) ||
+            partMethod ===
+              "cuenta"
+          ) {
+            continue;
+          }
+
+          totals[
+            partMethod
+          ] =
+            roundMoney(
+              totals[
+                partMethod
+              ] +
+                number(
+                  part?.amount
+                )
+            );
+        }
+
+        return;
+      }
 
       totals[
         method
@@ -1449,6 +1496,79 @@ export function downloadSessionPdf({
 
       y += 16;
 
+      const paymentParts =
+        sale?.payment?.method ===
+          "mixto" &&
+        Array.isArray(
+          sale?.payment?.parts
+        )
+          ? sale.payment.parts
+              .filter(
+                (part) =>
+                  PAYMENT_ORDER.includes(
+                    part?.method
+                  ) &&
+                  part?.method !==
+                    "cuenta" &&
+                  roundMoney(
+                    part?.amount
+                  ) > 0
+              )
+          : [];
+
+      if (
+        paymentParts.length >
+        0
+      ) {
+        paymentParts.forEach(
+          (part) => {
+            ensureSpace(7);
+
+            doc.setFont(
+              "helvetica",
+              "bold"
+            );
+
+            doc.setFontSize(
+              7.5
+            );
+
+            doc.setTextColor(
+              ...COLORS.muted
+            );
+
+            const cashExtra =
+              part?.method ===
+                "efectivo" &&
+              roundMoney(
+                part?.change
+              ) > 0
+                ? ` - Recibido ${money(
+                    part?.received
+                  )} - Vuelto ${money(
+                    part?.change
+                  )}`
+                : "";
+
+            doc.text(
+              cleanPdfText(
+                `${paymentLabel(
+                  part?.method
+                )}: ${money(
+                  part?.amount
+                )}${cashExtra}`
+              ),
+              margin + 3,
+              y
+            );
+
+            y += 5;
+          }
+        );
+
+        y += 1;
+      }
+
       /* ---------------------------------------------------
          PRODUCTOS
       --------------------------------------------------- */
@@ -2122,6 +2242,35 @@ function getAuditPdfDetailRows(event) {
             detail.metodoPago
           ),
         ],
+        ...(Array.isArray(
+          detail.mediosPago
+        )
+          ? detail.mediosPago
+              .filter(
+                (part) =>
+                  part &&
+                  Number.isFinite(
+                    Number(
+                      part.importe
+                    )
+                  ) &&
+                  Number(
+                    part.importe
+                  ) > 0
+              )
+              .map(
+                (part) => [
+                  formatAuditPaymentMethod(
+                    part.metodo
+                  ),
+                  money(
+                    roundMoney(
+                      part.importe
+                    )
+                  ),
+                ]
+              )
+          : []),
         [
           "Productos",
           String(
