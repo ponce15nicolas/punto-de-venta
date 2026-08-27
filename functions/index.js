@@ -14314,7 +14314,7 @@ function calcularPromocionesVenta(
             })
             .filter((candidate) =>
                 candidate.valid &&
-                candidate.savingPerApplication >
+                candidate.savingPerApplication >=
                     0 &&
                 maxAplicacionesPromocion(
                     candidate.promotion,
@@ -14407,7 +14407,7 @@ function calcularPromocionesVenta(
                 promotionalTotal
             );
 
-        if (discount <= 0) {
+        if (discount < 0) {
             continue;
         }
 
@@ -14688,6 +14688,7 @@ exports.guardarPromocion =
                             );
 
                         let regularTotal = 0;
+                        let costTotal = 0;
                         const itemSnapshots = [];
 
                         for (
@@ -14755,8 +14756,23 @@ exports.guardarPromocion =
                                 );
                             }
 
+                            const cost =
+                                redondearDineroVenta(
+                                    Math.max(
+                                        0,
+                                        Number(
+                                            product.cost ||
+                                            0
+                                        )
+                                    )
+                                );
+
                             regularTotal +=
                                 price *
+                                item.qty;
+
+                            costTotal +=
+                                cost *
                                 item.qty;
 
                             itemSnapshots.push({
@@ -14778,13 +14794,18 @@ exports.guardarPromocion =
                                 regularTotal
                             );
 
+                        costTotal =
+                            redondearDineroVenta(
+                                costTotal
+                            );
+
                         if (
-                            promotion.price >=
+                            promotion.price >
                             regularTotal
                         ) {
                             throw new HttpsError(
                                 "invalid-argument",
-                                "El precio promocional debe ser menor que el precio normal de los productos."
+                                "El precio del combo no puede superar el precio normal de los productos. Puede ser igual si no ofrece ahorro."
                             );
                         }
 
@@ -14855,8 +14876,18 @@ exports.guardarPromocion =
                                         regularTotal,
                                     ahorroActual:
                                         redondearDineroVenta(
-                                            regularTotal -
-                                            promotion.price
+                                            Math.max(
+                                                0,
+                                                regularTotal -
+                                                promotion.price
+                                            )
+                                        ),
+                                    costoActual:
+                                        costTotal,
+                                    gananciaEstimada:
+                                        redondearDineroVenta(
+                                            promotion.price -
+                                            costTotal
                                         ),
                                     activa:
                                         promotion.active,
@@ -16516,7 +16547,7 @@ exports.registrarVenta =
                                         grossProfit,
 
                                     ...(promotionPricing
-                                        .discountTotal > 0
+                                        .applications.length > 0
                                         ? {
                                             descuentoPromociones:
                                                 promotionPricing

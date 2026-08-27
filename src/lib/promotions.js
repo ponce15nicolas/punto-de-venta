@@ -221,7 +221,7 @@ function getRegularPerApplication(promotion, unitPriceByBarcode) {
  * - sólo participan productos tipo "unidad";
  * - una unidad no puede pertenecer simultáneamente a dos promociones;
  * - primero se aplican las promociones que ahorran más por aplicación;
- * - una promoción que ya no sea más barata que el precio normal no se aplica;
+ * - una promoción puede tener ahorro cero (precio igual al normal);
  * - el descuento se reparte por código para conservar subtotales y ganancias.
  */
 export function calculateCartPromotions(
@@ -273,7 +273,7 @@ export function calculateCartPromotions(
       (candidate) =>
         candidate.maxApplications > 0 &&
         candidate.regularPerApplication !== null &&
-        candidate.savingPerApplication > 0
+        candidate.savingPerApplication >= 0
     )
     .sort((a, b) => {
       if (b.savingPerApplication !== a.savingPerApplication) {
@@ -328,7 +328,7 @@ export function calculateCartPromotions(
       regularTotal - promotionalTotal
     );
 
-    if (discount <= 0) {
+    if (discount < 0) {
       continue;
     }
 
@@ -422,6 +422,32 @@ export function getPromotionRegularTotal(
 
     total +=
       Math.max(0, toNumber(product.price)) * item.qty;
+  }
+
+  return roundPromotionMoney(total);
+}
+
+export function getPromotionCostTotal(
+  promotion,
+  catalog
+) {
+  const normalized = normalizePromotion(promotion);
+
+  if (!normalized) {
+    return 0;
+  }
+
+  let total = 0;
+
+  for (const item of normalized.items) {
+    const product = catalog?.[item.barcode];
+
+    if (!product || product.tipoVenta !== "unidad") {
+      return 0;
+    }
+
+    total +=
+      Math.max(0, toNumber(product.cost)) * item.qty;
   }
 
   return roundPromotionMoney(total);

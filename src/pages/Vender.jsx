@@ -1,7 +1,6 @@
 // src/pages/Vender.jsx
 
 import {
-  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -112,7 +111,6 @@ function displayBarcode(barcode) {
 export default function Vender({
   pos,
   goInventario,
-  effectsMode = "complete",
 }) {
   const {
     catalog,
@@ -144,12 +142,6 @@ export default function Vender({
   const checkoutInFlightRef = useRef(false);
   const searchInputRef = useRef(null);
 
-  const performanceMode =
-    effectsMode === "performance";
-
-  const balancedMode =
-    effectsMode === "balanced";
-
   /*
    * Los lectores USB comunes se presentan como teclado (HID).
    * Guardamos un buffer independiente para poder escanear desde
@@ -170,35 +162,6 @@ export default function Vender({
       ).filter(Boolean),
     [catalog]
   );
-
-  /*
-   * Preparamos las cadenas de búsqueda una sola vez por snapshot
-   * de catálogo. Evita repetir toLowerCase() para cada producto
-   * en cada tecla pulsada.
-   */
-  const searchableProducts = useMemo(
-    () =>
-      products.map(
-        (product) => ({
-          product,
-          name: String(
-            product?.name || ""
-          ).toLowerCase(),
-          barcode: String(
-            product?.barcode || ""
-          ).toLowerCase(),
-        })
-      ),
-    [products]
-  );
-
-  /*
-   * Mantiene el input respondiendo inmediatamente aunque el catálogo
-   * tenga muchos productos. React actualiza los resultados en segundo
-   * plano sin bloquear la escritura.
-   */
-  const deferredSearch =
-    useDeferredValue(search);
 
   /* =========================================================
      ALERTAS
@@ -239,7 +202,7 @@ export default function Vender({
   ========================================================= */
 
   const searchResults = useMemo(() => {
-    const query = deferredSearch
+    const query = search
       .trim()
       .toLowerCase();
 
@@ -247,61 +210,75 @@ export default function Vender({
       return [];
     }
 
-    const exact = [];
-    const starts = [];
-    const contains = [];
+    return products
+      .filter((product) => {
+        const name = String(
+          product?.name || ""
+        ).toLowerCase();
 
-    for (const entry of searchableProducts) {
-      const {
-        product,
-        name,
-        barcode,
-      } = entry;
+        const barcode = String(
+          product?.barcode || ""
+        ).toLowerCase();
 
-      if (
-        name === query ||
-        barcode === query
-      ) {
-        exact.push(product);
-        continue;
-      }
+        return (
+          name.includes(query) ||
+          barcode.includes(query)
+        );
+      })
+      .sort((a, b) => {
+        const aName = String(
+          a?.name || ""
+        ).toLowerCase();
 
-      if (
-        name.startsWith(query) ||
-        barcode.startsWith(query)
-      ) {
-        starts.push(product);
-        continue;
-      }
+        const bName = String(
+          b?.name || ""
+        ).toLowerCase();
 
-      if (
-        name.includes(query) ||
-        barcode.includes(query)
-      ) {
-        contains.push(product);
-      }
-    }
+        const aBarcode = String(
+          a?.barcode || ""
+        ).toLowerCase();
 
-    const byName = (a, b) =>
-      String(a?.name || "").localeCompare(
-        String(b?.name || ""),
-        "es",
-        { sensitivity: "base" }
-      );
+        const bBarcode = String(
+          b?.barcode || ""
+        ).toLowerCase();
 
-    exact.sort(byName);
-    starts.sort(byName);
-    contains.sort(byName);
+        const aExact =
+          aName === query ||
+          aBarcode === query;
 
-    return [
-      ...exact,
-      ...starts,
-      ...contains,
-    ].slice(0, 8);
-  }, [
-    deferredSearch,
-    searchableProducts,
-  ]);
+        const bExact =
+          bName === query ||
+          bBarcode === query;
+
+        if (aExact && !bExact) {
+          return -1;
+        }
+
+        if (!aExact && bExact) {
+          return 1;
+        }
+
+        const aStarts =
+          aName.startsWith(query);
+
+        const bStarts =
+          bName.startsWith(query);
+
+        if (aStarts && !bStarts) {
+          return -1;
+        }
+
+        if (!aStarts && bStarts) {
+          return 1;
+        }
+
+        return aName.localeCompare(
+          bName,
+          "es"
+        );
+      })
+      .slice(0, 8);
+  }, [products, search]);
 
   const showSearchResults =
     Boolean(openSession) &&
@@ -1450,40 +1427,23 @@ export default function Vender({
         <AnimatePresence>
           {showSearchResults && (
             <motion.div
-              initial={
-                performanceMode
-                  ? false
-                  : {
-                      opacity: 0,
-                      y: -5,
-                      scale: 0.99,
-                    }
-              }
+              initial={{
+                opacity: 0,
+                y: -5,
+                scale: 0.99,
+              }}
               animate={{
                 opacity: 1,
                 y: 0,
                 scale: 1,
               }}
-              exit={
-                performanceMode
-                  ? {
-                      opacity: 1,
-                      y: 0,
-                      scale: 1,
-                    }
-                  : {
-                      opacity: 0,
-                      y: -4,
-                      scale: 0.99,
-                    }
-              }
+              exit={{
+                opacity: 0,
+                y: -4,
+                scale: 0.99,
+              }}
               transition={{
-                duration:
-                  performanceMode
-                    ? 0
-                    : balancedMode
-                      ? 0.07
-                      : 0.15,
+                duration: 0.15,
               }}
               className="
                 absolute
@@ -1563,30 +1523,18 @@ export default function Vender({
                               `${product.name}-${index}`
                             }
                             type="button"
-                            initial={
-                              performanceMode
-                                ? false
-                                : {
-                                    opacity: 0,
-                                    y: 4,
-                                  }
-                            }
+                            initial={{
+                              opacity: 0,
+                              y: 4,
+                            }}
                             animate={{
                               opacity: 1,
                               y: 0,
                             }}
                             transition={{
-                              duration:
-                                performanceMode
-                                  ? 0
-                                  : balancedMode
-                                    ? 0.06
-                                    : 0.12,
                               delay:
-                                performanceMode ||
-                                balancedMode
-                                  ? 0
-                                  : index * 0.02,
+                                index *
+                                0.02,
                             }}
                             onMouseDown={(event) =>
                               event.preventDefault()
@@ -1823,46 +1771,26 @@ export default function Vender({
                           item.cartLineId ||
                           `${item.barcode}-${index}`
                         }
-                        layout={
-                          performanceMode
-                            ? false
-                            : "position"
-                        }
-                        initial={
-                          performanceMode
-                            ? false
-                            : {
-                                opacity: 0,
-                                height: 0,
-                                y: 5,
-                              }
-                        }
+                        layout
+                        initial={{
+                          opacity: 0,
+                          height: 0,
+                          y: 5,
+                        }}
                         animate={{
                           opacity: 1,
                           height:
                             "auto",
                           y: 0,
                         }}
-                        exit={
-                          performanceMode
-                            ? {
-                                opacity: 1,
-                                height: "auto",
-                                y: 0,
-                              }
-                            : {
-                                opacity: 0,
-                                height: 0,
-                                y: -4,
-                              }
-                        }
+                        exit={{
+                          opacity: 0,
+                          height: 0,
+                          y: -4,
+                        }}
                         transition={{
                           duration:
-                            performanceMode
-                              ? 0
-                              : balancedMode
-                                ? 0.09
-                                : 0.18,
+                            0.18,
                         }}
                         className="overflow-hidden border-b border-black/8 py-3 last:border-b-0"
                       >
@@ -2024,7 +1952,9 @@ export default function Vender({
                       {application.count > 1 ? ` ×${application.count}` : ""}
                     </span>
                     <span className="shrink-0 font-black text-emerald-700">
-                      -{money(application.discount)}
+                      {Number(application.discount || 0) > 0
+                        ? `-${money(application.discount)}`
+                        : "Ahorro $0"}
                     </span>
                   </div>
                 ))}
@@ -2053,30 +1983,20 @@ export default function Vender({
               key={
                 total
               }
-              initial={
-                performanceMode
-                  ? false
-                  : {
-                      scale:
-                        balancedMode
-                          ? 1.025
-                          : 1.06,
-                    }
-              }
+              initial={{
+                scale: 1.06,
+              }}
               animate={{
                 scale: 1,
               }}
-              transition={
-                performanceMode
-                  ? {
-                      duration: 0,
-                    }
-                  : {
-                      type: "spring",
-                      stiffness: 400,
-                      damping: 24,
-                    }
-              }
+              transition={{
+                type:
+                  "spring",
+                stiffness:
+                  400,
+                damping:
+                  24,
+              }}
               className="rounded-2xl bg-[#FFC61A] px-4 py-2.5 text-right text-2xl font-black tracking-[-0.04em] text-black"
             >
               {money(

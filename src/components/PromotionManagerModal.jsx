@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import Modal from "./Modal";
 import { money } from "../lib/format";
 import {
+  getPromotionCostTotal,
   getPromotionRegularTotal,
   normalizePromotion,
 } from "../lib/promotions";
@@ -198,10 +199,26 @@ export default function PromotionManagerModal({
     [previewPromotion, catalog]
   );
 
+  const promotionCost = useMemo(
+    () =>
+      previewPromotion
+        ? getPromotionCostTotal(
+            previewPromotion,
+            catalog
+          )
+        : 0,
+    [previewPromotion, catalog]
+  );
+
   const promoPrice = Number(form.price);
   const promoSaving =
     Number.isFinite(promoPrice) && regularTotal > 0
       ? Math.max(0, regularTotal - promoPrice)
+      : 0;
+
+  const promoProfit =
+    Number.isFinite(promoPrice)
+      ? promoPrice - promotionCost
       : 0;
 
   async function save() {
@@ -251,8 +268,11 @@ export default function PromotionManagerModal({
       return;
     }
 
-    if (regularTotal <= 0 || price >= regularTotal) {
-      pos?.showToast?.("El precio promocional debe ser menor que el precio normal", true);
+    if (regularTotal <= 0 || price > regularTotal) {
+      pos?.showToast?.(
+        "El precio del combo no puede superar el precio normal. Puede ser igual si no querés ofrecer ahorro.",
+        true
+      );
       return;
     }
 
@@ -366,7 +386,10 @@ export default function PromotionManagerModal({
             <div className="space-y-2.5">
               {promotions.map((promotion) => {
                 const normal = getPromotionRegularTotal(promotion, catalog);
-                const currentSaving = Math.max(0, normal - Number(promotion.price || 0));
+                const currentCost = getPromotionCostTotal(promotion, catalog);
+                const promotionPrice = Number(promotion.price || 0);
+                const currentSaving = Math.max(0, normal - promotionPrice);
+                const currentProfit = promotionPrice - currentCost;
 
                 return (
                   <article
@@ -410,11 +433,16 @@ export default function PromotionManagerModal({
                       </div>
                     </div>
 
-                    {currentSaving > 0 && (
-                      <div className="mt-3 rounded-xl bg-emerald-500/[0.07] px-3 py-2 text-[10px] font-bold text-emerald-400">
-                        Ahorro actual {money(currentSaving)}
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="rounded-xl bg-emerald-500/[0.07] px-3 py-2">
+                        <span className="block text-[9px] font-bold uppercase tracking-[0.08em] text-emerald-400/60">Ahorro actual</span>
+                        <strong className="mt-0.5 block text-[11px] font-black text-emerald-400">{money(currentSaving)}</strong>
                       </div>
-                    )}
+                      <div className={`rounded-xl px-3 py-2 ${currentProfit >= 0 ? "bg-[#FFC61A]/[0.07]" : "bg-red-500/[0.07]"}`}>
+                        <span className={`block text-[9px] font-bold uppercase tracking-[0.08em] ${currentProfit >= 0 ? "text-[#FFC61A]/60" : "text-red-400/60"}`}>Ganancia estimada</span>
+                        <strong className={`mt-0.5 block text-[11px] font-black ${currentProfit >= 0 ? "text-[#FFC61A]" : "text-red-400"}`}>{money(currentProfit)}</strong>
+                      </div>
+                    </div>
 
                     {esAdministrador && (
                       <div className="mt-3 grid grid-cols-3 gap-2">
@@ -551,14 +579,22 @@ export default function PromotionManagerModal({
           </label>
 
           {regularTotal > 0 && (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <div className="rounded-2xl bg-white/[0.035] px-3 py-2.5">
                 <span className="block text-[9px] font-bold uppercase tracking-[0.1em] text-white/30">Precio normal</span>
                 <strong className="mt-0.5 block text-sm font-black text-white/70">{money(regularTotal)}</strong>
               </div>
+              <div className="rounded-2xl bg-white/[0.035] px-3 py-2.5">
+                <span className="block text-[9px] font-bold uppercase tracking-[0.1em] text-white/30">Costo</span>
+                <strong className="mt-0.5 block text-sm font-black text-white/70">{money(promotionCost)}</strong>
+              </div>
               <div className="rounded-2xl bg-emerald-500/[0.07] px-3 py-2.5">
-                <span className="block text-[9px] font-bold uppercase tracking-[0.1em] text-emerald-400/60">Ahorro</span>
+                <span className="block text-[9px] font-bold uppercase tracking-[0.1em] text-emerald-400/60">Ahorro cliente</span>
                 <strong className="mt-0.5 block text-sm font-black text-emerald-400">{money(promoSaving)}</strong>
+              </div>
+              <div className={`rounded-2xl px-3 py-2.5 ${promoProfit >= 0 ? "bg-[#FFC61A]/[0.07]" : "bg-red-500/[0.07]"}`}>
+                <span className={`block text-[9px] font-bold uppercase tracking-[0.1em] ${promoProfit >= 0 ? "text-[#FFC61A]/60" : "text-red-400/60"}`}>Ganancia negocio</span>
+                <strong className={`mt-0.5 block text-sm font-black ${promoProfit >= 0 ? "text-[#FFC61A]" : "text-red-400"}`}>{money(promoProfit)}</strong>
               </div>
             </div>
           )}
