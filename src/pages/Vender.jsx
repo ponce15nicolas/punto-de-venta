@@ -20,6 +20,7 @@ import {
 import Modal from "../components/Modal";
 import PaymentModal from "../components/PaymentModal";
 import Scanner from "../components/Scanner";
+import PromotionSaleModal from "../components/PromotionSaleModal";
 
 /* =========================================================
    HELPERS
@@ -120,6 +121,7 @@ export default function Vender({
     updateCartAmount,
     removeFromCart,
     clearCart,
+    cartPricing,
     checkout,
     showToast,
   } = pos;
@@ -129,6 +131,7 @@ export default function Vender({
 
   const [scanOpen, setScanOpen] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
+  const [promotionOpen, setPromotionOpen] = useState(false);
 
   const [saleProduct, setSaleProduct] = useState(null);
   const [editingIndex, setEditingIndex] = useState(null);
@@ -286,14 +289,28 @@ export default function Vender({
      TOTALES
   ========================================================= */
 
-  const total = roundMoney(
-    cart.reduce(
-      (accumulator, item) =>
-        accumulator +
-        getItemSubtotal(item),
-      0
+  const total =
+    roundMoney(
+      cartPricing?.total ??
+      cart.reduce(
+        (accumulator, item) =>
+          accumulator +
+          getItemSubtotal(item),
+        0
+      )
+    );
+
+  const promotionDiscountTotal =
+    roundMoney(
+      cartPricing?.discountTotal
+    );
+
+  const promotionApplications =
+    Array.isArray(
+      cartPricing?.applications
     )
-  );
+      ? cartPricing.applications
+      : [];
 
   const itemCount = cart.length;
 
@@ -389,6 +406,7 @@ export default function Vender({
         !openSession ||
         scanOpen ||
         payOpen ||
+        promotionOpen ||
         saleProduct ||
         checkoutInFlightRef.current
       ) {
@@ -496,6 +514,7 @@ export default function Vender({
     catalog,
     openSession,
     payOpen,
+    promotionOpen,
     products,
     saleProduct,
     scanOpen,
@@ -528,6 +547,7 @@ export default function Vender({
       if (
         payOpen ||
         scanOpen ||
+        promotionOpen ||
         saleProduct
       ) {
         return false;
@@ -564,6 +584,12 @@ export default function Vender({
           return;
         }
 
+        if (promotionOpen) {
+          event.preventDefault();
+          setPromotionOpen(false);
+          return;
+        }
+
         if (payOpen) {
           event.preventDefault();
           setPayOpen(false);
@@ -597,6 +623,7 @@ export default function Vender({
         hasExternalDialog() ||
         payOpen ||
         scanOpen ||
+        promotionOpen ||
         saleProduct ||
         checkoutInFlightRef.current
       ) {
@@ -666,6 +693,7 @@ export default function Vender({
     clearCart,
     openSession,
     payOpen,
+    promotionOpen,
     saleProduct,
     scanOpen,
     search,
@@ -1330,6 +1358,42 @@ export default function Vender({
             type="button"
             disabled={!openSession}
             onClick={() =>
+              setPromotionOpen(
+                true
+              )
+            }
+            aria-label="Ver promociones"
+            className="
+              inline-flex
+              h-[50px]
+              w-[54px]
+              shrink-0
+              items-center
+              justify-center
+              gap-2
+              rounded-2xl
+              border
+              border-[#FFC61A]/20
+              bg-[#FFC61A]/[0.08]
+              text-[#FFC61A]
+              transition
+              hover:border-[#FFC61A]/35
+              hover:bg-[#FFC61A]/12
+              active:scale-[0.97]
+              disabled:cursor-not-allowed
+              disabled:opacity-40
+              sm:w-auto
+              sm:px-4
+            "
+          >
+            <MoneyIcon className="h-5 w-5" />
+            <span className="hidden text-xs font-extrabold sm:inline">Promos</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!openSession}
+            onClick={() =>
               setScanOpen(
                 true
               )
@@ -1673,9 +1737,32 @@ export default function Vender({
                         item
                       );
 
-                    const subtotal =
+                    const baseSubtotal =
                       getItemSubtotal(
                         item
+                      );
+
+                    const promotionDiscount =
+                      tipo === "unidad"
+                        ? roundMoney(
+                            Math.min(
+                              baseSubtotal,
+                              Math.max(
+                                0,
+                                toNumber(
+                                  cartPricing
+                                    ?.discountByBarcode
+                                    ?.[item.barcode]
+                                )
+                              )
+                            )
+                          )
+                        : 0;
+
+                    const subtotal =
+                      roundMoney(
+                        baseSubtotal -
+                        promotionDiscount
                       );
 
                     return (
@@ -1747,6 +1834,12 @@ export default function Vender({
                                   item.price
                                 )}{" "}
                                 c/u
+                              </p>
+                            )}
+
+                            {promotionDiscount > 0 && (
+                              <p className="mt-1 text-[10px] font-extrabold text-emerald-600">
+                                Promoción · -{money(promotionDiscount)}
                               </p>
                             )}
                           </div>
@@ -1837,6 +1930,36 @@ export default function Vender({
             </div>
           )}
 
+          {promotionApplications.length > 0 && (
+            <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[10px] font-extrabold uppercase tracking-[0.12em] text-emerald-700">
+                  Promociones aplicadas
+                </span>
+                <strong className="text-xs font-black text-emerald-700">
+                  Ahorrás {money(promotionDiscountTotal)}
+                </strong>
+              </div>
+
+              <div className="mt-2 space-y-1.5">
+                {promotionApplications.map((application) => (
+                  <div
+                    key={application.id}
+                    className="flex items-center justify-between gap-3 text-[10px]"
+                  >
+                    <span className="min-w-0 truncate font-bold text-emerald-800/70">
+                      {application.name}
+                      {application.count > 1 ? ` ×${application.count}` : ""}
+                    </span>
+                    <span className="shrink-0 font-black text-emerald-700">
+                      -{money(application.discount)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* =================================================
               TOTAL
           ================================================= */}
@@ -1848,10 +1971,9 @@ export default function Vender({
               </span>
 
               <span className="mt-0.5 block text-xs font-semibold text-black/40">
-                {itemCount}{" "}
-                {itemCount === 1
-                  ? "producto"
-                  : "productos"}
+                {promotionDiscountTotal > 0
+                  ? `Antes ${money(cartPricing?.baseTotal || total)} · ahorro ${money(promotionDiscountTotal)}`
+                  : `${itemCount} ${itemCount === 1 ? "producto" : "productos"}`}
               </span>
             </div>
 
@@ -1969,6 +2091,20 @@ export default function Vender({
       {/* =====================================================
           SCANNER
       ===================================================== */}
+
+      <PromotionSaleModal
+        open={
+          promotionOpen
+        }
+        pos={
+          pos
+        }
+        onClose={() =>
+          setPromotionOpen(
+            false
+          )
+        }
+      />
 
       <Scanner
         open={

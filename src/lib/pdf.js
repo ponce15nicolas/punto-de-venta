@@ -1569,6 +1569,67 @@ export function downloadSessionPdf({
         y += 1;
       }
 
+      const promotionsApplied =
+        Array.isArray(
+          sale?.promotionsApplied
+        )
+          ? sale.promotionsApplied
+          : [];
+
+      if (
+        promotionsApplied.length > 0
+      ) {
+        ensureSpace(
+          Math.max(
+            10,
+            promotionsApplied.length * 5 + 6
+          )
+        );
+
+        doc.setFont(
+          "helvetica",
+          "bold"
+        );
+        doc.setFontSize(7.5);
+        doc.setTextColor(
+          ...COLORS.green
+        );
+        doc.text(
+          cleanPdfText(
+            `Promociones · ahorro ${money(
+              sale?.promotionDiscountTotal
+            )}`
+          ),
+          margin + 3,
+          y
+        );
+        y += 5;
+
+        promotionsApplied.forEach(
+          (promotion) => {
+            ensureSpace(5);
+            doc.setFont(
+              "helvetica",
+              "normal"
+            );
+            doc.setFontSize(7);
+            doc.setTextColor(
+              ...COLORS.muted
+            );
+            doc.text(
+              cleanPdfText(
+                `${promotion?.name || "Promoción"}${Number(promotion?.count) > 1 ? ` x${promotion.count}` : ""} - ahorro ${money(promotion?.discount)}`
+              ),
+              margin + 3,
+              y
+            );
+            y += 4.5;
+          }
+        );
+
+        y += 1;
+      }
+
       /* ---------------------------------------------------
          PRODUCTOS
       --------------------------------------------------- */
@@ -1626,10 +1687,15 @@ export function downloadSessionPdf({
               item
             );
 
-          const secondary =
-            getProductSecondaryText(
-              item
+          const promotionDiscount =
+            roundMoney(
+              item?.promotionDiscount
             );
+
+          const secondary =
+            `${getProductSecondaryText(
+              item
+            )}${promotionDiscount > 0 ? ` · Promo -${money(promotionDiscount)}` : ""}`;
 
           /*
            * Dejamos espacio a la derecha
@@ -2054,6 +2120,18 @@ const AUDIT_ACTION_META = {
     title: "Venta realizada",
     category: "Ventas",
   },
+  "alta-promocion": {
+    title: "Promoción creada",
+    category: "Promociones",
+  },
+  "edicion-promocion": {
+    title: "Promoción actualizada",
+    category: "Promociones",
+  },
+  "eliminacion-promocion": {
+    title: "Promoción eliminada",
+    category: "Promociones",
+  },
   "migracion-ganancias-historicas": {
     title: "Ganancias históricas completadas",
     category: "Ganancias",
@@ -2270,6 +2348,26 @@ function getAuditPdfDetailRows(event) {
                   ),
                 ]
               )
+          : []),
+        ...(Number(
+          detail.descuentoPromociones
+        ) > 0
+          ? [[
+              "Ahorro promociones",
+              money(
+                detail.descuentoPromociones
+              ),
+            ]]
+          : []),
+        ...(Array.isArray(
+          detail.promocionesAplicadas
+        )
+          ? detail.promocionesAplicadas.map(
+              (promotion, index) => [
+                `Promoción ${index + 1}`,
+                `${promotion?.nombre || "Promoción"}${Number(promotion?.cantidad) > 1 ? ` ×${promotion.cantidad}` : ""} · -${money(promotion?.descuento)}`,
+              ]
+            )
           : []),
         [
           "Productos",
@@ -2498,6 +2596,47 @@ function getAuditPdfDetailRows(event) {
             detail.totalPagado
           ),
         ],
+      ];
+
+    case "alta-promocion":
+    case "edicion-promocion":
+    case "eliminacion-promocion":
+      return [
+        [
+          "Promoción",
+          detail.promocionNombre ||
+            "Promoción",
+        ],
+        [
+          "Tipo",
+          detail.tipo === "combo"
+            ? "Combo"
+            : "Precio por cantidad",
+        ],
+        ...(Number.isFinite(
+          Number(
+            detail.precioPromocional
+          )
+        )
+          ? [[
+              "Precio promocional",
+              money(
+                detail.precioPromocional
+              ),
+            ]]
+          : []),
+        ...(Number.isFinite(
+          Number(
+            detail.ahorroActual
+          )
+        )
+          ? [[
+              "Ahorro actual",
+              money(
+                detail.ahorroActual
+              ),
+            ]]
+          : []),
       ];
 
     case "reposicion-stock": {

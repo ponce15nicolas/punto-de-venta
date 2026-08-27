@@ -1264,6 +1264,18 @@ export default function Caja({
                           )
                       : [];
 
+                  const promotionsApplied =
+                    Array.isArray(
+                      sale?.promotionsApplied
+                    )
+                      ? sale.promotionsApplied
+                      : [];
+
+                  const promotionDiscountTotal =
+                    roundMoney(
+                      sale?.promotionDiscountTotal
+                    );
+
                   return (
                     <motion.article
                       key={
@@ -1419,6 +1431,28 @@ export default function Caja({
                           </span>
                         </div>
                       </div>
+
+                      {promotionsApplied.length > 0 && (
+                        <div className="mt-3 border-t border-white/[0.07] pt-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-[9px] font-extrabold uppercase tracking-[0.1em] text-emerald-400/70">
+                              Promociones
+                            </span>
+                            {promotionDiscountTotal > 0 && (
+                              <strong className="text-[10px] font-black text-emerald-400">
+                                Ahorro {money(promotionDiscountTotal)}
+                              </strong>
+                            )}
+                          </div>
+                          <p className="mt-1 text-[10px] font-semibold leading-5 text-white/40">
+                            {promotionsApplied
+                              .map((promotion) =>
+                                `${promotion?.name || "Promoción"}${Number(promotion?.count) > 1 ? ` ×${promotion.count}` : ""}`
+                              )
+                              .join(" · ")}
+                          </p>
+                        </div>
+                      )}
 
                       {method ===
                         "mixto" &&

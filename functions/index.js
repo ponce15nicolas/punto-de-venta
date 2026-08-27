@@ -1645,6 +1645,15 @@ const AUDIT_ACTIONS = Object.freeze({
 
     MIGRACION_GANANCIAS_HISTORICAS:
         "migracion-ganancias-historicas",
+
+    ALTA_PROMOCION:
+        "alta-promocion",
+
+    EDICION_PROMOCION:
+        "edicion-promocion",
+
+    ELIMINACION_PROMOCION:
+        "eliminacion-promocion",
 });
 
 const AUDIT_ACTION_VALUES =
@@ -1687,6 +1696,109 @@ function validarAccionAuditoria(
  * sesiones completas o estructuras demasiado grandes dentro
  * de los eventos de auditoría.
  */
+function normalizarValorAuditoria(
+    value,
+    depth = 0
+) {
+    if (
+        typeof value ===
+            "string"
+    ) {
+        return textoSeguro(
+            value,
+            AUDIT_DETAIL_MAX_TEXT_LENGTH
+        );
+    }
+
+    if (
+        typeof value ===
+            "number" &&
+        Number.isFinite(
+            value
+        )
+    ) {
+        return value;
+    }
+
+    if (
+        typeof value ===
+            "boolean" ||
+        value === null
+    ) {
+        return value;
+    }
+
+    if (
+        depth >= 2
+    ) {
+        return undefined;
+    }
+
+    if (
+        Array.isArray(
+            value
+        )
+    ) {
+        return value
+            .slice(0, 16)
+            .map((item) =>
+                normalizarValorAuditoria(
+                    item,
+                    depth + 1
+                )
+            )
+            .filter(
+                (item) =>
+                    item !== undefined
+            );
+    }
+
+    if (
+        esObjetoPlano(
+            value
+        )
+    ) {
+        const result = {};
+
+        for (
+            const [
+                rawKey,
+                rawValue,
+            ] of Object.entries(
+                value
+            ).slice(0, 12)
+        ) {
+            const key =
+                textoSeguro(
+                    rawKey,
+                    80
+                );
+
+            if (!key) {
+                continue;
+            }
+
+            const normalized =
+                normalizarValorAuditoria(
+                    rawValue,
+                    depth + 1
+                );
+
+            if (
+                normalized !==
+                undefined
+            ) {
+                result[key] =
+                    normalized;
+            }
+        }
+
+        return result;
+    }
+
+    return undefined;
+}
+
 function normalizarDetalleAuditoria(
     value
 ) {
@@ -1724,48 +1836,18 @@ function normalizarDetalleAuditoria(
             continue;
         }
 
-        if (
-            typeof rawValue ===
-                "string"
-        ) {
-            result[key] =
-                textoSeguro(
-                    rawValue,
-                    AUDIT_DETAIL_MAX_TEXT_LENGTH
-                );
-
-            continue;
-        }
+        const normalized =
+            normalizarValorAuditoria(
+                rawValue,
+                0
+            );
 
         if (
-            typeof rawValue ===
-                "number" &&
-            Number.isFinite(
-                rawValue
-            )
+            normalized !==
+            undefined
         ) {
             result[key] =
-                rawValue;
-
-            continue;
-        }
-
-        if (
-            typeof rawValue ===
-                "boolean"
-        ) {
-            result[key] =
-                rawValue;
-
-            continue;
-        }
-
-        if (
-            rawValue ===
-            null
-        ) {
-            result[key] =
-                null;
+                normalized;
         }
     }
 
@@ -13675,6 +13757,1267 @@ exports.reponerStock =
     );
 
 
+
+/* =========================================================
+   PROMOCIONES / COMBOS
+========================================================= */
+
+const POS_PROMOTION_TYPES =
+    new Set([
+        "cantidad",
+        "combo",
+    ]);
+
+const POS_MAX_PROMOTION_ITEMS = 12;
+
+function normalizarFechaPromocion(
+    value,
+    fieldName
+) {
+    const text =
+        textoSeguro(
+            value,
+            20
+        );
+
+    if (!text) {
+        return null;
+    }
+
+    if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(
+            text
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            `${fieldName} no es válida.`
+        );
+    }
+
+    return text;
+}
+
+function normalizarPromocionEntrada(
+    value
+) {
+    if (
+        !esObjetoPlano(
+            value
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Los datos de la promoción no son válidos."
+        );
+    }
+
+    const id =
+        textoSeguro(
+            value.id,
+            180
+        );
+
+    const name =
+        textoSeguro(
+            value.name,
+            120
+        );
+
+    const type =
+        textoSeguro(
+            value.type,
+            40
+        );
+
+    const price =
+        redondearDineroVenta(
+            value.price
+        );
+
+    if (!name) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Ingresá un nombre para la promoción."
+        );
+    }
+
+    if (
+        !POS_PROMOTION_TYPES.has(
+            type
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El tipo de promoción no es válido."
+        );
+    }
+
+    if (
+        !Number.isFinite(
+            price
+        ) ||
+        price <= 0
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El precio promocional debe ser mayor a cero."
+        );
+    }
+
+    const rawItems =
+        Array.isArray(
+            value.items
+        )
+            ? value.items
+            : [];
+
+    if (
+        rawItems.length === 0 ||
+        rawItems.length >
+            POS_MAX_PROMOTION_ITEMS
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "La promoción no tiene una composición válida."
+        );
+    }
+
+    const seen =
+        new Set();
+
+    const items =
+        rawItems.map(
+            (
+                rawItem,
+                index
+            ) => {
+                if (
+                    !esObjetoPlano(
+                        rawItem
+                    )
+                ) {
+                    throw new HttpsError(
+                        "invalid-argument",
+                        `El producto ${index + 1} de la promoción es inválido.`
+                    );
+                }
+
+                const barcode =
+                    textoSeguro(
+                        rawItem.barcode,
+                        180
+                    );
+
+                const qty =
+                    Math.trunc(
+                        Number(
+                            rawItem.qty
+                        )
+                    );
+
+                if (
+                    !barcode ||
+                    !Number.isFinite(
+                        qty
+                    ) ||
+                    qty <= 0
+                ) {
+                    throw new HttpsError(
+                        "invalid-argument",
+                        `La cantidad del producto ${index + 1} no es válida.`
+                    );
+                }
+
+                if (
+                    seen.has(
+                        barcode
+                    )
+                ) {
+                    throw new HttpsError(
+                        "invalid-argument",
+                        "No repitas el mismo producto dentro de una promoción."
+                    );
+                }
+
+                seen.add(
+                    barcode
+                );
+
+                return {
+                    barcode,
+                    qty,
+                };
+            }
+        );
+
+    if (
+        type === "cantidad" &&
+        items.length !== 1
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Una promoción por cantidad debe usar un solo producto."
+        );
+    }
+
+    if (
+        type === "combo" &&
+        items.length < 2
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Un combo debe incluir al menos dos productos."
+        );
+    }
+
+    const startDate =
+        normalizarFechaPromocion(
+            value.startDate,
+            "La fecha inicial"
+        );
+
+    const endDate =
+        normalizarFechaPromocion(
+            value.endDate,
+            "La fecha final"
+        );
+
+    if (
+        startDate &&
+        endDate &&
+        endDate < startDate
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "La fecha final no puede ser anterior a la fecha inicial."
+        );
+    }
+
+    return {
+        id,
+        name,
+        type,
+        active:
+            value.active !== false,
+        price,
+        items,
+        startDate,
+        endDate,
+    };
+}
+
+function normalizarPromocionDocumento(
+    data,
+    id
+) {
+    const type =
+        textoSeguro(
+            data?.type,
+            40
+        );
+
+    const items =
+        (Array.isArray(
+            data?.items
+        )
+            ? data.items
+            : []
+        )
+            .map((item) => ({
+                barcode:
+                    textoSeguro(
+                        item?.barcode,
+                        180
+                    ),
+                qty:
+                    Math.max(
+                        1,
+                        Math.trunc(
+                            Number(
+                                item?.qty ||
+                                1
+                            )
+                        )
+                    ),
+            }))
+            .filter(
+                (item) =>
+                    item.barcode
+            );
+
+    return {
+        id:
+            textoSeguro(
+                id || data?.id,
+                180
+            ),
+        name:
+            textoSeguro(
+                data?.name,
+                120
+            ),
+        type:
+            POS_PROMOTION_TYPES.has(
+                type
+            )
+                ? type
+                : "cantidad",
+        active:
+            data?.active !== false,
+        price:
+            redondearDineroVenta(
+                Math.max(
+                    0,
+                    Number(
+                        data?.price ||
+                        0
+                    )
+                )
+            ),
+        items,
+        startDate:
+            textoSeguro(
+                data?.startDate,
+                20
+            ) ||
+            null,
+        endDate:
+            textoSeguro(
+                data?.endDate,
+                20
+            ) ||
+            null,
+    };
+}
+
+function fechaActualPromociones() {
+    const parts =
+        new Intl.DateTimeFormat(
+            "en-CA",
+            {
+                timeZone:
+                    "America/Argentina/Buenos_Aires",
+                year:
+                    "numeric",
+                month:
+                    "2-digit",
+                day:
+                    "2-digit",
+            }
+        ).formatToParts(
+            new Date()
+        );
+
+    const values =
+        Object.fromEntries(
+            parts.map((part) => [
+                part.type,
+                part.value,
+            ])
+        );
+
+    return `${values.year}-${values.month}-${values.day}`;
+}
+
+function promocionActivaEnFecha(
+    promotion,
+    dateOnly
+) {
+    if (
+        !promotion?.active ||
+        !promotion?.name ||
+        promotion?.price <= 0 ||
+        !Array.isArray(
+            promotion?.items
+        ) ||
+        promotion.items.length === 0
+    ) {
+        return false;
+    }
+
+    if (
+        promotion.startDate &&
+        dateOnly <
+            promotion.startDate
+    ) {
+        return false;
+    }
+
+    if (
+        promotion.endDate &&
+        dateOnly >
+            promotion.endDate
+    ) {
+        return false;
+    }
+
+    return true;
+}
+
+function maxAplicacionesPromocion(
+    promotion,
+    availableByBarcode
+) {
+    let max =
+        Number.POSITIVE_INFINITY;
+
+    for (
+        const item of
+        promotion.items
+    ) {
+        const available =
+            Math.max(
+                0,
+                Math.trunc(
+                    Number(
+                        availableByBarcode[
+                            item.barcode
+                        ] ||
+                        0
+                    )
+                )
+            );
+
+        max =
+            Math.min(
+                max,
+                Math.floor(
+                    available /
+                    item.qty
+                )
+            );
+    }
+
+    return Number.isFinite(
+        max
+    )
+        ? Math.max(
+            0,
+            Math.trunc(
+                max
+            )
+        )
+        : 0;
+}
+
+function calcularPromocionesVenta(
+    itemsEntrada,
+    productEntries,
+    promotions
+) {
+    const availableByBarcode = {};
+
+    for (
+        const item of
+        itemsEntrada
+    ) {
+        if (
+            item.tipoVenta !==
+            "unidad"
+        ) {
+            continue;
+        }
+
+        availableByBarcode[
+            item.barcode
+        ] =
+            Math.max(
+                0,
+                Math.trunc(
+                    Number(
+                        availableByBarcode[
+                            item.barcode
+                        ] ||
+                        0
+                    ) +
+                    Number(
+                        item.qty ||
+                        0
+                    )
+                )
+            );
+    }
+
+    const dateOnly =
+        fechaActualPromociones();
+
+    const candidates =
+        promotions
+            .filter((promotion) =>
+                promocionActivaEnFecha(
+                    promotion,
+                    dateOnly
+                )
+            )
+            .map((promotion) => {
+                let regularPerApplication = 0;
+                let valid = true;
+
+                for (
+                    const item of
+                    promotion.items
+                ) {
+                    const product =
+                        productEntries.get(
+                            item.barcode
+                        )?.data;
+
+                    const tipoVenta =
+                        textoSeguro(
+                            product?.tipoVenta,
+                            40
+                        );
+
+                    const price =
+                        redondearDineroVenta(
+                            Number(
+                                product?.price
+                            )
+                        );
+
+                    if (
+                        !product ||
+                        tipoVenta !==
+                            "unidad" ||
+                        !Number.isFinite(
+                            price
+                        ) ||
+                        price < 0
+                    ) {
+                        valid = false;
+                        break;
+                    }
+
+                    regularPerApplication +=
+                        price *
+                        item.qty;
+                }
+
+                regularPerApplication =
+                    redondearDineroVenta(
+                        regularPerApplication
+                    );
+
+                return {
+                    promotion,
+                    valid,
+                    regularPerApplication,
+                    savingPerApplication:
+                        valid
+                            ? redondearDineroVenta(
+                                regularPerApplication -
+                                promotion.price
+                            )
+                            : 0,
+                };
+            })
+            .filter((candidate) =>
+                candidate.valid &&
+                candidate.savingPerApplication >
+                    0 &&
+                maxAplicacionesPromocion(
+                    candidate.promotion,
+                    availableByBarcode
+                ) > 0
+            )
+            .sort((a, b) => {
+                if (
+                    b.savingPerApplication !==
+                    a.savingPerApplication
+                ) {
+                    return (
+                        b.savingPerApplication -
+                        a.savingPerApplication
+                    );
+                }
+
+                const unitsB =
+                    b.promotion.items.reduce(
+                        (sum, item) =>
+                            sum + item.qty,
+                        0
+                    );
+
+                const unitsA =
+                    a.promotion.items.reduce(
+                        (sum, item) =>
+                            sum + item.qty,
+                        0
+                    );
+
+                if (
+                    unitsB !== unitsA
+                ) {
+                    return unitsB - unitsA;
+                }
+
+                return String(
+                    a.promotion.name ||
+                    a.promotion.id
+                ).localeCompare(
+                    String(
+                        b.promotion.name ||
+                        b.promotion.id
+                    ),
+                    "es"
+                );
+            });
+
+    const remaining = {
+        ...availableByBarcode,
+    };
+
+    const discountByBarcode = {};
+    const applications = [];
+
+    for (
+        const candidate of
+        candidates
+    ) {
+        const promotion =
+            candidate.promotion;
+
+        const count =
+            maxAplicacionesPromocion(
+                promotion,
+                remaining
+            );
+
+        if (count <= 0) {
+            continue;
+        }
+
+        const regularTotal =
+            redondearDineroVenta(
+                candidate
+                    .regularPerApplication *
+                count
+            );
+
+        const promotionalTotal =
+            redondearDineroVenta(
+                promotion.price *
+                count
+            );
+
+        const discount =
+            redondearDineroVenta(
+                regularTotal -
+                promotionalTotal
+            );
+
+        if (discount <= 0) {
+            continue;
+        }
+
+        for (
+            const item of
+            promotion.items
+        ) {
+            remaining[
+                item.barcode
+            ] =
+                Math.max(
+                    0,
+                    Math.trunc(
+                        Number(
+                            remaining[
+                                item.barcode
+                            ] ||
+                            0
+                        ) -
+                        item.qty *
+                        count
+                    )
+                );
+        }
+
+        let remainingDiscount =
+            discount;
+
+        promotion.items.forEach(
+            (
+                item,
+                index
+            ) => {
+                const product =
+                    productEntries.get(
+                        item.barcode
+                    )?.data ||
+                    {};
+
+                const itemRegular =
+                    redondearDineroVenta(
+                        Number(
+                            product.price ||
+                            0
+                        ) *
+                        item.qty *
+                        count
+                    );
+
+                const allocated =
+                    index ===
+                    promotion.items.length -
+                        1
+                        ? remainingDiscount
+                        : redondearDineroVenta(
+                            discount *
+                            (
+                                itemRegular /
+                                regularTotal
+                            )
+                        );
+
+                discountByBarcode[
+                    item.barcode
+                ] =
+                    redondearDineroVenta(
+                        Number(
+                            discountByBarcode[
+                                item.barcode
+                            ] ||
+                            0
+                        ) +
+                        allocated
+                    );
+
+                remainingDiscount =
+                    redondearDineroVenta(
+                        remainingDiscount -
+                        allocated
+                    );
+            }
+        );
+
+        applications.push({
+            id:
+                promotion.id,
+            name:
+                promotion.name,
+            type:
+                promotion.type,
+            count,
+            price:
+                promotion.price,
+            regularPerApplication:
+                candidate
+                    .regularPerApplication,
+            regularTotal,
+            promotionalTotal,
+            discount,
+            items:
+                promotion.items.map(
+                    (item) => ({
+                        barcode:
+                            item.barcode,
+                        qty:
+                            item.qty,
+                        totalQty:
+                            item.qty *
+                            count,
+                    })
+                ),
+        });
+    }
+
+    return {
+        applications,
+        discountByBarcode,
+        discountTotal:
+            redondearDineroVenta(
+                applications.reduce(
+                    (sum, application) =>
+                        sum +
+                        application.discount,
+                    0
+                )
+            ),
+    };
+}
+
+exports.listarPromociones =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            await validarSesionOperadorInterna(
+                clienteRef,
+                request.data
+                    ?.operadorSesion,
+                {
+                    deviceId,
+                }
+            );
+
+            const snapshot =
+                await clienteRef
+                    .collection(
+                        "promociones"
+                    )
+                    .get();
+
+            const promotions =
+                snapshot.docs
+                    .map((docSnap) =>
+                        normalizarPromocionDocumento(
+                            docSnap.data(),
+                            docSnap.id
+                        )
+                    )
+                    .sort((a, b) =>
+                        String(
+                            a.name ||
+                            ""
+                        ).localeCompare(
+                            String(
+                                b.name ||
+                                ""
+                            ),
+                            "es"
+                        )
+                    );
+
+            return {
+                ok: true,
+                promotions,
+            };
+        }
+    );
+
+exports.guardarPromocion =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                        requireRole:
+                            "administrador",
+                    }
+                );
+
+            const promotion =
+                normalizarPromocionEntrada(
+                    request.data
+                        ?.promotion
+                );
+
+            const promotionRef =
+                promotion.id
+                    ? clienteRef
+                        .collection(
+                            "promociones"
+                        )
+                        .doc(
+                            validarId(
+                                promotion.id,
+                                "promotionId"
+                            )
+                        )
+                    : clienteRef
+                        .collection(
+                            "promociones"
+                        )
+                        .doc();
+
+            const result =
+                await db.runTransaction(
+                    async (
+                        transaction
+                    ) => {
+                        const existingSnap =
+                            await transaction.get(
+                                promotionRef
+                            );
+
+                        let regularTotal = 0;
+                        const itemSnapshots = [];
+
+                        for (
+                            const item of
+                            promotion.items
+                        ) {
+                            const productRef =
+                                clienteRef
+                                    .collection(
+                                        "productos"
+                                    )
+                                    .doc(
+                                        encodeURIComponent(
+                                            item.barcode
+                                        )
+                                    );
+
+                            const productSnap =
+                                await transaction.get(
+                                    productRef
+                                );
+
+                            if (
+                                !productSnap.exists
+                            ) {
+                                throw new HttpsError(
+                                    "not-found",
+                                    `Producto no encontrado: ${item.barcode}.`
+                                );
+                            }
+
+                            const product =
+                                productSnap.data() ||
+                                {};
+
+                            if (
+                                textoSeguro(
+                                    product.tipoVenta,
+                                    40
+                                ) !==
+                                "unidad"
+                            ) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    "Las promociones sólo pueden usar productos por unidad."
+                                );
+                            }
+
+                            const price =
+                                redondearDineroVenta(
+                                    Number(
+                                        product.price
+                                    )
+                                );
+
+                            if (
+                                !Number.isFinite(
+                                    price
+                                ) ||
+                                price < 0
+                            ) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    `El precio de ${product.name || item.barcode} no es válido.`
+                                );
+                            }
+
+                            regularTotal +=
+                                price *
+                                item.qty;
+
+                            itemSnapshots.push({
+                                barcode:
+                                    item.barcode,
+                                qty:
+                                    item.qty,
+                                name:
+                                    textoSeguro(
+                                        product.name,
+                                        120
+                                    ) ||
+                                    item.barcode,
+                            });
+                        }
+
+                        regularTotal =
+                            redondearDineroVenta(
+                                regularTotal
+                            );
+
+                        if (
+                            promotion.price >=
+                            regularTotal
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                "El precio promocional debe ser menor que el precio normal de los productos."
+                            );
+                        }
+
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
+
+                        const stored = {
+                            id:
+                                promotionRef.id,
+                            name:
+                                promotion.name,
+                            type:
+                                promotion.type,
+                            active:
+                                promotion.active,
+                            price:
+                                promotion.price,
+                            items:
+                                promotion.items,
+                            startDate:
+                                promotion.startDate,
+                            endDate:
+                                promotion.endDate,
+                            updatedAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                            ...(existingSnap.exists
+                                ? {}
+                                : {
+                                    createdAt:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }),
+                        };
+
+                        transaction.set(
+                            promotionRef,
+                            stored,
+                            {
+                                merge: true,
+                            }
+                        );
+
+                        const eventoAuditoria =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador:
+                                    operadorAutorizado,
+                                accion:
+                                    existingSnap.exists
+                                        ? AUDIT_ACTIONS
+                                            .EDICION_PROMOCION
+                                        : AUDIT_ACTIONS
+                                            .ALTA_PROMOCION,
+                                sessionId,
+                                deviceId,
+                                detalle: {
+                                    promocionId:
+                                        promotionRef.id,
+                                    promocionNombre:
+                                        promotion.name,
+                                    tipo:
+                                        promotion.type,
+                                    precioPromocional:
+                                        promotion.price,
+                                    precioNormalActual:
+                                        regularTotal,
+                                    ahorroActual:
+                                        redondearDineroVenta(
+                                            regularTotal -
+                                            promotion.price
+                                        ),
+                                    activa:
+                                        promotion.active,
+                                    componentes:
+                                        itemSnapshots,
+                                },
+                            });
+
+                        transaction.set(
+                            eventoAuditoria.ref,
+                            eventoAuditoria.data
+                        );
+
+                        return {
+                            id:
+                                promotionRef.id,
+                            regularTotal,
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+                promotion: {
+                    ...promotion,
+                    id:
+                        result.id,
+                },
+            };
+        }
+    );
+
+exports.eliminarPromocion =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                        requireRole:
+                            "administrador",
+                    }
+                );
+
+            const promotionId =
+                validarId(
+                    request.data
+                        ?.promotionId,
+                    "promotionId"
+                );
+
+            const promotionRef =
+                clienteRef
+                    .collection(
+                        "promociones"
+                    )
+                    .doc(
+                        promotionId
+                    );
+
+            await db.runTransaction(
+                async (
+                    transaction
+                ) => {
+                    const promotionSnap =
+                        await transaction.get(
+                            promotionRef
+                        );
+
+                    if (
+                        !promotionSnap.exists
+                    ) {
+                        throw new HttpsError(
+                            "not-found",
+                            "La promoción ya no existe."
+                        );
+                    }
+
+                    const promotion =
+                        normalizarPromocionDocumento(
+                            promotionSnap.data(),
+                            promotionSnap.id
+                        );
+
+                    const sessionId =
+                        await obtenerSessionIdCajaAbiertaEnTransaccion(
+                            transaction,
+                            clienteRef
+                        );
+
+                    transaction.delete(
+                        promotionRef
+                    );
+
+                    const eventoAuditoria =
+                        crearEventoAuditoria({
+                            clienteRef,
+                            operador:
+                                operadorAutorizado,
+                            accion:
+                                AUDIT_ACTIONS
+                                    .ELIMINACION_PROMOCION,
+                            sessionId,
+                            deviceId,
+                            detalle: {
+                                promocionId:
+                                    promotion.id,
+                                promocionNombre:
+                                    promotion.name,
+                                tipo:
+                                    promotion.type,
+                                precioPromocional:
+                                    promotion.price,
+                            },
+                        });
+
+                    transaction.set(
+                        eventoAuditoria.ref,
+                        eventoAuditoria.data
+                    );
+                }
+            );
+
+            return {
+                ok: true,
+                promotionId,
+            };
+        }
+    );
+
+
 /* =========================================================
    REGISTRAR VENTA + AUDITORÍA
 ========================================================= */
@@ -14036,6 +15379,34 @@ exports.registrarVenta =
                         ?.timestamp
                 );
 
+            const expectedTotalRaw =
+                request.data
+                    ?.expectedTotal;
+
+            const expectedTotal =
+                expectedTotalRaw === null ||
+                expectedTotalRaw === undefined ||
+                expectedTotalRaw === ""
+                    ? null
+                    : redondearDineroVenta(
+                        expectedTotalRaw
+                    );
+
+            if (
+                expectedTotal !== null &&
+                (
+                    !Number.isFinite(
+                        expectedTotal
+                    ) ||
+                    expectedTotal <= 0
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El total esperado de la venta no es válido."
+                );
+            }
+
             const rawMethod =
                 textoSeguro(
                     request.data
@@ -14316,6 +15687,23 @@ exports.registrarVenta =
                             );
                         }
 
+                        const promotionsSnap =
+                            await transaction.get(
+                                clienteRef
+                                    .collection(
+                                        "promociones"
+                                    )
+                            );
+
+                        const promotionsForSale =
+                            promotionsSnap.docs.map(
+                                (docSnap) =>
+                                    normalizarPromocionDocumento(
+                                        docSnap.data(),
+                                        docSnap.id
+                                    )
+                            );
+
                         /*
                          * Ya no se realizan más lecturas a partir
                          * de este punto.
@@ -14455,6 +15843,50 @@ exports.registrarVenta =
                             }
                         }
 
+                        const promotionPricing =
+                            calcularPromocionesVenta(
+                                itemsEntrada,
+                                productEntries,
+                                promotionsForSale
+                            );
+
+                        const remainingPromotionDiscount =
+                            new Map(
+                                Object.entries(
+                                    promotionPricing
+                                        .discountByBarcode
+                                )
+                            );
+
+                        const remainingPromotionQty =
+                            new Map();
+
+                        for (
+                            const item of
+                            itemsEntrada
+                        ) {
+                            if (
+                                item.tipoVenta !==
+                                "unidad"
+                            ) {
+                                continue;
+                            }
+
+                            remainingPromotionQty.set(
+                                item.barcode,
+                                Number(
+                                    remainingPromotionQty.get(
+                                        item.barcode
+                                    ) ||
+                                    0
+                                ) +
+                                Number(
+                                    item.qty ||
+                                    0
+                                )
+                            );
+                        }
+
                         const items =
                             itemsEntrada.map(
                                 (item) => {
@@ -14529,10 +15961,89 @@ exports.registrarVenta =
                                             cost
                                         );
 
-                                    const subtotal =
+                                    const baseSubtotal =
                                         redondearDineroVenta(
                                             item.qty *
                                             price
+                                        );
+
+                                    let promotionDiscount = 0;
+
+                                    if (
+                                        item.tipoVenta ===
+                                            "unidad"
+                                    ) {
+                                        const discountLeft =
+                                            redondearDineroVenta(
+                                                Number(
+                                                    remainingPromotionDiscount.get(
+                                                        item.barcode
+                                                    ) ||
+                                                    0
+                                                )
+                                            );
+
+                                        const qtyLeft =
+                                            Math.max(
+                                                0,
+                                                Number(
+                                                    remainingPromotionQty.get(
+                                                        item.barcode
+                                                    ) ||
+                                                    0
+                                                )
+                                            );
+
+                                        if (
+                                            discountLeft > 0 &&
+                                            qtyLeft > 0
+                                        ) {
+                                            promotionDiscount =
+                                                qtyLeft <=
+                                                    item.qty
+                                                    ? discountLeft
+                                                    : redondearDineroVenta(
+                                                        discountLeft *
+                                                        (
+                                                            item.qty /
+                                                            qtyLeft
+                                                        )
+                                                    );
+
+                                            promotionDiscount =
+                                                redondearDineroVenta(
+                                                    Math.min(
+                                                        baseSubtotal,
+                                                        Math.max(
+                                                            0,
+                                                            promotionDiscount
+                                                        )
+                                                    )
+                                                );
+
+                                            remainingPromotionDiscount.set(
+                                                item.barcode,
+                                                redondearDineroVenta(
+                                                    discountLeft -
+                                                    promotionDiscount
+                                                )
+                                            );
+
+                                            remainingPromotionQty.set(
+                                                item.barcode,
+                                                Math.max(
+                                                    0,
+                                                    qtyLeft -
+                                                    item.qty
+                                                )
+                                            );
+                                        }
+                                    }
+
+                                    const subtotal =
+                                        redondearDineroVenta(
+                                            baseSubtotal -
+                                            promotionDiscount
                                         );
 
                                     if (
@@ -14560,6 +16071,10 @@ exports.registrarVenta =
 
                                         costSource:
                                             "exact",
+
+                                        baseSubtotal,
+
+                                        promotionDiscount,
 
                                         subtotal,
                                     };
@@ -14610,6 +16125,27 @@ exports.registrarVenta =
                             throw new HttpsError(
                                 "invalid-argument",
                                 "El total de la venta debe ser mayor a cero."
+                            );
+                        }
+
+                        if (
+                            expectedTotal !== null &&
+                            Math.abs(
+                                expectedTotal -
+                                total
+                            ) > 0.01
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "El precio o una promoción cambió. Revisá el ticket antes de cobrar.",
+                                {
+                                    motivo:
+                                        "promotion-changed",
+                                    totalEsperado:
+                                        expectedTotal,
+                                    totalActual:
+                                        total,
+                                }
                             );
                         }
 
@@ -14754,6 +16290,14 @@ exports.registrarVenta =
                             totalCost,
 
                             grossProfit,
+
+                            promotionDiscountTotal:
+                                promotionPricing
+                                    .discountTotal,
+
+                            promotionsApplied:
+                                promotionPricing
+                                    .applications,
 
                             profitCostStatus:
                                 "exact",
@@ -14970,6 +16514,31 @@ exports.registrarVenta =
 
                                     gananciaBruta:
                                         grossProfit,
+
+                                    ...(promotionPricing
+                                        .discountTotal > 0
+                                        ? {
+                                            descuentoPromociones:
+                                                promotionPricing
+                                                    .discountTotal,
+
+                                            promocionesAplicadas:
+                                                promotionPricing
+                                                    .applications
+                                                    .map((application) => ({
+                                                        promocionId:
+                                                            application.id,
+                                                        nombre:
+                                                            application.name,
+                                                        tipo:
+                                                            application.type,
+                                                        cantidad:
+                                                            application.count,
+                                                        descuento:
+                                                            application.discount,
+                                                    })),
+                                        }
+                                        : {}),
 
                                     metodoPago:
                                         rawMethod,

@@ -131,6 +131,18 @@ const AUDIT_ACTION_META = {
     title: "Eliminación de cierre",
     category: "Historial",
   },
+  "alta-promocion": {
+    title: "Promoción creada",
+    category: "Promociones",
+  },
+  "edicion-promocion": {
+    title: "Promoción actualizada",
+    category: "Promociones",
+  },
+  "eliminacion-promocion": {
+    title: "Promoción eliminada",
+    category: "Promociones",
+  },
   "cierre-caja": {
     title: "Cierre de caja",
     category: "Caja",
@@ -675,6 +687,26 @@ function getAuditDetailRows(event) {
                 ]
               )
           : []),
+        ...(Number(
+          detail.descuentoPromociones
+        ) > 0
+          ? [[
+              "Ahorro promociones",
+              money(
+                detail.descuentoPromociones
+              ),
+            ]]
+          : []),
+        ...(Array.isArray(
+          detail.promocionesAplicadas
+        )
+          ? detail.promocionesAplicadas.map(
+              (promotion, index) => [
+                `Promoción ${index + 1}`,
+                `${promotion?.nombre || "Promoción"}${Number(promotion?.cantidad) > 1 ? ` ×${promotion.cantidad}` : ""} · -${money(promotion?.descuento)}`,
+              ]
+            )
+          : []),
         [
           "Productos",
           String(
@@ -774,6 +806,47 @@ function getAuditDetailRows(event) {
                   "—"
                 ),
         ],
+      ];
+
+    case "alta-promocion":
+    case "edicion-promocion":
+    case "eliminacion-promocion":
+      return [
+        [
+          "Promoción",
+          detail.promocionNombre ||
+            "Promoción",
+        ],
+        [
+          "Tipo",
+          detail.tipo === "combo"
+            ? "Combo"
+            : "Precio por cantidad",
+        ],
+        ...(Number.isFinite(
+          Number(
+            detail.precioPromocional
+          )
+        )
+          ? [[
+              "Precio promocional",
+              money(
+                detail.precioPromocional
+              ),
+            ]]
+          : []),
+        ...(Number.isFinite(
+          Number(
+            detail.ahorroActual
+          )
+        )
+          ? [[
+              "Ahorro actual",
+              money(
+                detail.ahorroActual
+              ),
+            ]]
+          : []),
       ];
 
     case "reposicion-stock": {
@@ -2768,7 +2841,11 @@ function SessionDetail({
         <div className="grid grid-cols-2 gap-2">
           {Object.entries(
             METHOD_LABELS
-          ).map(
+          )
+            .filter(([method]) =>
+              method !== "mixto"
+            )
+            .map(
             ([
               method,
               label,
@@ -3967,6 +4044,18 @@ function SaleDetailCard({
     ? sale.payment.parts
     : [];
 
+  const promotionsApplied =
+    Array.isArray(
+      sale?.promotionsApplied
+    )
+      ? sale.promotionsApplied
+      : [];
+
+  const promotionDiscountTotal =
+    roundMoney(
+      sale?.promotionDiscountTotal
+    );
+
   const total =
     roundMoney(
       sale?.total
@@ -4150,6 +4239,38 @@ function SaleDetailCard({
         </div>
       )}
 
+      {promotionsApplied.length > 0 && (
+        <div className="border-t border-white/[0.07] px-3.5 py-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <span className="text-[9px] font-extrabold uppercase tracking-[0.12em] text-emerald-400/70">
+              Promociones aplicadas
+            </span>
+            {promotionDiscountTotal > 0 && (
+              <strong className="text-[10px] font-black text-emerald-400">
+                Ahorro {money(promotionDiscountTotal)}
+              </strong>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            {promotionsApplied.map((promotion, promotionIndex) => (
+              <div
+                key={`${promotion?.id || "promo"}-${promotionIndex}`}
+                className="flex items-center justify-between gap-3 rounded-xl bg-emerald-500/[0.055] px-3 py-2"
+              >
+                <span className="min-w-0 truncate text-[10px] font-extrabold text-white/60">
+                  {promotion?.name || "Promoción"}
+                  {Number(promotion?.count) > 1 ? ` ×${promotion.count}` : ""}
+                </span>
+                <span className="shrink-0 text-[10px] font-black text-emerald-400">
+                  -{money(promotion?.discount)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* PAGO */}
 
       {method === "mixto" && paymentParts.length > 0 && (
@@ -4232,6 +4353,11 @@ function SaleItemRow({
       item
     );
 
+  const promotionDiscount =
+    roundMoney(
+      item?.promotionDiscount
+    );
+
   return (
     <div
       className="
@@ -4295,6 +4421,12 @@ function SaleItemRow({
             item
           )}
         </p>
+
+        {promotionDiscount > 0 && (
+          <p className="mt-1 text-[9px] font-extrabold text-emerald-400/80">
+            Promoción · -{money(promotionDiscount)}
+          </p>
+        )}
       </div>
 
       <span

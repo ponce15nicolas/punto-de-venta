@@ -17,6 +17,9 @@ const ACTIONS = [
   { id: "apertura-caja", label: "Aperturas" },
   { id: "cierre-caja", label: "Cierres" },
   { id: "venta-realizada", label: "Ventas" },
+  { id: "alta-promocion", label: "Promos +" },
+  { id: "edicion-promocion", label: "Promos edit." },
+  { id: "eliminacion-promocion", label: "Promos -" },
   { id: "migracion-ganancias-historicas", label: "Ganancias hist." },
   { id: "alta-cuenta-por-cobrar", label: "Deudas" },
   { id: "cobro-cuenta-por-cobrar", label: "Cobros" },
@@ -59,6 +62,21 @@ const ACTION_META = {
     title: "Venta realizada",
     eyebrow: "Ventas",
     icon: SaleIcon,
+  },
+  "alta-promocion": {
+    title: "Promoción creada",
+    eyebrow: "Promociones",
+    icon: SaleIcon,
+  },
+  "edicion-promocion": {
+    title: "Promoción actualizada",
+    eyebrow: "Promociones",
+    icon: SaleIcon,
+  },
+  "eliminacion-promocion": {
+    title: "Promoción eliminada",
+    eyebrow: "Promociones",
+    icon: TrashIcon,
   },
   "migracion-ganancias-historicas": {
     title: "Ganancias históricas completadas",
@@ -632,6 +650,26 @@ function getEventDetails(event) {
                 })
               )
           : []),
+        ...(Number(
+          d.descuentoPromociones
+        ) > 0
+          ? [{
+              label: "Ahorro promociones",
+              value: formatMoney(
+                d.descuentoPromociones
+              ),
+            }]
+          : []),
+        ...(Array.isArray(
+          d.promocionesAplicadas
+        )
+          ? d.promocionesAplicadas.map(
+              (promotion, index) => ({
+                label: `Promoción ${index + 1}`,
+                value: `${promotion?.nombre || "Promoción"}${Number(promotion?.cantidad) > 1 ? ` ×${promotion.cantidad}` : ""} · -${formatMoney(promotion?.descuento)}`,
+              })
+            )
+          : []),
         {
           label: "Ítems",
           value: finiteString(d.cantidadItems),
@@ -691,6 +729,41 @@ function getEventDetails(event) {
                 ? "Parcial"
                 : d.resultado,
         },
+      ]);
+
+    case "alta-promocion":
+    case "edicion-promocion":
+    case "eliminacion-promocion":
+      return compactDetails([
+        {
+          label: "Promoción",
+          value: d.promocionNombre,
+        },
+        {
+          label: "Tipo",
+          value:
+            d.tipo === "combo"
+              ? "Combo"
+              : "Precio por cantidad",
+        },
+        {
+          label: "Precio promo",
+          value: formatMoney(
+            d.precioPromocional
+          ),
+        },
+        ...(Number.isFinite(
+          Number(
+            d.ahorroActual
+          )
+        )
+          ? [{
+              label: "Ahorro actual",
+              value: formatMoney(
+                d.ahorroActual
+              ),
+            }]
+          : []),
       ]);
 
     case "reposicion-stock":

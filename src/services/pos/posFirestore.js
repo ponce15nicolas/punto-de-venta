@@ -45,6 +45,11 @@ const SALE_METHODS = Object.freeze([
   "mixto",
 ]);
 
+const PROMOTION_TYPES = Object.freeze([
+  "cantidad",
+  "combo",
+]);
+
 const MAX_CART_LINES = 100;
 
 const abrirCajaFunction =
@@ -147,6 +152,24 @@ const guardarNombreNegocioFunction =
   httpsCallable(
     functions,
     "guardarNombreNegocio"
+  );
+
+const listarPromocionesFunction =
+  httpsCallable(
+    functions,
+    "listarPromociones"
+  );
+
+const guardarPromocionFunction =
+  httpsCallable(
+    functions,
+    "guardarPromocion"
+  );
+
+const eliminarPromocionFunction =
+  httpsCallable(
+    functions,
+    "eliminarPromocion"
   );
 
 /* =========================================================
@@ -868,6 +891,272 @@ function normalizeProductFromCloud(
                 )
               )
             ),
+  };
+}
+
+
+/* =========================================================
+   NORMALIZAR PROMOCIONES
+========================================================= */
+
+function normalizePromotionItem(
+  item
+) {
+  const barcode =
+    requireString(
+      item?.barcode,
+      "barcode"
+    );
+
+  const qty =
+    Math.trunc(
+      toNumber(
+        item?.qty,
+        NaN
+      )
+    );
+
+  if (
+    !Number.isFinite(qty) ||
+    qty <= 0
+  ) {
+    fail(
+      "invalid-promotion",
+      "La cantidad de cada producto debe ser mayor a cero"
+    );
+  }
+
+  return {
+    barcode,
+    qty,
+  };
+}
+
+function normalizePromotionForCloud(
+  promotion
+) {
+  if (!promotion) {
+    fail(
+      "invalid-promotion",
+      "Datos de promoción inválidos"
+    );
+  }
+
+  const id =
+    String(
+      promotion.id || ""
+    ).trim();
+
+  const name =
+    requireString(
+      promotion.name,
+      "name"
+    ).slice(0, 120);
+
+  const type =
+    PROMOTION_TYPES.includes(
+      promotion.type
+    )
+      ? promotion.type
+      : "cantidad";
+
+  const price =
+    roundMoney(
+      toNumber(
+        promotion.price,
+        NaN
+      )
+    );
+
+  if (
+    !Number.isFinite(price) ||
+    price <= 0
+  ) {
+    fail(
+      "invalid-promotion",
+      "El precio promocional debe ser mayor a cero"
+    );
+  }
+
+  const items =
+    (Array.isArray(promotion.items)
+      ? promotion.items
+      : []
+    ).map(
+      normalizePromotionItem
+    );
+
+  if (
+    type === "cantidad" &&
+    items.length !== 1
+  ) {
+    fail(
+      "invalid-promotion",
+      "Una promoción por cantidad debe tener un solo producto"
+    );
+  }
+
+  if (
+    type === "combo" &&
+    items.length < 2
+  ) {
+    fail(
+      "invalid-promotion",
+      "Un combo debe tener al menos dos productos"
+    );
+  }
+
+  if (
+    items.length > 12
+  ) {
+    fail(
+      "invalid-promotion",
+      "La promoción contiene demasiados productos"
+    );
+  }
+
+  const seen = new Set();
+
+  for (const item of items) {
+    if (seen.has(item.barcode)) {
+      fail(
+        "invalid-promotion",
+        "No repitas el mismo producto dentro de una promoción"
+      );
+    }
+
+    seen.add(item.barcode);
+  }
+
+  const normalizeDateOnly = (value) => {
+    const text =
+      String(value || "")
+        .trim();
+
+    if (!text) {
+      return null;
+    }
+
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(
+        text
+      )
+    ) {
+      fail(
+        "invalid-promotion",
+        "La fecha de vigencia no es válida"
+      );
+    }
+
+    return text;
+  };
+
+  const startDate =
+    normalizeDateOnly(
+      promotion.startDate
+    );
+
+  const endDate =
+    normalizeDateOnly(
+      promotion.endDate
+    );
+
+  if (
+    startDate &&
+    endDate &&
+    endDate < startDate
+  ) {
+    fail(
+      "invalid-promotion",
+      "La fecha final no puede ser anterior a la inicial"
+    );
+  }
+
+  return {
+    ...(id ? { id } : {}),
+    name,
+    type,
+    active:
+      promotion.active !== false,
+    price,
+    items,
+    startDate,
+    endDate,
+  };
+}
+
+function normalizePromotionFromCloud(
+  data,
+  documentId
+) {
+  return {
+    id:
+      String(
+        data?.id ||
+        documentId ||
+        ""
+      ).trim(),
+
+    name:
+      String(
+        data?.name || ""
+      ).trim(),
+
+    type:
+      PROMOTION_TYPES.includes(
+        data?.type
+      )
+        ? data.type
+        : "cantidad",
+
+    active:
+      data?.active !== false,
+
+    price:
+      roundMoney(
+        Math.max(
+          0,
+          toNumber(
+            data?.price
+          )
+        )
+      ),
+
+    items:
+      (Array.isArray(data?.items)
+        ? data.items
+        : []
+      )
+        .map((item) => ({
+          barcode:
+            String(
+              item?.barcode || ""
+            ).trim(),
+          qty:
+            Math.max(
+              1,
+              Math.trunc(
+                toNumber(
+                  item?.qty,
+                  1
+                )
+              )
+            ),
+        }))
+        .filter(
+          (item) =>
+            item.barcode
+        ),
+
+    startDate:
+      String(
+        data?.startDate || ""
+      ).trim() || null,
+
+    endDate:
+      String(
+        data?.endDate || ""
+      ).trim() || null,
   };
 }
 
@@ -2940,6 +3229,201 @@ export async function saveShopNameCloud(
   }
 }
 
+
+/* =========================================================
+   PROMOCIONES
+========================================================= */
+
+export async function loadPromotionsCloud(
+  clienteId,
+  {
+    operadorSesion = null,
+    deviceId = null,
+  } = {}
+) {
+  const cleanClienteId =
+    requireString(
+      clienteId,
+      "clienteId"
+    );
+
+  try {
+    const response =
+      await listarPromocionesFunction({
+        clienteId:
+          cleanClienteId,
+        operadorSesion,
+        deviceId:
+          requireString(
+            deviceId,
+            "deviceId"
+          ),
+      });
+
+    return (Array.isArray(
+      response?.data?.promotions
+    )
+      ? response.data.promotions
+      : []
+    )
+      .map((promotion) =>
+        normalizePromotionFromCloud(
+          promotion,
+          promotion?.id
+        )
+      )
+      .filter(Boolean);
+  } catch (error) {
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    fail(
+      code || "load-promotions-failed",
+      String(
+        error?.details?.message ||
+        error?.message ||
+        "No se pudieron cargar las promociones"
+      )
+    );
+  }
+}
+
+export async function upsertPromotionCloud(
+  clienteId,
+  promotion,
+  {
+    operadorSesion = null,
+    deviceId = null,
+  } = {}
+) {
+  const cleanClienteId =
+    requireString(
+      clienteId,
+      "clienteId"
+    );
+
+  const normalized =
+    normalizePromotionForCloud(
+      promotion
+    );
+
+  try {
+    const response =
+      await guardarPromocionFunction({
+        clienteId:
+          cleanClienteId,
+        promotion:
+          normalized,
+        operadorSesion,
+        deviceId:
+          requireString(
+            deviceId,
+            "deviceId"
+          ),
+      });
+
+    const saved =
+      response?.data?.promotion;
+
+    if (!saved) {
+      fail(
+        "save-promotion-failed",
+        "No se pudo guardar la promoción"
+      );
+    }
+
+    return normalizePromotionFromCloud(
+      saved,
+      saved.id
+    );
+  } catch (error) {
+    if (
+      error instanceof
+      PosFirestoreError
+    ) {
+      throw error;
+    }
+
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    fail(
+      code || "save-promotion-failed",
+      String(
+        error?.details?.message ||
+        error?.message ||
+        "No se pudo guardar la promoción"
+      )
+    );
+  }
+}
+
+export async function deletePromotionCloud(
+  clienteId,
+  promotionId,
+  {
+    operadorSesion = null,
+    deviceId = null,
+  } = {}
+) {
+  const cleanClienteId =
+    requireString(
+      clienteId,
+      "clienteId"
+    );
+
+  const cleanPromotionId =
+    requireString(
+      promotionId,
+      "promotionId"
+    );
+
+  try {
+    const response =
+      await eliminarPromocionFunction({
+        clienteId:
+          cleanClienteId,
+        promotionId:
+          cleanPromotionId,
+        operadorSesion,
+        deviceId:
+          requireString(
+            deviceId,
+            "deviceId"
+          ),
+      });
+
+    return response?.data?.ok === true;
+  } catch (error) {
+    const code =
+      String(
+        error?.code ||
+        "unknown"
+      )
+        .split("/")
+        .pop();
+
+    fail(
+      code || "delete-promotion-failed",
+      String(
+        error?.details?.message ||
+        error?.message ||
+        "No se pudo eliminar la promoción"
+      )
+    );
+  }
+}
+
 /* =========================================================
    PRODUCTOS
 ========================================================= */
@@ -3955,6 +4439,9 @@ export async function checkoutCloud(
         items:
           normalizedItems,
 
+        expectedTotal:
+          total,
+
         payment: {
           method,
           received,
@@ -4095,6 +4582,17 @@ export async function checkoutCloud(
           "insufficient-stock",
           serverMessage ||
           "Stock insuficiente"
+        );
+      }
+
+      if (
+        motivo ===
+        "promotion-changed"
+      ) {
+        fail(
+          "promotion-changed",
+          serverMessage ||
+          "El precio o una promoción cambió. Revisá el ticket antes de cobrar."
         );
       }
 

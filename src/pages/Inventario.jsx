@@ -17,6 +17,7 @@ import {
 import ProductModal from "../components/ProductModal";
 import RestockModal from "../components/RestockModal";
 import Scanner from "../components/Scanner";
+import PromotionManagerModal from "../components/PromotionManagerModal";
 
 /* =========================================================
    FILTROS
@@ -284,6 +285,11 @@ export default function Inventario({
   const [
     scanOpen,
     setScanOpen,
+  ] = useState(false);
+
+  const [
+    promotionOpen,
+    setPromotionOpen,
   ] = useState(false);
 
   const [
@@ -1099,35 +1105,75 @@ export default function Inventario({
           NUEVO PRODUCTO
       ===================================================== */}
 
-      <button
-        type="button"
-        onClick={
-          openNewProduct
-        }
-        className="
-          mb-4
-          inline-flex
-          w-full
-          items-center
-          justify-center
-          gap-2
-          rounded-2xl
-          bg-[#FFC61A]
-          px-4
-          py-3.5
-          text-sm
-          font-extrabold
-          text-black
-          shadow-[0_12px_30px_rgba(255,198,26,0.18)]
-          transition
-          hover:bg-[#FFD248]
-          active:scale-[0.99]
-        "
-      >
-        <PlusIcon className="h-4 w-4" />
+      <div className="mb-4 grid grid-cols-2 gap-2.5">
+        <button
+          type="button"
+          onClick={
+            openNewProduct
+          }
+          className="
+            inline-flex
+            w-full
+            items-center
+            justify-center
+            gap-2
+            rounded-2xl
+            bg-[#FFC61A]
+            px-4
+            py-3.5
+            text-sm
+            font-extrabold
+            text-black
+            shadow-[0_12px_30px_rgba(255,198,26,0.18)]
+            transition
+            hover:bg-[#FFD248]
+            active:scale-[0.99]
+          "
+        >
+          <PlusIcon className="h-4 w-4" />
+          Nuevo producto
+        </button>
 
-        Nuevo producto
-      </button>
+        <button
+          type="button"
+          onClick={() =>
+            setPromotionOpen(
+              true
+            )
+          }
+          className="
+            inline-flex
+            w-full
+            items-center
+            justify-center
+            gap-2
+            rounded-2xl
+            border
+            border-[#FFC61A]/20
+            bg-[#FFC61A]/[0.07]
+            px-4
+            py-3.5
+            text-sm
+            font-extrabold
+            text-[#FFC61A]
+            transition
+            hover:border-[#FFC61A]/35
+            hover:bg-[#FFC61A]/10
+            active:scale-[0.99]
+          "
+        >
+          <MoneyIcon className="h-4 w-4" />
+          Promociones
+          {Array.isArray(
+            pos?.promotions
+          ) &&
+            pos.promotions.length > 0 && (
+              <span className="rounded-full bg-[#FFC61A] px-1.5 py-0.5 text-[9px] font-black text-black">
+                {pos.promotions.length}
+              </span>
+            )}
+        </button>
+      </div>
 
       {/* =====================================================
           LISTADO
@@ -1577,6 +1623,20 @@ export default function Inventario({
         }
         onConfirm={
           handleRestock
+        }
+      />
+
+      <PromotionManagerModal
+        open={
+          promotionOpen
+        }
+        pos={
+          pos
+        }
+        onClose={() =>
+          setPromotionOpen(
+            false
+          )
         }
       />
 

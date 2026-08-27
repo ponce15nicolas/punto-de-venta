@@ -23,11 +23,20 @@ import {
 import { uid } from "../lib/format";
 
 import {
+  calculateCartPromotions,
+  isPromotionCurrentlyActive,
+  normalizePromotions,
+} from "../lib/promotions";
+
+import {
   checkoutCloud,
   closeCashSessionCloud,
   createManualReceivableCloud,
   registerReceivablePaymentCloud,
   loadPurchasingDataCloud,
+  loadPromotionsCloud,
+  upsertPromotionCloud,
+  deletePromotionCloud,
   createShoppingItemCloud,
   completeShoppingItemCloud,
   createManualPayableCloud,
@@ -537,6 +546,11 @@ export function usePosData({
   ] = useState([]);
 
   const [
+    promotions,
+    setPromotions,
+  ] = useState([]);
+
+  const [
     shopName,
     setShopNameState,
   ] = useState(
@@ -594,6 +608,9 @@ export function usePosData({
     useRef([]);
 
   const accountsPayableRef =
+    useRef([]);
+
+  const promotionsRef =
     useRef([]);
 
   const cloudActiveRef =
@@ -657,6 +674,14 @@ export function usePosData({
     accountsPayable,
   ]);
 
+
+  useEffect(() => {
+    promotionsRef.current =
+      promotions;
+  }, [
+    promotions,
+  ]);
+
   /* =========================================================
      TOAST
   ========================================================= */
@@ -714,6 +739,9 @@ export function usePosData({
 
           cashSessions:
             cashSessionsRef.current,
+
+          promotions:
+            promotionsRef.current,
 
           shopName:
             shopNameRef.current,
@@ -846,6 +874,45 @@ export function usePosData({
       ]
     );
 
+  const persistPromotions =
+    useCallback(
+      (next) => {
+        const normalized =
+          normalizePromotions(
+            next
+          );
+
+        promotionsRef.current =
+          normalized;
+
+        setPromotions(
+          normalized
+        );
+
+        if (
+          cloudRequested
+        ) {
+          if (
+            cloudActiveRef
+              .current &&
+            cloudCacheCompleteRef
+              .current
+          ) {
+            persistCompleteCloudCache();
+          }
+        } else {
+          storeSet(
+            "promotions",
+            normalized
+          );
+        }
+      },
+      [
+        cloudRequested,
+        persistCompleteCloudCache,
+      ]
+    );
+
   const persistShopName =
     useCallback(
       (name) => {
@@ -962,6 +1029,21 @@ export function usePosData({
           )
         );
 
+      const savedPromotions =
+        normalizePromotions(
+          ownedCloudCache
+            ?.promotions ||
+          (
+            canReadFlatCache
+              ? storeGet(
+                  "promotions",
+                  []
+                )
+              : []
+          ) ||
+          []
+        );
+
       const savedShopName =
         String(
           ownedCloudCache
@@ -987,6 +1069,9 @@ export function usePosData({
       cashSessionsRef.current =
         savedCashSessions;
 
+      promotionsRef.current =
+        savedPromotions;
+
       shopNameRef.current =
         savedShopName;
 
@@ -1003,6 +1088,10 @@ export function usePosData({
 
       setCashSessions(
         savedCashSessions
+      );
+
+      setPromotions(
+        savedPromotions
       );
 
       setShopNameState(
@@ -1026,6 +1115,9 @@ export function usePosData({
       cashSessionsRef.current =
         [];
 
+      promotionsRef.current =
+        [];
+
       shopNameRef.current =
         DEFAULT_SHOP_NAME;
 
@@ -1035,6 +1127,7 @@ export function usePosData({
       setCatalog({});
       setSales([]);
       setCashSessions([]);
+      setPromotions([]);
       setAccountsReceivable([]);
       setCart([]);
 
@@ -1172,12 +1265,16 @@ export function usePosData({
             cashSessionsRef.current =
               [];
 
+            promotionsRef.current =
+              [];
+
             shopNameRef.current =
               DEFAULT_SHOP_NAME;
 
             setCatalog({});
             setSales([]);
             setCashSessions([]);
+            setPromotions([]);
             setAccountsReceivable([]);
             setCart([]);
 
@@ -1458,6 +1555,7 @@ export function usePosData({
           cash: false,
           receivables: false,
           purchasing: false,
+          promotions: false,
           config: false,
         };
 
@@ -1531,6 +1629,31 @@ export function usePosData({
             );
           }
         }
+
+        loadPromotionsCloud(
+          cleanClienteId,
+          {
+            operadorSesion,
+            deviceId:
+              cleanDeviceId,
+          }
+        )
+          .then((nextPromotions) => {
+            if (cancelled) {
+              return;
+            }
+
+            persistPromotions(
+              nextPromotions
+            );
+
+            markSnapshot(
+              "promotions"
+            );
+          })
+          .catch(
+            handleListenerError
+          );
 
         loadPurchasingDataCloud(
           cleanClienteId,
@@ -1784,6 +1907,7 @@ export function usePosData({
     persistCatalog,
     persistSales,
     persistCashSessions,
+    persistPromotions,
     persistShopName,
     showToast,
   ]);
@@ -2606,6 +2730,225 @@ export function usePosData({
       ]
     );
 
+
+  /* =========================================================
+     PROMOCIONES
+  ========================================================= */
+
+  const refreshPromotions =
+    useCallback(
+      async () => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          return promotionsRef.current;
+        }
+
+        try {
+          const next =
+            await loadPromotionsCloud(
+              cleanClienteId,
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
+
+          persistPromotions(
+            next
+          );
+
+          return next;
+        } catch (error) {
+          console.error(
+            "Error cargando promociones:",
+            error
+          );
+
+          showToast(
+            mapCloudError(error),
+            true
+          );
+
+          return null;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        persistPromotions,
+        showToast,
+      ]
+    );
+
+  const upsertPromotion =
+    useCallback(
+      async (promotion) => {
+        if (
+          !operadorEsAdministrador
+        ) {
+          showToast(
+            "La gestión de promociones requiere un Administrador",
+            true
+          );
+
+          return false;
+        }
+
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para guardar promociones",
+            true
+          );
+
+          return false;
+        }
+
+        try {
+          const saved =
+            await upsertPromotionCloud(
+              cleanClienteId,
+              promotion,
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
+
+          const next = [
+            ...promotionsRef.current.filter(
+              (item) =>
+                item.id !== saved.id
+            ),
+            saved,
+          ].sort((a, b) =>
+            String(a?.name || "")
+              .localeCompare(
+                String(b?.name || ""),
+                "es"
+              )
+          );
+
+          persistPromotions(
+            next
+          );
+
+          showToast(
+            promotion?.id
+              ? "Promoción actualizada"
+              : "Promoción creada"
+          );
+
+          return saved;
+        } catch (error) {
+          console.error(
+            "Error guardando promoción:",
+            error
+          );
+
+          showToast(
+            mapCloudError(error),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorEsAdministrador,
+        operadorSesion,
+        persistPromotions,
+        showToast,
+      ]
+    );
+
+  const deletePromotion =
+    useCallback(
+      async (promotionId) => {
+        if (
+          !operadorEsAdministrador
+        ) {
+          showToast(
+            "La gestión de promociones requiere un Administrador",
+            true
+          );
+
+          return false;
+        }
+
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para eliminar promociones",
+            true
+          );
+
+          return false;
+        }
+
+        try {
+          const ok =
+            await deletePromotionCloud(
+              cleanClienteId,
+              promotionId,
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
+
+          if (!ok) {
+            return false;
+          }
+
+          persistPromotions(
+            promotionsRef.current.filter(
+              (item) =>
+                item.id !== promotionId
+            )
+          );
+
+          showToast(
+            "Promoción eliminada"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error eliminando promoción:",
+            error
+          );
+
+          showToast(
+            mapCloudError(error),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorEsAdministrador,
+        operadorSesion,
+        persistPromotions,
+        showToast,
+      ]
+    );
+
   /* =========================================================
      AGREGAR PRODUCTO AL CARRITO
   ========================================================= */
@@ -3023,6 +3366,192 @@ export function usePosData({
 
         showToast(
           `${product.name} agregado`
+        );
+
+        return true;
+      },
+      [
+        cart,
+        showToast,
+      ]
+    );
+
+
+  /* =========================================================
+     AGREGAR PROMOCIÓN AL CARRITO
+  ========================================================= */
+
+  const addPromotionToCart =
+    useCallback(
+      (promotion) => {
+        const normalized =
+          normalizePromotions([
+            promotion,
+          ])[0];
+
+        if (
+          !normalized ||
+          !isPromotionCurrentlyActive(
+            normalized
+          )
+        ) {
+          showToast(
+            "La promoción ya no está disponible",
+            true
+          );
+
+          return false;
+        }
+
+        const currentOpenSession =
+          cashSessionsRef.current
+            .find(
+              (session) =>
+                session?.status ===
+                "open"
+            ) ||
+          null;
+
+        if (!currentOpenSession) {
+          showToast(
+            "Abrí la caja primero",
+            true
+          );
+
+          return false;
+        }
+
+        const nextCart =
+          cart.map((item) => ({
+            ...item,
+          }));
+
+        for (
+          const requirement of
+          normalized.items
+        ) {
+          const product =
+            catalogRef.current[
+              requirement.barcode
+            ];
+
+          if (
+            !product ||
+            normalizeProductType(
+              product.tipoVenta
+            ) !== "unidad"
+          ) {
+            showToast(
+              "Uno de los productos de la promoción ya no está disponible",
+              true
+            );
+
+            return false;
+          }
+
+          const existingIndex =
+            nextCart.findIndex(
+              (item) =>
+                item.barcode ===
+                  requirement.barcode &&
+                normalizeProductType(
+                  item.tipoVenta
+                ) === "unidad"
+            );
+
+          const existingQty =
+            existingIndex >= 0
+              ? Math.max(
+                  0,
+                  Math.trunc(
+                    toNumber(
+                      nextCart[
+                        existingIndex
+                      ]?.qty
+                    )
+                  )
+                )
+              : 0;
+
+          const nextQty =
+            existingQty +
+            requirement.qty;
+
+          if (
+            nextQty >
+            Math.max(
+              0,
+              Math.trunc(
+                toNumber(
+                  product.stock
+                )
+              )
+            )
+          ) {
+            showToast(
+              `Stock insuficiente para ${product.name}`,
+              true
+            );
+
+            return false;
+          }
+
+          if (
+            existingIndex >= 0
+          ) {
+            nextCart[
+              existingIndex
+            ] = {
+              ...nextCart[
+                existingIndex
+              ],
+              qty:
+                nextQty,
+              subtotal:
+                roundMoney(
+                  nextQty *
+                  toNumber(
+                    nextCart[
+                      existingIndex
+                    ].price
+                  )
+                ),
+            };
+          } else {
+            nextCart.push({
+              cartLineId:
+                uid(),
+              barcode:
+                requirement.barcode,
+              name:
+                product.name,
+              tipoVenta:
+                "unidad",
+              unidadMedida:
+                null,
+              price:
+                roundMoney(
+                  product.price
+                ),
+              qty:
+                requirement.qty,
+              subtotal:
+                roundMoney(
+                  requirement.qty *
+                  toNumber(
+                    product.price
+                  )
+                ),
+            });
+          }
+        }
+
+        setCart(
+          nextCart
+        );
+
+        showToast(
+          `${normalized.name} agregado`
         );
 
         return true;
@@ -3489,27 +4018,28 @@ export function usePosData({
     }, []);
 
   /* =========================================================
-     TOTAL
+     TOTAL + PROMOCIONES AUTOMÁTICAS
   ========================================================= */
+
+  const cartPricing =
+    useMemo(
+      () =>
+        calculateCartPromotions(
+          cart,
+          promotions
+        ),
+      [
+        cart,
+        promotions,
+      ]
+    );
 
   const getCartTotal =
     useCallback(
       () =>
-        roundMoney(
-          cart.reduce(
-            (
-              total,
-              item
-            ) =>
-              total +
-              getItemSubtotal(
-                item
-              ),
-            0
-          )
-        ),
+        cartPricing.total,
       [
-        cart,
+        cartPricing.total,
       ]
     );
 
@@ -3925,20 +4455,14 @@ export function usePosData({
            TOTAL
         ----------------------------------------------------- */
 
-        const total =
-          roundMoney(
-            cart.reduce(
-              (
-                accumulator,
-                item
-              ) =>
-                accumulator +
-                getItemSubtotal(
-                  item
-                ),
-              0
-            )
+        const pricing =
+          calculateCartPromotions(
+            cart,
+            promotionsRef.current
           );
+
+        const total =
+          pricing.total;
 
         if (
           total <= 0
@@ -4192,6 +4716,28 @@ export function usePosData({
                       )
                     );
 
+              const baseSubtotal =
+                getItemSubtotal(
+                  item
+                );
+
+              const promotionDiscount =
+                tipoVenta === "unidad"
+                  ? roundMoney(
+                      Math.min(
+                        baseSubtotal,
+                        Math.max(
+                          0,
+                          toNumber(
+                            pricing
+                              .discountByBarcode
+                              ?.[item.barcode]
+                          )
+                        )
+                      )
+                    )
+                  : 0;
+
               return {
                 barcode:
                   item.barcode,
@@ -4217,9 +4763,14 @@ export function usePosData({
 
                 qty,
 
+                baseSubtotal,
+
+                promotionDiscount,
+
                 subtotal:
-                  getItemSubtotal(
-                    item
+                  roundMoney(
+                    baseSubtotal -
+                    promotionDiscount
                   ),
 
                 costSubtotal:
@@ -4335,6 +4886,12 @@ export function usePosData({
 
                 grossProfit,
 
+                promotionDiscountTotal:
+                  pricing.discountTotal,
+
+                promotionsApplied:
+                  pricing.applications,
+
                 profitCostStatus:
                   "exact",
 
@@ -4395,6 +4952,12 @@ export function usePosData({
               totalCost,
 
               grossProfit,
+
+              promotionDiscountTotal:
+                pricing.discountTotal,
+
+              promotionsApplied:
+                pricing.applications,
 
               profitCostStatus:
                 "exact",
@@ -4493,6 +5056,33 @@ export function usePosData({
             error
           );
 
+          if (
+            error?.code ===
+              "promotion-changed" &&
+            cloudActiveRef.current
+          ) {
+            try {
+              const nextPromotions =
+                await loadPromotionsCloud(
+                  cleanClienteId,
+                  {
+                    operadorSesion,
+                    deviceId:
+                      cleanDeviceId,
+                  }
+                );
+
+              persistPromotions(
+                nextPromotions
+              );
+            } catch (refreshError) {
+              console.error(
+                "Error actualizando promociones después de un cambio de precio:",
+                refreshError
+              );
+            }
+          }
+
           showToast(
             mapCloudError(
               error
@@ -4513,6 +5103,7 @@ export function usePosData({
         cloudRequested,
         operadorSesion,
         persistCatalog,
+        persistPromotions,
         persistSales,
         showToast,
       ]
@@ -5766,6 +6357,7 @@ export function usePosData({
     accountsReceivable,
     shoppingList,
     accountsPayable,
+    promotions,
 
     shopName,
     setShopName,
@@ -5782,8 +6374,13 @@ export function usePosData({
     deleteProduct,
     restock,
 
+    refreshPromotions,
+    upsertPromotion,
+    deletePromotion,
+
     getProductByBarcode,
     addProductToCart,
+    addPromotionToCart,
     addToCartByBarcode,
 
     changeCartQty,
@@ -5794,6 +6391,7 @@ export function usePosData({
     clearCart,
 
     getCartTotal,
+    cartPricing,
 
     checkout,
 
