@@ -7,6 +7,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.jsx";
+import { registerPosServiceWorker } from "./lib/pwa";
 
 const THEME_STORAGE_KEY = "pos-theme";
 
@@ -43,6 +44,7 @@ function applyInitialTheme() {
 }
 
 applyInitialTheme();
+registerPosServiceWorker();
 
 const rootElement = document.getElementById("root");
 

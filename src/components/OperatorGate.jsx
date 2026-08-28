@@ -28,6 +28,15 @@ import { motion } from "motion/react";
 import { httpsCallable } from "firebase/functions";
 
 import { functions } from "../firebase/config";
+import {
+  browserIsOnline,
+  isNetworkError,
+} from "../lib/network";
+import {
+  clearOfflineOperatorAccess,
+  readOfflineOperatorAccess,
+  saveOfflineOperatorAccess,
+} from "../lib/offlineAccess";
 
 const OPERATOR_SESSION_KEY =
   "posOperatorSession";
@@ -160,15 +169,11 @@ function guardarSesionOperador(
 }
 
 function borrarSesionOperador() {
-  if (
-    typeof window === "undefined"
-  ) {
-    return;
+  if (typeof window !== "undefined") {
+    window.sessionStorage.removeItem(OPERATOR_SESSION_KEY);
   }
 
-  window.sessionStorage.removeItem(
-    OPERATOR_SESSION_KEY
-  );
+  clearOfflineOperatorAccess();
 }
 
 /* =========================================================
@@ -263,6 +268,11 @@ export default function OperatorGate({
     setSesion,
   ] = useState(null);
 
+  const [
+    offlineRestored,
+    setOfflineRestored,
+  ] = useState(false);
+
   const deviceId =
     license?.deviceId ||
     null;
@@ -315,11 +325,33 @@ export default function OperatorGate({
   const restaurarSesion =
     useCallback(
       async () => {
+        const offlineAccess =
+          readOfflineOperatorAccess(
+            deviceId
+          );
+
         const storedSession =
-          leerSesionOperador();
+          leerSesionOperador() ||
+          offlineAccess?.session ||
+          null;
 
         if (!storedSession) {
           return false;
+        }
+
+        if (!browserIsOnline()) {
+          if (!offlineAccess?.operator) {
+            return false;
+          }
+
+          guardarSesionOperador(
+            offlineAccess.session
+          );
+          setSesion(offlineAccess.session);
+          setOperador(offlineAccess.operator);
+          setEstado("autorizado");
+          setOfflineRestored(true);
+          return true;
         }
 
         try {
@@ -346,30 +378,45 @@ export default function OperatorGate({
             );
           }
 
-          setSesion(
+          guardarSesionOperador(
             storedSession
           );
+          saveOfflineOperatorAccess({
+            session: storedSession,
+            operator: currentOperator,
+            deviceId,
+          });
 
-          setOperador(
-            currentOperator
-          );
-
-          setEstado(
-            "autorizado"
-          );
-
+          setSesion(storedSession);
+          setOperador(currentOperator);
+          setEstado("autorizado");
+          setOfflineRestored(false);
           return true;
         } catch (err) {
+          if (
+            (!browserIsOnline() ||
+              isNetworkError(err)) &&
+            offlineAccess?.operator
+          ) {
+            guardarSesionOperador(
+              offlineAccess.session
+            );
+            setSesion(offlineAccess.session);
+            setOperador(offlineAccess.operator);
+            setEstado("autorizado");
+            setOfflineRestored(true);
+            return true;
+          }
+
           console.warn(
             "La sesión interna guardada ya no es válida:",
             err
           );
 
           borrarSesionOperador();
-
+          setOfflineRestored(false);
           setSesion(null);
           setOperador(null);
-
           return false;
         }
       },
@@ -386,9 +433,22 @@ export default function OperatorGate({
     useCallback(
       async () => {
         setError(null);
-        setEstado(
-          "cargando"
-        );
+        setEstado("cargando");
+
+        const restaurada =
+          await restaurarSesion();
+
+        if (restaurada) {
+          return;
+        }
+
+        if (!browserIsOnline()) {
+          setError(
+            "Necesitás conectarte a Internet una vez para validar el acceso del operador."
+          );
+          setEstado("error");
+          return;
+        }
 
         try {
           const response =
@@ -401,22 +461,11 @@ export default function OperatorGate({
 
           if (!configurado) {
             borrarSesionOperador();
-
+            setOfflineRestored(false);
             setSesion(null);
             setOperador(null);
             setOperadores([]);
-
-            setEstado(
-              "sin-configurar"
-            );
-
-            return;
-          }
-
-          const restaurada =
-            await restaurarSesion();
-
-          if (restaurada) {
+            setEstado("sin-configurar");
             return;
           }
 
@@ -433,10 +482,7 @@ export default function OperatorGate({
               "No se pudo verificar la configuración de acceso interno."
             )
           );
-
-          setEstado(
-            "error"
-          );
+          setEstado("error");
         }
       },
       [
@@ -449,6 +495,56 @@ export default function OperatorGate({
     consultarEstado();
   }, [
     consultarEstado,
+  ]);
+
+  useEffect(() => {
+    if (
+      !offlineRestored ||
+      estado !== "autorizado" ||
+      typeof window === "undefined"
+    ) {
+      return undefined;
+    }
+
+    const revalidate = async () => {
+      if (!browserIsOnline()) {
+        return;
+      }
+
+      const valid =
+        await restaurarSesion();
+
+      if (valid) {
+        return;
+      }
+
+      try {
+        await cargarOperadores();
+      } catch (err) {
+        setError(
+          mensajeError(
+            err,
+            "No se pudo revalidar el acceso interno."
+          )
+        );
+        setEstado("error");
+      }
+    };
+
+    window.addEventListener("online", revalidate);
+
+    if (browserIsOnline()) {
+      void revalidate();
+    }
+
+    return () => {
+      window.removeEventListener("online", revalidate);
+    };
+  }, [
+    offlineRestored,
+    estado,
+    restaurarSesion,
+    cargarOperadores,
   ]);
 
   /* =======================================================
@@ -483,6 +579,12 @@ export default function OperatorGate({
         guardarSesionOperador(
           newSession
         );
+        saveOfflineOperatorAccess({
+          session: newSession,
+          operator: newOperator,
+          deviceId,
+        });
+        setOfflineRestored(false);
 
         setSesion(
           newSession
@@ -500,7 +602,7 @@ export default function OperatorGate({
           "autorizado"
         );
       },
-      []
+      [deviceId]
     );
 
   /* =======================================================
@@ -529,6 +631,12 @@ export default function OperatorGate({
         guardarSesionOperador(
           nextSession
         );
+        saveOfflineOperatorAccess({
+          session: nextSession,
+          operator: nextOperator,
+          deviceId,
+        });
+        setOfflineRestored(false);
 
         setSesion(
           nextSession
@@ -542,7 +650,7 @@ export default function OperatorGate({
           "autorizado"
         );
       },
-      []
+      [deviceId]
     );
 
   /* =======================================================
@@ -579,6 +687,7 @@ export default function OperatorGate({
           );
         } finally {
           borrarSesionOperador();
+          setOfflineRestored(false);
 
           setSesion(null);
           setOperador(null);

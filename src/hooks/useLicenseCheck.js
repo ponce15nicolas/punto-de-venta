@@ -58,6 +58,14 @@ import {
     isNetworkError,
 } from "../lib/network";
 
+import {
+    clearOfflineLicenseAccess,
+    clearOfflineOperatorAccess,
+    readOfflineLicenseAccess,
+    saveOfflineDeviceAccess,
+    saveOfflineLicenseSnapshot,
+} from "../lib/offlineAccess";
+
 /* =========================================================
    CONFIGURACIÓN
 ========================================================= */
@@ -1033,6 +1041,27 @@ export function useLicenseCheck() {
         0
     );
 
+    const [
+        networkRevision,
+        setNetworkRevision,
+    ] = useState(0);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return undefined;
+        }
+
+        const handleOnline = () => {
+            setNetworkRevision((value) => value + 1);
+        };
+
+        window.addEventListener("online", handleOnline);
+
+        return () => {
+            window.removeEventListener("online", handleOnline);
+        };
+    }, []);
+
     /* =======================================================
        AVISO DE CIERRE ADMIN
     ======================================================= */
@@ -1123,207 +1152,171 @@ export function useLicenseCheck() {
             return undefined;
         }
 
-        let cancelado =
-            false;
+        let cancelado = false;
+        let unsubscribeCliente = null;
 
-        let unsubscribeCliente =
-            null;
+        const sessionId = getOrCreateSessionId(usuario);
 
-        setEstadoLicencia(
-            "cargando"
-        );
+        function restoreOfflineAccess() {
+            const cached = readOfflineLicenseAccess({
+                user: usuario,
+                deviceId,
+                sessionId,
+            });
 
-        setDatosCliente(
-            null
-        );
+            if (!cached || cancelado) {
+                return false;
+            }
 
-        setClienteId(
-            null
-        );
+            setClienteId(cached.clienteId);
+            setDatosCliente({
+                estado: "activo",
+                offlineCache: true,
+            });
+            setEstadoLicencia("activo");
+            setEstadoDispositivo("activo");
+            setDispositivosActivos(cached.dispositivosActivos);
+            setMaxDispositivos(cached.maxDispositivos);
+            setMensajeBloqueo("");
+            return true;
+        }
+
+        if (!browserIsOnline()) {
+            if (!restoreOfflineAccess()) {
+                setDatosCliente(null);
+                setClienteId(null);
+                setEstadoLicencia("error-sesion");
+                setMensajeBloqueo(
+                    "Necesitás conectarte a Internet una vez para revalidar este dispositivo."
+                );
+            }
+
+            return undefined;
+        }
+
+        setEstadoLicencia("cargando");
+        setDatosCliente(null);
+        setClienteId(null);
 
         async function iniciar() {
             try {
-                const id =
-                    await resolverIdDeCliente(
-                        usuario
-                    );
+                const id = await resolverIdDeCliente(usuario);
 
                 if (cancelado) {
                     return;
                 }
 
                 if (!id) {
-                    setEstadoLicencia(
-                        "no-encontrado"
-                    );
-
+                    clearOfflineLicenseAccess();
+                    setEstadoLicencia("no-encontrado");
                     setMensajeBloqueo(
                         "No encontramos una licencia asociada a esta cuenta."
                     );
-
                     return;
                 }
 
-                setClienteId(
-                    id
-                );
+                setClienteId(id);
 
-                const clienteRef =
-                    doc(
-                        db,
-                        "clientes",
-                        id
-                    );
+                const clienteRef = doc(db, "clientes", id);
 
-                unsubscribeCliente =
-                    onSnapshot(
-                        clienteRef,
-
-                        (snapshot) => {
-                            if (
-                                cancelado
-                            ) {
-                                return;
-                            }
-
-                            if (
-                                !snapshot.exists()
-                            ) {
-                                setDatosCliente(
-                                    null
-                                );
-
-                                setEstadoLicencia(
-                                    "no-encontrado"
-                                );
-
-                                return;
-                            }
-
-                            const data =
-                                snapshot.data();
-
-                            setDatosCliente(
-                                data
-                            );
-
-                            setEstadoLicencia(
-                                obtenerEstadoLicencia(
-                                    data
-                                )
-                            );
-
-                            setDispositivosActivos(
-                                numeroSeguro(
-                                    data.dispositivosActivos,
-                                    0
-                                )
-                            );
-
-                            setMaxDispositivos(
-                                normalizarLimite(
-                                    data.maxDispositivos ??
-                                    1
-                                )
-                            );
-                        },
-
-                        (error) => {
-                            if (
-                                cancelado
-                            ) {
-                                return;
-                            }
-
-                            /*
-                             * Una pérdida de red NO invalida una licencia que
-                             * ya estaba autorizada. Firestore volverá a intentar
-                             * el listener al recuperar conectividad.
-                             */
-                            if (
-                                !browserIsOnline() ||
-                                isNetworkError(error)
-                            ) {
-                                console.warn(
-                                    "Licencia temporalmente sin conexión; se conserva el último estado válido."
-                                );
-
-                                return;
-                            }
-
-                            console.error(
-                                "Error escuchando licencia:",
-                                error
-                            );
-
-                            setDatosCliente(
-                                null
-                            );
-
-                            setEstadoLicencia(
-                                "inactivo"
-                            );
-
-                            setMensajeBloqueo(
-                                "No pudimos verificar la licencia."
-                            );
+                unsubscribeCliente = onSnapshot(
+                    clienteRef,
+                    (snapshot) => {
+                        if (cancelado) {
+                            return;
                         }
-                    );
+
+                        if (!snapshot.exists()) {
+                            clearOfflineLicenseAccess();
+                            setDatosCliente(null);
+                            setEstadoLicencia("no-encontrado");
+                            return;
+                        }
+
+                        const data = snapshot.data();
+                        const nextEstado = obtenerEstadoLicencia(data);
+                        const activeDevices = numeroSeguro(
+                            data.dispositivosActivos,
+                            0
+                        );
+                        const maxDevices = normalizarLimite(
+                            data.maxDispositivos ?? 1
+                        );
+
+                        setDatosCliente(data);
+                        setEstadoLicencia(nextEstado);
+                        setDispositivosActivos(activeDevices);
+                        setMaxDispositivos(maxDevices);
+
+                        if (nextEstado === "activo") {
+                            saveOfflineLicenseSnapshot({
+                                user: usuario,
+                                clienteId: id,
+                                estado: nextEstado,
+                                fechaVencimiento: data.fechaVencimiento,
+                                dispositivosActivos: activeDevices,
+                                maxDispositivos: maxDevices,
+                            });
+                        } else {
+                            clearOfflineLicenseAccess();
+                        }
+                    },
+                    (error) => {
+                        if (cancelado) {
+                            return;
+                        }
+
+                        if (
+                            !browserIsOnline() ||
+                            isNetworkError(error)
+                        ) {
+                            restoreOfflineAccess();
+                            return;
+                        }
+
+                        console.error("Error escuchando licencia:", error);
+                        setDatosCliente(null);
+                        setEstadoLicencia("inactivo");
+                        setMensajeBloqueo("No pudimos verificar la licencia.");
+                    }
+                );
             } catch (error) {
-                if (
-                    cancelado
-                ) {
+                if (cancelado) {
                     return;
                 }
 
-                /*
-                 * Si la aplicación ya estaba abierta y cae Internet, no
-                 * convertimos un fallo de transporte en licencia inactiva.
-                 */
                 if (
                     !browserIsOnline() ||
                     isNetworkError(error)
                 ) {
-                    console.warn(
-                        "No se pudo revalidar la licencia por falta de conexión; se conserva el último estado válido."
-                    );
-
+                    if (!restoreOfflineAccess()) {
+                        setDatosCliente(null);
+                        setClienteId(null);
+                        setEstadoLicencia("error-sesion");
+                        setMensajeBloqueo(
+                            "No hay una validación reciente disponible. Conectate a Internet para continuar."
+                        );
+                    }
                     return;
                 }
 
-                console.error(
-                    "Error verificando licencia:",
-                    error
-                );
-
-                setDatosCliente(
-                    null
-                );
-
-                setEstadoLicencia(
-                    "inactivo"
-                );
-
-                setMensajeBloqueo(
-                    "No pudimos verificar la licencia."
-                );
+                console.error("Error verificando licencia:", error);
+                setDatosCliente(null);
+                setEstadoLicencia("inactivo");
+                setMensajeBloqueo("No pudimos verificar la licencia.");
             }
         }
 
         iniciar();
 
         return () => {
-            cancelado =
-                true;
-
-            if (
-                unsubscribeCliente
-            ) {
-                unsubscribeCliente();
-            }
+            cancelado = true;
+            unsubscribeCliente?.();
         };
     }, [
         usuario,
+        deviceId,
+        networkRevision,
     ]);
 
     /* =======================================================
@@ -1354,6 +1347,9 @@ export function useLicenseCheck() {
                 setMensajeBloqueo(
                     aviso.mensaje
                 );
+
+                clearOfflineLicenseAccess();
+                clearOfflineOperatorAccess();
 
                 if (user) {
                     removeSessionId(
@@ -1455,293 +1451,205 @@ export function useLicenseCheck() {
     useEffect(() => {
         if (
             !usuario ||
-            estadoLicencia !==
-            "activo" ||
+            !clienteId ||
+            estadoLicencia !== "activo" ||
             avisoSesion
         ) {
             return undefined;
         }
 
-        let cancelado =
-            false;
+        let cancelado = false;
+        let heartbeatTimer = null;
+        let heartbeatEnCurso = false;
 
-        let heartbeatTimer =
-            null;
-
-        let heartbeatEnCurso =
-            false;
-
-        const sessionId =
-            getOrCreateSessionId(
-                usuario
-            );
-
-        const requestKey =
-            [
-                usuario.uid,
-                deviceId,
-                sessionId,
-            ].join(":");
+        const sessionId = getOrCreateSessionId(usuario);
+        const requestKey = [
+            usuario.uid,
+            deviceId,
+            sessionId,
+        ].join(":");
 
         const payload = {
             deviceId,
             sessionId,
-
-            dispositivo:
-                obtenerInfoDispositivo(),
+            dispositivo: obtenerInfoDispositivo(),
         };
 
-        async function manejarError(
-            error
-        ) {
-            const info =
-                interpretarErrorFuncion(
-                    error
-                );
-
-            if (
-                cancelado
-            ) {
-                return;
-            }
-
-            setMensajeBloqueo(
-                info.mensaje
-            );
-
-            setDispositivosActivos(
-                info.dispositivosActivos
-            );
-
-            setMaxDispositivos(
-                info.maxDispositivos
-            );
-
-            if (
-                info.estado ===
-                "sesion-cerrada"
-            ) {
-                await forzarCierreRemoto(
-                    info.mensaje
-                );
-
-                return;
-            }
-
-            if (
-                info.estado ===
-                "vencido" ||
-                info.estado ===
-                "inactivo" ||
-                info.estado ===
-                "no-encontrado"
-            ) {
-                setEstadoLicencia(
-                    info.estado
-                );
-
-                setEstadoDispositivo(
-                    "pendiente"
-                );
-
-                return;
-            }
-
-            setEstadoDispositivo(
-                info.estado
+        function hasOfflineAccess() {
+            return Boolean(
+                readOfflineLicenseAccess({
+                    user: usuario,
+                    deviceId,
+                    sessionId,
+                })
             );
         }
 
-        async function heartbeat() {
-            if (
-                heartbeatEnCurso ||
-                cancelado
-            ) {
+        function rememberDeviceAccess() {
+            saveOfflineDeviceAccess({
+                user: usuario,
+                clienteId,
+                deviceId,
+                sessionId,
+            });
+        }
+
+        async function manejarError(error) {
+            const info = interpretarErrorFuncion(error);
+
+            if (cancelado) {
                 return;
             }
 
-            heartbeatEnCurso =
-                true;
+            setMensajeBloqueo(info.mensaje);
+            setDispositivosActivos(info.dispositivosActivos);
+            setMaxDispositivos(info.maxDispositivos);
+
+            if (info.estado === "sesion-cerrada") {
+                clearOfflineLicenseAccess();
+                await forzarCierreRemoto(info.mensaje);
+                return;
+            }
+
+            if (
+                info.estado === "vencido" ||
+                info.estado === "inactivo" ||
+                info.estado === "no-encontrado"
+            ) {
+                clearOfflineLicenseAccess();
+                setEstadoLicencia(info.estado);
+                setEstadoDispositivo("pendiente");
+                return;
+            }
+
+            setEstadoDispositivo(info.estado);
+        }
+
+        async function heartbeat() {
+            if (heartbeatEnCurso || cancelado) {
+                return;
+            }
+
+            heartbeatEnCurso = true;
 
             try {
-                const response =
-                    await actualizarSesionFunction(
-                        {
-                            deviceId,
-                            sessionId,
-                        }
-                    );
+                const response = await actualizarSesionFunction({
+                    deviceId,
+                    sessionId,
+                });
 
-                if (
-                    cancelado
-                ) {
+                if (cancelado) {
                     return;
                 }
 
-                const data =
-                    response?.data ||
-                    {};
+                const data = response?.data || {};
 
-                setEstadoDispositivo(
-                    "activo"
-                );
+                setEstadoDispositivo("activo");
+                setMensajeBloqueo("");
+                rememberDeviceAccess();
 
-                setMensajeBloqueo(
-                    ""
-                );
-
-                if (
-                    data.dispositivosActivos !=
-                    null
-                ) {
+                if (data.dispositivosActivos != null) {
                     setDispositivosActivos(
-                        numeroSeguro(
-                            data.dispositivosActivos,
-                            0
-                        )
+                        numeroSeguro(data.dispositivosActivos, 0)
                     );
                 }
 
-                if (
-                    data.maxDispositivos !=
-                    null
-                ) {
+                if (data.maxDispositivos != null) {
                     setMaxDispositivos(
-                        normalizarLimite(
-                            data.maxDispositivos
-                        )
+                        normalizarLimite(data.maxDispositivos)
                     );
                 }
             } catch (error) {
-                /*
-                 * El heartbeat sirve para mantener la sesión activa en
-                 * backend, pero una caída de Internet no debe expulsar al
-                 * cajero del POS. Conservamos la autorización local y el
-                 * próximo heartbeat revalidará automáticamente al volver.
-                 */
                 if (
                     !browserIsOnline() ||
                     isNetworkError(error)
                 ) {
-                    console.warn(
-                        "Heartbeat de licencia omitido temporalmente por falta de conexión."
-                    );
-
+                    if (hasOfflineAccess()) {
+                        setEstadoDispositivo("activo");
+                        setMensajeBloqueo("");
+                    }
                     return;
                 }
 
-                console.error(
-                    "Error actualizando sesión:",
-                    error
-                );
-
-                await manejarError(
-                    error
-                );
+                console.error("Error actualizando sesión:", error);
+                await manejarError(error);
             } finally {
-                heartbeatEnCurso =
-                    false;
+                heartbeatEnCurso = false;
             }
         }
 
         async function registrar() {
-            setEstadoDispositivo(
-                "pendiente"
-            );
+            if (!browserIsOnline() && hasOfflineAccess()) {
+                setEstadoDispositivo("activo");
+                setMensajeBloqueo("");
+                return;
+            }
 
-            setMensajeBloqueo(
-                ""
-            );
+            setEstadoDispositivo("pendiente");
+            setMensajeBloqueo("");
 
             try {
-                const response =
-                    await registrarSesionDedupe(
-                        requestKey,
-                        payload
-                    );
+                const response = await registrarSesionDedupe(
+                    requestKey,
+                    payload
+                );
 
-                if (
-                    cancelado
-                ) {
+                if (cancelado) {
                     return;
                 }
 
-                const data =
-                    response?.data ||
-                    {};
+                const data = response?.data || {};
 
-                setEstadoDispositivo(
-                    "activo"
-                );
+                setEstadoDispositivo("activo");
+                setMensajeBloqueo("");
+                rememberDeviceAccess();
 
-                setMensajeBloqueo(
-                    ""
-                );
-
-                if (
-                    data.dispositivosActivos !=
-                    null
-                ) {
+                if (data.dispositivosActivos != null) {
                     setDispositivosActivos(
-                        numeroSeguro(
-                            data.dispositivosActivos,
-                            0
-                        )
+                        numeroSeguro(data.dispositivosActivos, 0)
                     );
                 }
 
-                if (
-                    data.maxDispositivos !=
-                    null
-                ) {
+                if (data.maxDispositivos != null) {
                     setMaxDispositivos(
-                        normalizarLimite(
-                            data.maxDispositivos
-                        )
+                        normalizarLimite(data.maxDispositivos)
                     );
                 }
 
-                const heartbeatMs =
-                    obtenerHeartbeatMs(
-                        data
-                    );
-
-                heartbeatTimer =
-                    window.setInterval(
-                        heartbeat,
-                        heartbeatMs
-                    );
+                heartbeatTimer = window.setInterval(
+                    heartbeat,
+                    obtenerHeartbeatMs(data)
+                );
             } catch (error) {
-                console.error(
-                    "Error registrando dispositivo:",
-                    error
-                );
+                if (
+                    (!browserIsOnline() || isNetworkError(error)) &&
+                    hasOfflineAccess()
+                ) {
+                    setEstadoDispositivo("activo");
+                    setMensajeBloqueo("");
+                    return;
+                }
 
-                await manejarError(
-                    error
-                );
+                console.error("Error registrando dispositivo:", error);
+                await manejarError(error);
             }
         }
 
         registrar();
 
         return () => {
-            cancelado =
-                true;
-
-            if (
-                heartbeatTimer
-            ) {
-                window.clearInterval(
-                    heartbeatTimer
-                );
+            cancelado = true;
+            if (heartbeatTimer) {
+                window.clearInterval(heartbeatTimer);
             }
         };
     }, [
         usuario,
+        clienteId,
         estadoLicencia,
         deviceId,
         reintento,
+        networkRevision,
         avisoSesion,
         forzarCierreRemoto,
     ]);
@@ -1843,6 +1751,8 @@ export function useLicenseCheck() {
                  * y permite volver al Login.
                  */
                 borrarAvisoSesion();
+                clearOfflineLicenseAccess();
+                clearOfflineOperatorAccess();
 
                 setAvisoSesion(
                     null
