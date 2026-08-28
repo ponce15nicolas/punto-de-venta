@@ -1,11 +1,9 @@
-// src/lib/offlineQueue.js
-// Cola durable de operaciones del POS. IndexedDB evita depender de localStorage
-// para ventas que todavía no fueron confirmadas por Firebase.
-
 const DB_NAME = "mi-negocio-pos-offline";
-const DB_VERSION = 1;
-const STORE_NAME = "operations";
+const DB_VERSION = 2;
+const OPERATIONS_STORE = "operations";
+const HISTORY_STORE = "syncHistory";
 const CHANGE_EVENT = "pos:offline-queue-change";
+const HISTORY_LIMIT = 30;
 
 let dbPromise = null;
 
@@ -28,21 +26,37 @@ function openDb() {
     request.onupgradeneeded = () => {
       const db = request.result;
 
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        const store = db.createObjectStore(STORE_NAME, {
+      if (!db.objectStoreNames.contains(OPERATIONS_STORE)) {
+        const operations = db.createObjectStore(OPERATIONS_STORE, {
           keyPath: "id",
         });
+        operations.createIndex("owner", "owner", { unique: false });
+        operations.createIndex("createdAt", "createdAt", { unique: false });
+      }
 
-        store.createIndex("owner", "owner", { unique: false });
-        store.createIndex("createdAt", "createdAt", { unique: false });
+      if (!db.objectStoreNames.contains(HISTORY_STORE)) {
+        const history = db.createObjectStore(HISTORY_STORE, {
+          keyPath: "id",
+        });
+        history.createIndex("owner", "owner", { unique: false });
+        history.createIndex("createdAt", "createdAt", { unique: false });
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+
     request.onerror = () => {
       dbPromise = null;
       reject(request.error || new Error("No se pudo abrir IndexedDB"));
     };
+
     request.onblocked = () => {
       dbPromise = null;
       reject(new Error("IndexedDB está bloqueada por otra pestaña"));
@@ -58,12 +72,12 @@ function emitChange() {
   }
 }
 
-async function runStore(mode, runner) {
+async function runStore(storeName, mode, runner) {
   const db = await openDb();
 
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, mode);
-    const store = transaction.objectStore(STORE_NAME);
+    const transaction = db.transaction(storeName, mode);
+    const store = transaction.objectStore(storeName);
     let result;
 
     try {
@@ -93,10 +107,9 @@ export async function listOfflineOperations(owner) {
   const db = await openDb();
 
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, "readonly");
-    const store = transaction.objectStore(STORE_NAME);
-    const index = store.index("owner");
-    const request = index.getAll(cleanOwner);
+    const transaction = db.transaction(OPERATIONS_STORE, "readonly");
+    const store = transaction.objectStore(OPERATIONS_STORE);
+    const request = store.index("owner").getAll(cleanOwner);
 
     request.onsuccess = () => {
       const operations = Array.isArray(request.result)
@@ -141,7 +154,7 @@ export async function enqueueOfflineSale(owner, operation) {
     lastError: null,
   };
 
-  await runStore("readwrite", (store) => {
+  await runStore(OPERATIONS_STORE, "readwrite", (store) => {
     store.put(record);
   });
 
@@ -159,8 +172,8 @@ export async function patchOfflineOperation(id, patch) {
   const db = await openDb();
 
   const result = await new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, "readwrite");
-    const store = transaction.objectStore(STORE_NAME);
+    const transaction = db.transaction(OPERATIONS_STORE, "readwrite");
+    const store = transaction.objectStore(OPERATIONS_STORE);
     const request = store.get(cleanId);
     let next = null;
 
@@ -186,7 +199,6 @@ export async function patchOfflineOperation(id, patch) {
     request.onerror = () => reject(
       request.error || new Error("No se pudo actualizar la cola offline")
     );
-
     transaction.oncomplete = () => resolve(next);
     transaction.onerror = () => reject(
       transaction.error || new Error("No se pudo actualizar la cola offline")
@@ -207,8 +219,139 @@ export async function removeOfflineOperation(id) {
     return;
   }
 
-  await runStore("readwrite", (store) => {
+  await runStore(OPERATIONS_STORE, "readwrite", (store) => {
     store.delete(cleanId);
+  });
+
+  emitChange();
+}
+
+export async function listOfflineSyncHistory(owner, limit = HISTORY_LIMIT) {
+  const cleanOwner = String(owner || "").trim();
+  const cleanLimit = Math.max(1, Math.min(HISTORY_LIMIT, Math.trunc(Number(limit) || HISTORY_LIMIT)));
+
+  if (!cleanOwner) {
+    return [];
+  }
+
+  const db = await openDb();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(HISTORY_STORE, "readonly");
+    const store = transaction.objectStore(HISTORY_STORE);
+    const request = store.index("owner").getAll(cleanOwner);
+
+    request.onsuccess = () => {
+      const history = Array.isArray(request.result)
+        ? request.result.filter(Boolean)
+        : [];
+
+      history.sort((a, b) =>
+        String(b?.createdAt || "").localeCompare(String(a?.createdAt || ""))
+      );
+
+      resolve(history.slice(0, cleanLimit));
+    };
+
+    request.onerror = () => reject(
+      request.error || new Error("No se pudo leer el historial de sincronización")
+    );
+  });
+}
+
+export async function recordOfflineSyncHistory(owner, event) {
+  const cleanOwner = String(owner || "").trim();
+  const saleId = String(event?.saleId || "").trim();
+
+  if (!cleanOwner || !saleId) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const record = {
+    id: `sync:${cleanOwner}:${saleId}:${String(event?.status || "synced")}`,
+    owner: cleanOwner,
+    saleId,
+    status: String(event?.status || "synced"),
+    createdAt: event?.createdAt || now,
+    queuedAt: event?.queuedAt || null,
+    total: Number.isFinite(Number(event?.total)) ? Number(event.total) : 0,
+    itemCount: Math.max(0, Math.trunc(Number(event?.itemCount) || 0)),
+    paymentMethod: String(event?.paymentMethod || "").trim() || null,
+  };
+
+  const db = await openDb();
+
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction(HISTORY_STORE, "readwrite");
+    const store = transaction.objectStore(HISTORY_STORE);
+    const ownerIndex = store.index("owner");
+    const request = ownerIndex.getAll(cleanOwner);
+
+    request.onsuccess = () => {
+      const existing = Array.isArray(request.result)
+        ? request.result.filter(Boolean)
+        : [];
+
+      store.put(record);
+
+      existing
+        .sort((a, b) =>
+          String(b?.createdAt || "").localeCompare(String(a?.createdAt || ""))
+        )
+        .slice(HISTORY_LIMIT - 1)
+        .forEach((item) => store.delete(item.id));
+    };
+
+    request.onerror = () => reject(
+      request.error || new Error("No se pudo actualizar el historial de sincronización")
+    );
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(
+      transaction.error || new Error("No se pudo guardar el historial de sincronización")
+    );
+    transaction.onabort = () => reject(
+      transaction.error || new Error("Se canceló el historial de sincronización")
+    );
+  });
+
+  emitChange();
+  return record;
+}
+
+export async function clearOfflineSyncHistory(owner) {
+  const cleanOwner = String(owner || "").trim();
+
+  if (!cleanOwner) {
+    return;
+  }
+
+  const db = await openDb();
+
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction(HISTORY_STORE, "readwrite");
+    const store = transaction.objectStore(HISTORY_STORE);
+    const request = store.index("owner").openCursor(IDBKeyRange.only(cleanOwner));
+
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        return;
+      }
+      cursor.delete();
+      cursor.continue();
+    };
+
+    request.onerror = () => reject(
+      request.error || new Error("No se pudo limpiar el historial de sincronización")
+    );
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(
+      transaction.error || new Error("No se pudo limpiar el historial de sincronización")
+    );
+    transaction.onabort = () => reject(
+      transaction.error || new Error("Se canceló la limpieza del historial")
+    );
   });
 
   emitChange();

@@ -1,7 +1,7 @@
-// src/components/OfflineStatusBar.jsx
-// Estado visible y persistente de la cola de ventas sin conexión.
-
-export default function OfflineStatusBar({ pos }) {
+export default function OfflineStatusBar({
+  pos,
+  onOpenDetails,
+}) {
   const pending = Math.max(0, Number(pos?.pendingOfflineCount || 0));
   const attention = Math.max(0, Number(pos?.offlineAttentionCount || 0));
   const state = String(pos?.offlineSyncState || "idle");
@@ -19,8 +19,8 @@ export default function OfflineStatusBar({ pos }) {
 
   let title = "Sin conexión · Modo offline";
   let message = pending > 0
-    ? `${pending} ${pending === 1 ? "venta está" : "ventas están"} guardada${pending === 1 ? "" : "s"} en este dispositivo. Todavía no ${pending === 1 ? "está confirmada" : "están confirmadas"} en la nube.`
-    : "Podés seguir vendiendo. Las ventas se guardarán en este dispositivo y se confirmarán en la nube cuando vuelva Internet.";
+    ? `${pending} ${pending === 1 ? "venta está" : "ventas están"} guardada${pending === 1 ? "" : "s"} en este dispositivo.`
+    : "Podés seguir vendiendo. Las ventas se confirmarán en la nube cuando vuelva Internet.";
   let tone = "amber";
   let showRetry = false;
 
@@ -36,7 +36,7 @@ export default function OfflineStatusBar({ pos }) {
     tone = "green";
   } else if (attention > 0) {
     title = "Revisión necesaria";
-    message = `${attention} ${attention === 1 ? "venta necesita" : "ventas necesitan"} revisión antes de poder confirmarse en la nube. La venta local no se perdió.`;
+    message = `${attention} ${attention === 1 ? "venta necesita" : "ventas necesitan"} revisión. La información local sigue protegida.`;
     tone = "red";
     showRetry = online;
   } else if (state === "storage-error") {
@@ -59,7 +59,7 @@ export default function OfflineStatusBar({ pos }) {
         aria-live="polite"
       >
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-current" />
               <strong className="text-xs font-black">{title}</strong>
@@ -69,15 +69,27 @@ export default function OfflineStatusBar({ pos }) {
             </p>
           </div>
 
-          {showRetry && (
-            <button
-              type="button"
-              onClick={() => pos?.retryOfflineSync?.()}
-              className="pos-offline-status__retry shrink-0 rounded-xl border px-3 py-2 text-[10px] font-black transition"
-            >
-              Reintentar
-            </button>
-          )}
+          <div className="flex shrink-0 flex-col gap-1.5">
+            {showRetry && (
+              <button
+                type="button"
+                onClick={() => pos?.retryOfflineSync?.()}
+                className="pos-offline-status__retry rounded-xl border px-3 py-2 text-[10px] font-black transition"
+              >
+                Reintentar
+              </button>
+            )}
+
+            {onOpenDetails && (
+              <button
+                type="button"
+                onClick={onOpenDetails}
+                className="pos-offline-status__details rounded-xl border px-3 py-2 text-[10px] font-black transition"
+              >
+                Ver detalle
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

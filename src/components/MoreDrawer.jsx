@@ -45,6 +45,10 @@ export default function MoreDrawer({
   openSession,
   allowOperatorChangeWithOpenSession = false,
   pendingOfflineCount = 0,
+  offlineAttentionCount = 0,
+  offlineSyncState = "idle",
+  isOnline = true,
+  onOpenSync,
   deviceId = null,
   theme = "dark",
   onToggleTheme,
@@ -174,6 +178,14 @@ export default function MoreDrawer({
 
   function openSettings() {
     setShowSettings(true);
+
+    if (!isDesktop) {
+      onClose?.();
+    }
+  }
+
+  function openSync() {
+    onOpenSync?.();
 
     if (!isDesktop) {
       onClose?.();
@@ -382,6 +394,28 @@ export default function MoreDrawer({
                   shortcut="Num 7"
                   active={currentTab === "actividad"}
                   onClick={() => navigate("actividad")}
+                />
+
+                <DrawerRow
+                  icon={SyncIcon}
+                  label="Sincronización"
+                  badge={
+                    Number(offlineAttentionCount) > 0
+                      ? "Revisar"
+                      : Number(pendingOfflineCount) > 0
+                        ? String(pendingOfflineCount)
+                        : isOnline
+                          ? "Al día"
+                          : "Offline"
+                  }
+                  badgeTone={
+                    Number(offlineAttentionCount) > 0
+                      ? "red"
+                      : Number(pendingOfflineCount) > 0 || !isOnline || offlineSyncState === "syncing"
+                        ? "amber"
+                        : "green"
+                  }
+                  onClick={openSync}
                 />
 
                 <DrawerRow
@@ -619,6 +653,8 @@ function DrawerRow({
   icon: Icon,
   label,
   shortcut = null,
+  badge = null,
+  badgeTone = "neutral",
   active = false,
   disabled = false,
   onClick,
@@ -639,6 +675,11 @@ function DrawerRow({
         <kbd className="pos-more-row__shortcut" aria-label={`Atajo ${shortcut}`}>
           {shortcut}
         </kbd>
+      )}
+      {badge && (
+        <span className={`pos-more-row__badge is-${badgeTone}`}>
+          {badge}
+        </span>
       )}
       <ChevronIcon className="pos-more-row__chevron h-4 w-4" />
     </button>
@@ -765,6 +806,17 @@ function PurchaseIcon({ className = "" }) {
     <IconBase className={className}>
       <path d="M6 8h12l1 12H5L6 8Z" />
       <path d="M9 8a3 3 0 0 1 6 0" />
+    </IconBase>
+  );
+}
+
+function SyncIcon({ className = "" }) {
+  return (
+    <IconBase className={className}>
+      <path d="M20 7h-5V2" />
+      <path d="M20 2l-3.5 3.5A7 7 0 1 0 19 15" />
+      <path d="M4 17h5v5" />
+      <path d="M4 22l3.5-3.5A7 7 0 0 0 5 9" />
     </IconBase>
   );
 }

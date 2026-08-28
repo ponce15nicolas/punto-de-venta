@@ -17,6 +17,7 @@ import MoreDrawer from "./components/MoreDrawer";
 import Toast from "./components/Toast";
 import UpdateNotice from "./components/UpdateNotice";
 import OfflineStatusBar from "./components/OfflineStatusBar";
+import SyncCenterModal from "./components/SyncCenterModal";
 import LicenseGate from "./components/LicenseGate";
 import { useOperator } from "./components/OperatorGate";
 import AdminRoute from "./components/AdminRoute";
@@ -258,6 +259,7 @@ function PosApp({ license }) {
   const [effectsMode, setEffectsMode] =
     useState(getCurrentEffectsMode);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [syncCenterOpen, setSyncCenterOpen] = useState(false);
 
   const notebookShortcutTimerRef = useRef(null);
   const notebookScannerIdleTimerRef = useRef(null);
@@ -593,6 +595,7 @@ function PosApp({ license }) {
 
       <OfflineStatusBar
         pos={pos}
+        onOpenDetails={() => setSyncCenterOpen(true)}
       />
 
       {/* =====================================================
@@ -733,6 +736,10 @@ function PosApp({ license }) {
         openSession={pos.openSession}
         allowOperatorChangeWithOpenSession={pos.migrationNeedsAdmin}
         pendingOfflineCount={pos.pendingOfflineCount}
+        offlineAttentionCount={pos.offlineAttentionCount}
+        offlineSyncState={pos.offlineSyncState}
+        isOnline={pos.isOnline}
+        onOpenSync={() => setSyncCenterOpen(true)}
         deviceId={license.deviceId}
         theme={theme}
         onToggleTheme={handleToggleTheme}
@@ -744,6 +751,12 @@ function PosApp({ license }) {
       {/* =====================================================
           TOAST
       ===================================================== */}
+
+      <SyncCenterModal
+        open={syncCenterOpen}
+        onClose={() => setSyncCenterOpen(false)}
+        pos={pos}
+      />
 
       <Toast
         toast={pos.toastMsg}

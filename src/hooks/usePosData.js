@@ -62,9 +62,12 @@ import {
 } from "../services/pos/posMigration";
 
 import {
+  clearOfflineSyncHistory,
   enqueueOfflineSale,
   listOfflineOperations,
+  listOfflineSyncHistory,
   patchOfflineOperation,
+  recordOfflineSyncHistory,
   removeOfflineOperation,
   subscribeOfflineQueue,
 } from "../lib/offlineQueue";
@@ -768,6 +771,11 @@ export function usePosData({
   const [
     offlineOperations,
     setOfflineOperations,
+  ] = useState([]);
+
+  const [
+    offlineSyncHistory,
+    setOfflineSyncHistory,
   ] = useState([]);
 
   const [
@@ -1599,6 +1607,8 @@ export function usePosData({
       offlineOperationsRef.current =
         [];
       setOfflineOperations([]);
+      setOfflineSyncHistory([]);
+      setOfflineLastSyncAt(null);
       setOfflineQueueLoaded(true);
       setOfflineSyncState(
         "idle"
@@ -1608,17 +1618,31 @@ export function usePosData({
 
     let cancelled = false;
     let firstLoad = true;
+    let loadVersion = 0;
 
     setOfflineQueueLoaded(false);
 
     async function loadQueue() {
-      try {
-        const operations =
-          await listOfflineOperations(
-            cleanClienteId
-          );
+      const version =
+        ++loadVersion;
 
-        if (cancelled) {
+      try {
+        const [
+          operations,
+          history,
+        ] = await Promise.all([
+          listOfflineOperations(
+            cleanClienteId
+          ),
+          listOfflineSyncHistory(
+            cleanClienteId
+          ),
+        ]);
+
+        if (
+          cancelled ||
+          version !== loadVersion
+        ) {
           return;
         }
 
@@ -1627,16 +1651,33 @@ export function usePosData({
         setOfflineOperations(
           operations
         );
+        setOfflineSyncHistory(
+          history
+        );
+
+        const latestSyncedAt =
+          history.find(
+            (item) =>
+              item?.status ===
+              "synced"
+          )?.createdAt ||
+          null;
+
+        if (latestSyncedAt) {
+          setOfflineLastSyncAt(
+            (current) =>
+              !current ||
+              String(latestSyncedAt) >
+                String(current)
+                ? latestSyncedAt
+                : current
+          );
+        }
 
         if (
           firstLoad &&
           operations.length > 0
         ) {
-          /*
-           * La caché Cloud se mantiene sin descuentos provisionales.
-           * Al montar el POS reconstruimos el estado visible aplicando
-           * exactamente una vez las operaciones que viven en IndexedDB.
-           */
           persistCatalog(
             applyOfflineSalesToCatalog(
               catalogRef.current,
@@ -1698,7 +1739,10 @@ export function usePosData({
           );
         }
       } finally {
-        if (!cancelled) {
+        if (
+          !cancelled &&
+          version === loadVersion
+        ) {
           setOfflineQueueLoaded(true);
         }
       }
@@ -5017,6 +5061,167 @@ export function usePosData({
       [offlineOperations]
     );
 
+  const offlineQueueItems =
+    useMemo(
+      () =>
+        offlineOperations
+          .filter(
+            (operation) =>
+              operation?.type ===
+              "sale"
+          )
+          .map((operation) => ({
+            id:
+              operation.id,
+            saleId:
+              operation.saleId,
+            status:
+              operation.status ||
+              "pending",
+            attempts:
+              Math.max(
+                0,
+                Math.trunc(
+                  toNumber(
+                    operation.attempts
+                  )
+                )
+              ),
+            createdAt:
+              operation.createdAt ||
+              null,
+            updatedAt:
+              operation.updatedAt ||
+              null,
+            lastError:
+              operation.lastError ||
+              null,
+            total:
+              toNumber(
+                operation?.localSale
+                  ?.total
+              ),
+            itemCount:
+              Array.isArray(
+                operation?.localSale
+                  ?.items
+              )
+                ? operation.localSale
+                    .items.length
+                : 0,
+            paymentMethod:
+              String(
+                operation?.localSale
+                  ?.payment?.method ||
+                  ""
+              ).trim() ||
+              null,
+          }))
+          .sort((a, b) =>
+            String(
+              b?.createdAt ||
+                ""
+            ).localeCompare(
+              String(
+                a?.createdAt ||
+                  ""
+              )
+            )
+          ),
+      [offlineOperations]
+    );
+
+  const clearOfflineHistory =
+    useCallback(
+      async () => {
+        if (!cleanClienteId) {
+          return false;
+        }
+
+        try {
+          await clearOfflineSyncHistory(
+            cleanClienteId
+          );
+          setOfflineSyncHistory([]);
+          setOfflineLastSyncAt(null);
+          showToast(
+            "Historial local de sincronización eliminado"
+          );
+          return true;
+        } catch (error) {
+          console.error(
+            "No se pudo limpiar el historial de sincronización:",
+            error
+          );
+          showToast(
+            "No se pudo limpiar el historial local",
+            true
+          );
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        showToast,
+      ]
+    );
+
+  const rememberSyncedOperation =
+    useCallback(
+      async (operation) => {
+        if (
+          !cleanClienteId ||
+          !operation?.saleId
+        ) {
+          return;
+        }
+
+        try {
+          const localSale =
+            operation.localSale ||
+            {};
+
+          await recordOfflineSyncHistory(
+            cleanClienteId,
+            {
+              saleId:
+                operation.saleId,
+              status:
+                "synced",
+              queuedAt:
+                operation.createdAt ||
+                null,
+              createdAt:
+                new Date().toISOString(),
+              total:
+                toNumber(
+                  localSale.total
+                ),
+              itemCount:
+                Array.isArray(
+                  localSale.items
+                )
+                  ? localSale.items.length
+                  : 0,
+              paymentMethod:
+                String(
+                  localSale?.payment
+                    ?.method ||
+                    ""
+                ).trim() ||
+                null,
+            }
+          );
+        } catch (error) {
+          console.warn(
+            "No se pudo guardar el historial local de sincronización:",
+            error
+          );
+        }
+      },
+      [cleanClienteId]
+    );
+
   const persistOfflineSale =
     useCallback(
       async ({
@@ -5300,6 +5505,10 @@ export function usePosData({
               await removeOfflineOperation(
                 operation.id
               );
+
+              await rememberSyncedOperation(
+                operation
+              );
             } catch (error) {
               if (
                 isNetworkError(error)
@@ -5549,6 +5758,7 @@ export function usePosData({
         persistCatalog,
         persistCompleteCloudCache,
         persistSales,
+        rememberSyncedOperation,
       ]
     );
 
@@ -7746,7 +7956,10 @@ export function usePosData({
     offlineLastSyncAt,
     pendingOfflineCount,
     offlineAttentionCount,
+    offlineQueueItems,
+    offlineSyncHistory,
     retryOfflineSync,
+    clearOfflineHistory,
 
     migrationNeedsAdmin,
 
