@@ -341,17 +341,6 @@ export default function CuentasPorCobrar({
               account?.clienteTelefono,
               account?.concepto,
               account?.notas,
-              ...(Array.isArray(
-                account?.operaciones
-              )
-                ? account.operaciones.flatMap(
-                    (operation) => [
-                      operation?.concepto,
-                      operation?.notas,
-                      operation?.ventaId,
-                    ]
-                  )
-                : []),
             ].some(
               (value) =>
                 normalizeSearch(
@@ -835,9 +824,6 @@ export default function CuentasPorCobrar({
           <AccountDetail
             account={
               selectedAccount
-            }
-            sales={
-              pos?.sales
             }
             hasOpenCash={
               Boolean(
@@ -1430,13 +1416,8 @@ function AccountCard({
               text-white/40
             "
           >
-            {Array.isArray(
-              account?.operaciones
-            ) &&
-            account.operaciones.length > 1
-              ? `${account.operaciones.length} operaciones · Cuenta corriente`
-              : account?.concepto ||
-                "Deuda"}
+            {account?.concepto ||
+              "Deuda"}
           </p>
         </div>
 
@@ -1491,54 +1472,11 @@ function AccountCard({
 
 function AccountDetail({
   account,
-  sales,
   hasOpenCash,
   onPay,
 }) {
   const status =
     getStatusMeta(account);
-
-  const operations =
-    Array.isArray(
-      account?.operaciones
-    )
-      ? account.operaciones
-          .slice()
-          .sort(
-            (a, b) =>
-              String(
-                b?.creadoEn ||
-                b?.fechaOrigen ||
-                ""
-              ).localeCompare(
-                String(
-                  a?.creadoEn ||
-                  a?.fechaOrigen ||
-                  ""
-                )
-              )
-          )
-      : [];
-
-  const salesById =
-    useMemo(
-      () =>
-        new Map(
-          (Array.isArray(sales)
-            ? sales
-            : []
-          ).map(
-            (sale) => [
-              String(
-                sale?.id ||
-                ""
-              ),
-              sale,
-            ]
-          )
-        ),
-      [sales]
-    );
 
   const payments =
     Array.isArray(
@@ -1589,14 +1527,10 @@ function AccountDetail({
                   text-[#B98700]
                 "
               >
-                {operations.length > 1 ||
-                account?.origen ===
-                  "mixto"
-                  ? "Cuenta corriente"
-                  : account?.origen ===
-                      "venta"
-                    ? "Generada por venta"
-                    : "Alta manual"}
+                {account?.origen ===
+                "venta"
+                  ? "Generada por venta"
+                  : "Alta manual"}
               </p>
 
               <h3
@@ -1621,10 +1555,8 @@ function AccountDetail({
                   text-black/40
                 "
               >
-                {operations.length > 1
-                  ? `${operations.length} operaciones acumuladas`
-                  : account?.concepto ||
-                    "Deuda"}
+                {account?.concepto ||
+                  "Deuda"}
               </p>
             </div>
 
@@ -1657,11 +1589,7 @@ function AccountDetail({
 
       <div className="mt-3 grid grid-cols-2 gap-2.5">
         <DarkStat
-          label={
-            operations.length > 1
-              ? "Deuda acumulada"
-              : "Importe original"
-          }
+          label="Importe original"
           value={money(
             account
               ?.importeOriginal
@@ -1703,9 +1631,8 @@ function AccountDetail({
         }
       />
 
-      {operations.length <= 1 &&
-        account?.origen ===
-          "venta" &&
+      {account?.origen ===
+        "venta" &&
         account?.ventaId && (
         <DetailRow
           label="Venta vinculada"
@@ -1756,45 +1683,6 @@ function AccountDetail({
           >
             {account.notas}
           </p>
-        </div>
-      )}
-
-      {operations.length > 0 && (
-        <div className="mt-5">
-          <div className="mb-2.5 flex items-end justify-between gap-3">
-            <div>
-              <p className="text-[9px] font-extrabold uppercase tracking-[0.14em] text-[#FFC61A]">
-                Movimientos
-              </p>
-              <h4 className="mt-1 text-sm font-black text-white">
-                Operaciones de deuda
-              </h4>
-            </div>
-
-            <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[9px] font-bold text-white/40">
-              {operations.length}
-            </span>
-          </div>
-
-          <div className="space-y-2">
-            {operations.map(
-              (operation) => (
-                <DebtOperationRow
-                  key={operation.id}
-                  operation={operation}
-                  sale={
-                    operation?.ventaId
-                      ? salesById.get(
-                          String(
-                            operation.ventaId
-                          )
-                        )
-                      : null
-                  }
-                />
-              )
-            )}
-          </div>
         </div>
       )}
 
@@ -1993,125 +1881,6 @@ function AccountDetail({
   );
 }
 
-function formatDebtQuantity(value) {
-  const number = toNumber(value, 0);
-
-  return number.toLocaleString(
-    "es-AR",
-    {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 3,
-    }
-  );
-}
-
-function DebtOperationRow({
-  operation,
-  sale,
-}) {
-  const items =
-    Array.isArray(
-      sale?.items
-    )
-      ? sale.items
-      : [];
-
-  return (
-    <article className="rounded-[20px] border border-white/10 bg-white/5 p-3.5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <span className="inline-flex rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[8px] font-extrabold uppercase tracking-[0.08em] text-white/45">
-            {operation?.tipo === "venta"
-              ? "Venta a cuenta"
-              : "Deuda manual"}
-          </span>
-
-          <p className="mt-2 text-xs font-extrabold text-white">
-            {operation?.concepto ||
-              "Deuda"}
-          </p>
-
-          <p className="mt-1 text-[10px] font-semibold text-white/35">
-            {formatDateOnly(
-              operation?.fechaOrigen
-            )}
-            {operation?.vencimiento
-              ? ` · Vence ${formatDateOnly(operation.vencimiento)}`
-              : ""}
-          </p>
-        </div>
-
-        <strong className="shrink-0 text-sm font-black text-[#FFC61A]">
-          {money(
-            operation?.importe
-          )}
-        </strong>
-      </div>
-
-      {operation?.ventaId && (
-        <p className="mt-2 text-[9px] font-bold text-white/30">
-          Venta #{operation.ventaId}
-        </p>
-      )}
-
-      {items.length > 0 && (
-        <div className="mt-2.5 space-y-1.5 rounded-xl border border-white/[0.07] bg-black/10 p-2.5">
-          {items
-            .slice(0, 8)
-            .map(
-              (item, index) => {
-                const subtotal =
-                  Number.isFinite(
-                    Number(
-                      item?.subtotal
-                    )
-                  )
-                    ? Number(
-                        item.subtotal
-                      )
-                    : toNumber(
-                        item?.qty
-                      ) *
-                      toNumber(
-                        item?.price
-                      );
-
-                return (
-                  <div
-                    key={`${operation.id}-${item?.barcode || index}`}
-                    className="flex items-start justify-between gap-3 text-[10px]"
-                  >
-                    <span className="min-w-0 flex-1 truncate font-semibold text-white/50">
-                      {formatDebtQuantity(
-                        item?.qty
-                      )}× {item?.name ||
-                        "Producto"}
-                    </span>
-                    <span className="shrink-0 font-extrabold text-white/55">
-                      {money(subtotal)}
-                    </span>
-                  </div>
-                );
-              }
-            )}
-
-          {items.length > 8 && (
-            <p className="pt-1 text-[9px] font-semibold text-white/30">
-              +{items.length - 8} productos más
-            </p>
-          )}
-        </div>
-      )}
-
-      {operation?.notas && (
-        <p className="mt-2 whitespace-pre-wrap text-[10px] leading-4 text-white/40">
-          {operation.notas}
-        </p>
-      )}
-    </article>
-  );
-}
-
 function PaymentHistoryRow({
   payment,
 }) {
@@ -2224,7 +1993,7 @@ function RegisterPaymentForm({
   const [saving, setSaving] =
     useState(false);
 
-  const paymentAmount =
+  const tenderedAmount =
     roundMoney(
       toNumber(
         amount,
@@ -2232,15 +2001,46 @@ function RegisterPaymentForm({
       )
     );
 
+  const paymentAmount =
+    method === "efectivo"
+      ? roundMoney(
+          Math.min(
+            Math.max(
+              0,
+              tenderedAmount
+            ),
+            balance
+          )
+        )
+      : tenderedAmount;
+
+  const changeAmount =
+    method === "efectivo" &&
+    Number.isFinite(
+      tenderedAmount
+    )
+      ? roundMoney(
+          Math.max(
+            0,
+            tenderedAmount -
+              balance
+          )
+        )
+      : 0;
+
   const valid =
     Boolean(
       pos?.openSession &&
       Number.isFinite(
-        paymentAmount
+        tenderedAmount
       ) &&
+      tenderedAmount > 0 &&
       paymentAmount > 0 &&
-      paymentAmount <=
-        balance
+      (
+        method === "efectivo" ||
+        tenderedAmount <=
+          balance
+      )
     );
 
   async function handleSubmit(
@@ -2273,12 +2073,20 @@ function RegisterPaymentForm({
       const ok =
         await pos
           .registerReceivablePayment(
-            account.id,
+            account,
             {
               importe:
                 paymentAmount,
               metodoPago:
                 method,
+              efectivoRecibido:
+                method === "efectivo"
+                  ? tenderedAmount
+                  : null,
+              vuelto:
+                method === "efectivo"
+                  ? changeAmount
+                  : 0,
             }
           );
 
@@ -2364,7 +2172,11 @@ function RegisterPaymentForm({
       </div>
 
       <FormField
-        label="Importe a cobrar"
+        label={
+          method === "efectivo"
+            ? "Efectivo recibido"
+            : "Importe a cobrar"
+        }
         required
       >
         <div className="relative">
@@ -2386,7 +2198,11 @@ function RegisterPaymentForm({
           <input
             type="number"
             min="0.01"
-            max={balance}
+            max={
+              method === "efectivo"
+                ? undefined
+                : balance
+            }
             step="0.01"
             inputMode="decimal"
             value={amount}
@@ -2448,25 +2264,83 @@ function RegisterPaymentForm({
         </div>
       </div>
 
-      {paymentAmount >
-        balance && (
-        <p
-          className="
-            mb-3
-            rounded-xl
-            border
-            border-red-400/20
-            bg-red-500/10
-            px-3
-            py-2.5
-            text-xs
-            font-semibold
-            text-red-200
-          "
-        >
-          El pago no puede superar el saldo pendiente.
-        </p>
-      )}
+      {method !== "efectivo" &&
+        tenderedAmount >
+          balance && (
+          <p
+            className="
+              mb-3
+              rounded-xl
+              border
+              border-red-400/20
+              bg-red-500/10
+              px-3
+              py-2.5
+              text-xs
+              font-semibold
+              text-red-200
+            "
+          >
+            El pago no puede superar el saldo pendiente.
+          </p>
+        )}
+
+      {method === "efectivo" &&
+        changeAmount > 0 && (
+          <div
+            className="
+              mb-4
+              rounded-2xl
+              border
+              border-[#FFC61A]/25
+              bg-[#FFC61A]/10
+              px-4
+              py-3.5
+            "
+          >
+            <div
+              className="
+                flex
+                items-center
+                justify-between
+                gap-3
+              "
+            >
+              <span
+                className="
+                  text-xs
+                  font-bold
+                  text-white/55
+                "
+              >
+                Vuelto
+              </span>
+
+              <span
+                className="
+                  text-lg
+                  font-black
+                  text-[#FFC61A]
+                "
+              >
+                {money(
+                  changeAmount
+                )}
+              </span>
+            </div>
+
+            <p
+              className="
+                mt-1
+                text-[11px]
+                font-semibold
+                text-white/35
+              "
+            >
+              Se aplicarán {money(balance)} a la deuda.
+            </p>
+          </div>
+        )}
 
       <div className="grid grid-cols-2 gap-2.5">
         <button

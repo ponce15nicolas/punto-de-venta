@@ -10405,6 +10405,48 @@ exports.registrarPagoCuentaPorCobrar =
                     "cuentaId"
                 );
 
+            const rawCuentaIds =
+                Array.isArray(
+                    request.data
+                        ?.cuentaIds
+                )
+                    ? request.data
+                        .cuentaIds
+                    : [];
+
+            const cuentaIds = [
+                cuentaId,
+                ...rawCuentaIds,
+            ]
+                .map(
+                    (value) =>
+                        validarId(
+                            value,
+                            "cuentaId"
+                        )
+                )
+                .filter(
+                    (
+                        value,
+                        index,
+                        values
+                    ) =>
+                        values.indexOf(
+                            value
+                        ) ===
+                        index
+                );
+
+            if (
+                cuentaIds.length >
+                50
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Hay demasiadas cuentas agrupadas para registrar el cobro."
+                );
+            }
+
             const importe =
                 redondearDineroCuentaPorCobrar(
                     request.data
@@ -10446,14 +10488,55 @@ exports.registrarPagoCuentaPorCobrar =
                 );
             }
 
-            const cuentaRef =
-                clienteRef
-                    .collection(
-                        "cuentasPorCobrar"
+            const efectivoRecibido =
+                metodoPago ===
+                    "efectivo"
+                    ? redondearDineroCuentaPorCobrar(
+                        request.data
+                            ?.pago
+                            ?.efectivoRecibido ??
+                        importe
                     )
-                    .doc(
-                        cuentaId
-                    );
+                    : importe;
+
+            const vuelto =
+                metodoPago ===
+                    "efectivo"
+                    ? redondearDineroCuentaPorCobrar(
+                        Math.max(
+                            0,
+                            efectivoRecibido -
+                            importe
+                        )
+                    )
+                    : 0;
+
+            if (
+                metodoPago ===
+                    "efectivo" &&
+                (
+                    !Number.isFinite(
+                        efectivoRecibido
+                    ) ||
+                    efectivoRecibido <
+                        importe
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El efectivo recibido no puede ser menor al importe aplicado."
+                );
+            }
+
+            const cuentaRefs =
+                cuentaIds.map(
+                    (id) =>
+                        clienteRef
+                            .collection(
+                                "cuentasPorCobrar"
+                            )
+                            .doc(id)
+                );
 
             const result =
                 await db.runTransaction(
@@ -10486,27 +10569,30 @@ exports.registrarPagoCuentaPorCobrar =
                                     sessionId
                                 );
 
-                        const [
-                            cuentaSnap,
-                            sessionSnap,
-                        ] =
+                        const snapshots =
                             await Promise.all([
-                                transaction.get(
-                                    cuentaRef
+                                ...cuentaRefs.map(
+                                    (ref) =>
+                                        transaction.get(
+                                            ref
+                                        )
                                 ),
                                 transaction.get(
                                     sessionRef
                                 ),
                             ]);
 
-                        if (
-                            !cuentaSnap.exists
-                        ) {
-                            throw new HttpsError(
-                                "not-found",
-                                "La cuenta por cobrar no existe."
+                        const sessionSnap =
+                            snapshots[
+                                snapshots.length -
+                                1
+                            ];
+
+                        const cuentaSnaps =
+                            snapshots.slice(
+                                0,
+                                -1
                             );
-                        }
 
                         if (
                             !sessionSnap.exists ||
@@ -10524,22 +10610,60 @@ exports.registrarPagoCuentaPorCobrar =
                             );
                         }
 
-                        const cuenta =
-                            cuentaSnap.data() ||
-                            {};
+                        const cuentasActivas =
+                            cuentaSnaps
+                                .map(
+                                    (
+                                        snap,
+                                        index
+                                    ) => {
+                                        if (
+                                            !snap.exists
+                                        ) {
+                                            return null;
+                                        }
 
-                        const saldoAnterior =
-                            redondearDineroCuentaPorCobrar(
-                                cuenta
-                                    .saldoPendiente
-                            );
+                                        const data =
+                                            snap.data() ||
+                                            {};
+
+                                        const saldo =
+                                            redondearDineroCuentaPorCobrar(
+                                                data
+                                                    .saldoPendiente
+                                            );
+
+                                        if (
+                                            data.estado ===
+                                                "pagado" ||
+                                            data.estado ===
+                                                "cancelado" ||
+                                            saldo <= 0
+                                        ) {
+                                            return null;
+                                        }
+
+                                        return {
+                                            id:
+                                                cuentaIds[
+                                                    index
+                                                ],
+                                            ref:
+                                                cuentaRefs[
+                                                    index
+                                                ],
+                                            data,
+                                            saldo,
+                                        };
+                                    }
+                                )
+                                .filter(
+                                    Boolean
+                                );
 
                         if (
-                            cuenta.estado ===
-                                "pagado" ||
-                            cuenta.estado ===
-                                "cancelado" ||
-                            saldoAnterior <= 0
+                            cuentasActivas.length ===
+                            0
                         ) {
                             throw new HttpsError(
                                 "failed-precondition",
@@ -10551,77 +10675,70 @@ exports.registrarPagoCuentaPorCobrar =
                             );
                         }
 
+                        const clienteClave =
+                            normalizarClaveClienteCuentaPorCobrar(
+                                cuentasActivas[0]
+                                    .data
+                                    .clienteNombre
+                            );
+
+                        const mismasPersonas =
+                            cuentasActivas.every(
+                                (item) =>
+                                    normalizarClaveClienteCuentaPorCobrar(
+                                        item.data
+                                            .clienteNombre
+                                    ) ===
+                                    clienteClave
+                            );
+
+                        if (
+                            !clienteClave ||
+                            !mismasPersonas
+                        ) {
+                            throw new HttpsError(
+                                "invalid-argument",
+                                "Las cuentas agrupadas no pertenecen al mismo cliente."
+                            );
+                        }
+
+                        const saldoAnteriorTotal =
+                            redondearDineroCuentaPorCobrar(
+                                cuentasActivas.reduce(
+                                    (
+                                        total,
+                                        item
+                                    ) =>
+                                        total +
+                                        item.saldo,
+                                    0
+                                )
+                            );
+
                         if (
                             importe >
-                            saldoAnterior
+                            saldoAnteriorTotal
                         ) {
                             throw new HttpsError(
                                 "invalid-argument",
                                 "El pago no puede superar el saldo pendiente.",
                                 {
                                     saldoPendiente:
-                                        saldoAnterior,
+                                        saldoAnteriorTotal,
                                 }
                             );
                         }
 
-                        const pagosAnteriores =
-                            Array.isArray(
-                                cuenta.pagos
-                            )
-                                ? cuenta.pagos
-                                : [];
-
-                        if (
-                            pagosAnteriores.length >=
-                            1000
-                        ) {
-                            throw new HttpsError(
-                                "resource-exhausted",
-                                "Esta cuenta alcanzó el máximo de pagos registrados."
-                            );
-                        }
-
-                        const saldoRestante =
-                            redondearDineroCuentaPorCobrar(
-                                Math.max(
-                                    0,
-                                    saldoAnterior -
-                                    importe
-                                )
-                            );
-
-                        const totalPagado =
-                            redondearDineroCuentaPorCobrar(
-                                Number(
-                                    cuenta.totalPagado ||
-                                    0
-                                ) +
-                                importe
-                            );
-
-                        const estadoNuevo =
-                            saldoRestante <= 0
-                                ? "pagado"
-                                : "parcial";
-
-                        const clienteClave =
-                            normalizarClaveClienteCuentaPorCobrar(
-                                cuenta.clienteNombre
-                            );
                         const indexRef =
-                            clienteClave
-                                ? cuentaPorCobrarIndexRef(
-                                    clienteRef,
-                                    clienteClave
-                                )
-                                : null;
+                            cuentaPorCobrarIndexRef(
+                                clienteRef,
+                                clienteClave
+                            );
+
                         const indexSnap =
-                            indexRef
-                                ? await transaction.get(
-                                    indexRef
-                                )
-                                : null;
+                            await transaction.get(
+                                indexRef
+                            );
 
                         const operadorNombre =
                             textoSeguro(
@@ -10637,86 +10754,237 @@ exports.registrarPagoCuentaPorCobrar =
                                     .rol
                             );
 
-                        const pagoId =
+                        const pagoGrupoId =
                             crypto.randomUUID();
 
                         const fecha =
                             admin.firestore.Timestamp.now();
 
-                        const pago = {
-                            id:
-                                pagoId,
+                        let pendiente =
+                            importe;
 
-                            importe,
+                        const pagosAplicados =
+                            [];
 
-                            metodoPago,
+                        const cuentasActualizadas =
+                            [];
 
-                            sessionId,
-
-                            fecha,
-
-                            deviceId,
-
-                            operador: {
-                                operadorId:
-                                    operadorAutorizado
-                                        .id,
-
-                                operadorNombre,
-
-                                operadorRol,
-                            },
-                        };
-
-                        transaction.update(
-                            cuentaRef,
-                            {
-                                pagos: [
-                                    ...pagosAnteriores,
-                                    pago,
-                                ],
-
-                                totalPagado,
-
-                                saldoPendiente:
-                                    saldoRestante,
-
-                                estado:
-                                    estadoNuevo,
-
-                                ultimoPagoEn:
-                                    fecha,
-
-                                actualizadoEn:
-                                    admin.firestore.FieldValue.serverTimestamp(),
-                            }
-                        );
-
-                        if (
-                            saldoRestante <= 0 &&
-                            indexRef &&
-                            textoSeguro(
-                                indexSnap?.data()?.cuentaActivaId,
-                                180
-                            ) === cuentaRef.id
+                        for (
+                            let index = 0;
+                            index <
+                            cuentasActivas.length;
+                            index += 1
                         ) {
-                            transaction.set(
-                                indexRef,
+                            const item =
+                                cuentasActivas[
+                                    index
+                                ];
+
+                            if (
+                                pendiente <= 0
+                            ) {
+                                cuentasActualizadas.push({
+                                    id:
+                                        item.id,
+                                    saldoPendiente:
+                                        item.saldo,
+                                    estado:
+                                        item.data
+                                            .estado,
+                                });
+                                continue;
+                            }
+
+                            const aplicado =
+                                redondearDineroCuentaPorCobrar(
+                                    Math.min(
+                                        pendiente,
+                                        item.saldo
+                                    )
+                                );
+
+                            if (
+                                aplicado <= 0
+                            ) {
+                                continue;
+                            }
+
+                            const pagosAnteriores =
+                                Array.isArray(
+                                    item.data
+                                        .pagos
+                                )
+                                    ? item.data
+                                        .pagos
+                                    : [];
+
+                            if (
+                                pagosAnteriores.length >=
+                                1000
+                            ) {
+                                throw new HttpsError(
+                                    "resource-exhausted",
+                                    "Esta cuenta alcanzó el máximo de pagos registrados."
+                                );
+                            }
+
+                            const saldoRestante =
+                                redondearDineroCuentaPorCobrar(
+                                    Math.max(
+                                        0,
+                                        item.saldo -
+                                        aplicado
+                                    )
+                                );
+
+                            const totalPagado =
+                                redondearDineroCuentaPorCobrar(
+                                    Number(
+                                        item.data
+                                            .totalPagado ||
+                                        0
+                                    ) +
+                                    aplicado
+                                );
+
+                            const estadoNuevo =
+                                saldoRestante <= 0
+                                    ? "pagado"
+                                    : "parcial";
+
+                            const pagoId =
+                                cuentaIds.length >
+                                    1
+                                    ? `${pagoGrupoId}_${index + 1}`
+                                    : pagoGrupoId;
+
+                            const pago = {
+                                id:
+                                    pagoId,
+
+                                grupoPagoId:
+                                    pagoGrupoId,
+
+                                importe:
+                                    aplicado,
+
+                                metodoPago,
+
+                                efectivoRecibido:
+                                    index === 0
+                                        ? efectivoRecibido
+                                        : null,
+
+                                vuelto:
+                                    index === 0
+                                        ? vuelto
+                                        : 0,
+
+                                sessionId,
+
+                                fecha,
+
+                                deviceId,
+
+                                operador: {
+                                    operadorId:
+                                        operadorAutorizado
+                                            .id,
+
+                                    operadorNombre,
+
+                                    operadorRol,
+                                },
+                            };
+
+                            transaction.update(
+                                item.ref,
                                 {
-                                    clienteClave,
-                                    clienteNombre:
-                                        textoSeguro(
-                                            cuenta.clienteNombre,
-                                            120
-                                        ),
-                                    cuentaActivaId:
-                                        null,
+                                    pagos: [
+                                        ...pagosAnteriores,
+                                        pago,
+                                    ],
+
+                                    totalPagado,
+
+                                    saldoPendiente:
+                                        saldoRestante,
+
+                                    estado:
+                                        estadoNuevo,
+
+                                    ultimoPagoEn:
+                                        fecha,
+
                                     actualizadoEn:
                                         admin.firestore.FieldValue.serverTimestamp(),
-                                },
-                                { merge: true }
+                                }
+                            );
+
+                            pagosAplicados.push(
+                                pago
+                            );
+
+                            cuentasActualizadas.push({
+                                id:
+                                    item.id,
+                                totalPagado,
+                                saldoPendiente:
+                                    saldoRestante,
+                                estado:
+                                    estadoNuevo,
+                            });
+
+                            pendiente =
+                                redondearDineroCuentaPorCobrar(
+                                    pendiente -
+                                    aplicado
+                                );
+                        }
+
+                        if (
+                            pendiente > 0
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "No se pudo distribuir el pago completo entre las cuentas pendientes."
                             );
                         }
+
+                        const saldoRestanteTotal =
+                            redondearDineroCuentaPorCobrar(
+                                saldoAnteriorTotal -
+                                importe
+                            );
+
+                        const cuentaActivaRestante =
+                            cuentasActualizadas.find(
+                                (item) =>
+                                    item
+                                        .saldoPendiente >
+                                    0
+                            );
+
+                        transaction.set(
+                            indexRef,
+                            {
+                                clienteClave,
+                                clienteNombre:
+                                    textoSeguro(
+                                        cuentasActivas[0]
+                                            .data
+                                            .clienteNombre,
+                                        120
+                                    ),
+                                cuentaActivaId:
+                                    cuentaActivaRestante
+                                        ?.id ||
+                                    null,
+                                actualizadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            },
+                            { merge: true }
+                        );
 
                         const sessionData =
                             sessionSnap.data() ||
@@ -10824,31 +11092,53 @@ exports.registrarPagoCuentaPorCobrar =
 
                                     cuentaId,
 
-                                    pagoId,
+                                    cuentaIds,
+
+                                    pagoId:
+                                        pagoGrupoId,
 
                                     clienteNombre:
                                         textoSeguro(
-                                            cuenta
+                                            cuentasActivas[0]
+                                                .data
                                                 .clienteNombre,
                                             120
                                         ),
 
                                     concepto:
-                                        textoSeguro(
-                                            cuenta
-                                                .concepto,
-                                            180
-                                        ),
+                                        cuentaIds.length >
+                                            1
+                                            ? "Cuenta corriente agrupada"
+                                            : textoSeguro(
+                                                cuentasActivas[0]
+                                                    .data
+                                                    .concepto,
+                                                180
+                                            ),
 
                                     importe,
 
                                     metodoPago,
 
-                                    saldoAnterior,
+                                    efectivoRecibido:
+                                        metodoPago ===
+                                            "efectivo"
+                                            ? efectivoRecibido
+                                            : null,
 
-                                    saldoRestante,
+                                    vuelto,
 
-                                    estadoNuevo,
+                                    saldoAnterior:
+                                        saldoAnteriorTotal,
+
+                                    saldoRestante:
+                                        saldoRestanteTotal,
+
+                                    estadoNuevo:
+                                        saldoRestanteTotal <=
+                                            0
+                                            ? "pagado"
+                                            : "parcial",
                                 },
                             });
 
@@ -10858,8 +11148,8 @@ exports.registrarPagoCuentaPorCobrar =
                         );
 
                         if (
-                            estadoNuevo ===
-                            "pagado"
+                            saldoRestanteTotal <=
+                            0
                         ) {
                             const eventoSaldada =
                                 crearEventoAuditoria({
@@ -10882,22 +11172,24 @@ exports.registrarPagoCuentaPorCobrar =
 
                                         cuentaId,
 
-                                        pagoId,
+                                        cuentaIds,
+
+                                        pagoId:
+                                            pagoGrupoId,
 
                                         clienteNombre:
                                             textoSeguro(
-                                                cuenta
+                                                cuentasActivas[0]
+                                                    .data
                                                     .clienteNombre,
                                                 120
                                             ),
 
                                         importeOriginal:
-                                            redondearDineroCuentaPorCobrar(
-                                                cuenta
-                                                    .importeOriginal
-                                            ),
+                                            saldoAnteriorTotal,
 
-                                        totalPagado,
+                                        totalPagado:
+                                            importe,
                                     },
                                 });
 
@@ -10909,7 +11201,25 @@ exports.registrarPagoCuentaPorCobrar =
 
                         return {
                             pago: {
-                                ...pago,
+                                id:
+                                    pagoGrupoId,
+
+                                grupoPagoId:
+                                    pagoGrupoId,
+
+                                importe,
+
+                                metodoPago,
+
+                                efectivoRecibido:
+                                    metodoPago ===
+                                        "efectivo"
+                                        ? efectivoRecibido
+                                        : null,
+
+                                vuelto,
+
+                                sessionId,
 
                                 fecha:
                                     fecha
@@ -10921,14 +11231,28 @@ exports.registrarPagoCuentaPorCobrar =
                                 id:
                                     cuentaId,
 
-                                totalPagado,
+                                cuentaIds,
 
                                 saldoPendiente:
-                                    saldoRestante,
+                                    saldoRestanteTotal,
 
                                 estado:
-                                    estadoNuevo,
+                                    saldoRestanteTotal <=
+                                        0
+                                        ? "pagado"
+                                        : "parcial",
                             },
+
+                            pagosAplicados:
+                                pagosAplicados.map(
+                                    (pago) => ({
+                                        ...pago,
+                                        fecha:
+                                            fecha
+                                                .toDate()
+                                                .toISOString(),
+                                    })
+                                ),
                         };
                     }
                 );

@@ -5134,17 +5134,7 @@ export function usePosData({
   const clearOfflineHistory =
     useCallback(
       async () => {
-        if (
-          !cleanClienteId ||
-          !operadorEsAdministrador
-        ) {
-          if (!operadorEsAdministrador) {
-            showToast(
-              "Solo un administrador puede limpiar este historial",
-              true
-            );
-          }
-
+        if (!cleanClienteId) {
           return false;
         }
 
@@ -5172,7 +5162,6 @@ export function usePosData({
       },
       [
         cleanClienteId,
-        operadorEsAdministrador,
         showToast,
       ]
     );
@@ -7754,22 +7743,18 @@ export function usePosData({
         }
 
         try {
-          const created =
-            await createManualReceivableCloud(
-              cleanClienteId,
-              payload,
-              {
-                operadorSesion,
-                deviceId:
-                  cleanDeviceId,
-              }
-            );
+          await createManualReceivableCloud(
+            cleanClienteId,
+            payload,
+            {
+              operadorSesion,
+              deviceId:
+                cleanDeviceId,
+            }
+          );
 
           showToast(
-            created
-              ?.agrupadaEnCuentaExistente
-              ? "Deuda agregada a la cuenta del cliente"
-              : "Deuda registrada"
+            "Deuda registrada"
           );
 
           return true;
@@ -7805,7 +7790,7 @@ export function usePosData({
   const registerReceivablePayment =
     useCallback(
       async (
-        cuentaId,
+        accountOrId,
         payload
       ) => {
         if (
@@ -7840,11 +7825,56 @@ export function usePosData({
           return false;
         }
 
+        const account =
+          accountOrId &&
+          typeof accountOrId ===
+            "object"
+            ? accountOrId
+            : null;
+
+        const cuentaId =
+          String(
+            account?.id ||
+            accountOrId ||
+            ""
+          ).trim();
+
+        if (!cuentaId) {
+          showToast(
+            "No se encontró la cuenta por cobrar",
+            true
+          );
+
+          return false;
+        }
+
+        const cuentaIds =
+          Array.isArray(
+            account?.cuentaIds
+          ) &&
+          account
+            .cuentaIds
+            .length > 0
+            ? account
+                .cuentaIds
+                .map(
+                  (id) =>
+                    String(
+                      id ||
+                      ""
+                    ).trim()
+                )
+                .filter(Boolean)
+            : [cuentaId];
+
         try {
           await registerReceivablePaymentCloud(
             cleanClienteId,
             cuentaId,
-            payload,
+            {
+              ...payload,
+              cuentaIds,
+            },
             {
               operadorSesion,
               deviceId:
@@ -7853,7 +7883,9 @@ export function usePosData({
           );
 
           showToast(
-            "Pago registrado"
+            cuentaIds.length > 1
+              ? "Pago aplicado a la cuenta agrupada"
+              : "Pago registrado"
           );
 
           return true;
