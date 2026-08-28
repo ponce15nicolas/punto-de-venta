@@ -338,7 +338,13 @@ function PosApp({ license }) {
     }
 
     function navigateTo(nextTab) {
-      if (!nextTab) {
+      if (
+        !nextTab ||
+        (
+          nextTab === "ganancias" &&
+          !operadorEsAdministrador
+        )
+      ) {
         return;
       }
 
@@ -439,7 +445,19 @@ function PosApp({ license }) {
       clearPendingNotebookShortcut();
       resetScannerBurst();
     };
-  }, []);
+  }, [operadorEsAdministrador]);
+
+  useEffect(() => {
+    if (
+      !operadorEsAdministrador &&
+      tab === "ganancias"
+    ) {
+      setTab("vender");
+    }
+  }, [
+    operadorEsAdministrador,
+    tab,
+  ]);
 
   function handleToggleTheme() {
     setTheme((current) => {
@@ -695,7 +713,8 @@ function PosApp({ license }) {
               <Compras pos={pos} />
             )}
 
-            {tab === "ganancias" && (
+            {tab === "ganancias" &&
+              operadorEsAdministrador && (
               <Ganancias pos={pos} />
             )}
 

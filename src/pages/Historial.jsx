@@ -1055,6 +1055,29 @@ function getAuditDetailRows(event) {
               `#${detail.ventaId}`,
             ]]
           : []),
+        ...(detail.agrupadaEnCuentaExistente
+          ? [[
+              "Cuenta",
+              "Agregada a cuenta existente",
+            ]]
+          : []),
+        ...(detail.saldoPendiente !==
+        undefined
+          ? [[
+              "Saldo pendiente",
+              money(
+                detail.saldoPendiente
+              ),
+            ]]
+          : []),
+        ...(detail.operaciones
+          ? [[
+              "Operaciones",
+              String(
+                detail.operaciones
+              ),
+            ]]
+          : []),
       ];
 
     case "cobro-cuenta-por-cobrar":

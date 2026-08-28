@@ -5134,7 +5134,17 @@ export function usePosData({
   const clearOfflineHistory =
     useCallback(
       async () => {
-        if (!cleanClienteId) {
+        if (
+          !cleanClienteId ||
+          !operadorEsAdministrador
+        ) {
+          if (!operadorEsAdministrador) {
+            showToast(
+              "Solo un administrador puede limpiar este historial",
+              true
+            );
+          }
+
           return false;
         }
 
@@ -5162,6 +5172,7 @@ export function usePosData({
       },
       [
         cleanClienteId,
+        operadorEsAdministrador,
         showToast,
       ]
     );
@@ -7743,18 +7754,22 @@ export function usePosData({
         }
 
         try {
-          await createManualReceivableCloud(
-            cleanClienteId,
-            payload,
-            {
-              operadorSesion,
-              deviceId:
-                cleanDeviceId,
-            }
-          );
+          const created =
+            await createManualReceivableCloud(
+              cleanClienteId,
+              payload,
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
 
           showToast(
-            "Deuda registrada"
+            created
+              ?.agrupadaEnCuentaExistente
+              ? "Deuda agregada a la cuenta del cliente"
+              : "Deuda registrada"
           );
 
           return true;

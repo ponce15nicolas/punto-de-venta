@@ -1334,6 +1334,84 @@ function normalizeSaleItems(
    NORMALIZAR CUENTA POR COBRAR
 ========================================================= */
 
+function normalizeReceivableOperation(
+  operation,
+  index
+) {
+  const tipo =
+    operation?.tipo === "venta"
+      ? "venta"
+      : "manual";
+
+  const importe =
+    roundMoney(
+      toNumber(
+        operation?.importe
+      )
+    );
+
+  if (
+    !Number.isFinite(importe) ||
+    importe <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    id:
+      String(
+        operation?.id ||
+        `operacion_${index}`
+      ).trim(),
+
+    tipo,
+    importe,
+
+    fechaOrigen:
+      String(
+        operation?.fechaOrigen ||
+        ""
+      ).trim() || null,
+
+    vencimiento:
+      String(
+        operation?.vencimiento ||
+        ""
+      ).trim() || null,
+
+    concepto:
+      String(
+        operation?.concepto ||
+        (tipo === "venta"
+          ? "Venta a cuenta"
+          : "Deuda")
+      ).trim(),
+
+    notas:
+      String(
+        operation?.notas ||
+        ""
+      ).trim(),
+
+    ventaId:
+      String(
+        operation?.ventaId ||
+        ""
+      ).trim() || null,
+
+    sessionIdOrigen:
+      String(
+        operation?.sessionIdOrigen ||
+        ""
+      ).trim() || null,
+
+    creadoEn:
+      timestampToIsoString(
+        operation?.creadoEn
+      ),
+  };
+}
+
 function normalizeCuentaPorCobrarFromCloud(
   data,
   documentId
@@ -1380,6 +1458,93 @@ function normalizeCuentaPorCobrarFromCloud(
           ? "parcial"
           : "pendiente";
 
+  const fallbackOperation =
+    importeOriginal > 0
+      ? {
+          id:
+            data?.origen === "venta" &&
+            data?.ventaId
+              ? `venta_${data.ventaId}`
+              : `legacy_${documentId}`,
+          tipo:
+            data?.origen === "venta"
+              ? "venta"
+              : "manual",
+          importe:
+            importeOriginal,
+          fechaOrigen:
+            data?.fechaOrigen ||
+            null,
+          vencimiento:
+            data?.vencimiento ||
+            null,
+          concepto:
+            data?.concepto ||
+            "Deuda",
+          notas:
+            data?.notas ||
+            "",
+          ventaId:
+            data?.ventaId ||
+            null,
+          sessionIdOrigen:
+            data?.sessionIdOrigen ||
+            null,
+          creadoEn:
+            data?.creadoEn ||
+            null,
+        }
+      : null;
+
+  const rawOperations =
+    Array.isArray(
+      data?.operaciones
+    ) &&
+    data.operaciones.length > 0
+      ? data.operaciones
+      : fallbackOperation
+        ? [fallbackOperation]
+        : [];
+
+  const operaciones =
+    rawOperations
+      .map(
+        normalizeReceivableOperation
+      )
+      .filter(Boolean)
+      .sort(
+        (a, b) =>
+          String(
+            a?.creadoEn ||
+            a?.fechaOrigen ||
+            ""
+          ).localeCompare(
+            String(
+              b?.creadoEn ||
+              b?.fechaOrigen ||
+              ""
+            )
+          )
+      );
+
+  const origen =
+    data?.origen === "mixto"
+      ? "mixto"
+      : data?.origen === "venta"
+        ? "venta"
+        : data?.origen === "manual"
+          ? "manual"
+          : new Set(
+              operaciones.map(
+                (operation) =>
+                  operation.tipo
+              )
+            ).size > 1
+            ? "mixto"
+            : operaciones[0]
+                ?.tipo ||
+              "manual";
+
   return {
     id: documentId,
 
@@ -1387,6 +1552,12 @@ function normalizeCuentaPorCobrarFromCloud(
       String(
         data?.clienteNombre ||
         "Cliente"
+      ).trim(),
+
+    clienteClave:
+      String(
+        data?.clienteClave ||
+        ""
       ).trim(),
 
     clienteTelefono:
@@ -1407,11 +1578,7 @@ function normalizeCuentaPorCobrarFromCloud(
         ""
       ).trim(),
 
-    origen:
-      data?.origen ===
-      "venta"
-        ? "venta"
-        : "manual",
+    origen,
 
     ventaId:
       String(
@@ -1435,6 +1602,7 @@ function normalizeCuentaPorCobrarFromCloud(
     totalPagado,
     saldoPendiente,
     estado,
+    operaciones,
 
     creadoEn:
       timestampToIsoString(

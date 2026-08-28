@@ -928,6 +928,27 @@ function getEventDetails(event) {
           value: d.ventaId,
         },
         {
+          label: "Cuenta",
+          value:
+            d.agrupadaEnCuentaExistente
+              ? "Agregada a cuenta existente"
+              : "Nueva cuenta",
+        },
+        {
+          label: "Saldo pendiente",
+          value:
+            d.saldoPendiente !==
+            undefined
+              ? formatMoney(
+                  d.saldoPendiente
+                )
+              : null,
+        },
+        {
+          label: "Operaciones",
+          value: d.operaciones,
+        },
+        {
           label: "Vencimiento",
           value: formatDateOnly(
             d.vencimiento

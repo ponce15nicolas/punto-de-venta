@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import Modal from "./Modal";
+import { useOperator } from "./OperatorGate";
 import { money } from "../lib/format";
 
 const PAYMENT_LABELS = {
@@ -35,6 +36,7 @@ export default function SyncCenterModal({
   onClose,
   pos,
 }) {
+  const { esAdministrador } = useOperator();
   const [retrying, setRetrying] = useState(false);
   const [clearing, setClearing] = useState(false);
 
@@ -102,7 +104,13 @@ export default function SyncCenterModal({
   }
 
   async function handleClearHistory() {
-    if (clearing || history.length === 0) return;
+    if (
+      !esAdministrador ||
+      clearing ||
+      history.length === 0
+    ) {
+      return;
+    }
 
     const confirmed = window.confirm(
       "¿Limpiar el historial local de sincronización? Esto no elimina ventas ni datos guardados en Firebase."
@@ -227,7 +235,8 @@ export default function SyncCenterModal({
               <h3 className="mt-0.5 text-sm font-black">Historial reciente</h3>
             </div>
 
-            {history.length > 0 && (
+            {esAdministrador &&
+              history.length > 0 && (
               <button
                 type="button"
                 onClick={handleClearHistory}

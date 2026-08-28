@@ -9874,6 +9874,158 @@ function validarFechaCuentaPorCobrar(
     return clean;
 }
 
+function normalizarClaveClienteCuentaPorCobrar(value) {
+    return textoSeguro(value, 120)
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLocaleLowerCase("es-AR")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function cuentaPorCobrarEstaActiva(data) {
+    const saldo = redondearDineroCuentaPorCobrar(data?.saldoPendiente);
+
+    return (
+        data?.estado !== "pagado" &&
+        data?.estado !== "cancelado" &&
+        Number.isFinite(saldo) &&
+        saldo > 0
+    );
+}
+
+function cuentaPorCobrarIndexRef(clienteRef, clienteClave) {
+    const id = crypto
+        .createHash("sha256")
+        .update(clienteClave)
+        .digest("hex")
+        .slice(0, 48);
+
+    return clienteRef.collection("cuentasPorCobrarClientes").doc(id);
+}
+
+function operacionesCuentaPorCobrarExistentes(data, cuentaId) {
+    if (Array.isArray(data?.operaciones) && data.operaciones.length > 0) {
+        return data.operaciones.slice();
+    }
+
+    const importe = redondearDineroCuentaPorCobrar(data?.importeOriginal);
+
+    if (!Number.isFinite(importe) || importe <= 0) {
+        return [];
+    }
+
+    const tipo = data?.origen === "venta" ? "venta" : "manual";
+    const ventaId = textoSeguro(data?.ventaId, 180) || null;
+
+    return [
+        {
+            id:
+                tipo === "venta" && ventaId
+                    ? `venta_${ventaId}`
+                    : `legacy_${cuentaId}`,
+            tipo,
+            importe,
+            fechaOrigen: textoSeguro(data?.fechaOrigen, 20) || null,
+            vencimiento: textoSeguro(data?.vencimiento, 20) || null,
+            concepto: textoSeguro(data?.concepto, 180) || "Deuda",
+            notas: textoSeguro(data?.notas, 1000) || "",
+            ventaId,
+            sessionIdOrigen: textoSeguro(data?.sessionIdOrigen, 180) || null,
+            creadoEn: data?.creadoEn || null,
+        },
+    ];
+}
+
+function resumenOrigenCuentaPorCobrar(operaciones) {
+    const tipos = new Set(
+        operaciones
+            .map((operacion) => operacion?.tipo)
+            .filter((tipo) => tipo === "venta" || tipo === "manual")
+    );
+
+    if (tipos.size > 1) {
+        return "mixto";
+    }
+
+    return tipos.has("venta") ? "venta" : "manual";
+}
+
+function fechaMasAntiguaCuentaPorCobrar(...values) {
+    return values
+        .map((value) => textoSeguro(value, 20))
+        .filter(Boolean)
+        .sort()[0] || null;
+}
+
+async function resolverCuentaPorCobrarActivaEnTransaccion(
+    transaction,
+    clienteRef,
+    clienteNombre
+) {
+    const clienteClave = normalizarClaveClienteCuentaPorCobrar(clienteNombre);
+    const indexRef = cuentaPorCobrarIndexRef(clienteRef, clienteClave);
+    const indexSnap = await transaction.get(indexRef);
+    const indexedId = textoSeguro(indexSnap.data()?.cuentaActivaId, 180);
+
+    if (indexedId) {
+        const indexedRef = clienteRef.collection("cuentasPorCobrar").doc(indexedId);
+        const indexedSnap = await transaction.get(indexedRef);
+        const indexedData = indexedSnap.data() || {};
+
+        if (
+            indexedSnap.exists &&
+            cuentaPorCobrarEstaActiva(indexedData) &&
+            normalizarClaveClienteCuentaPorCobrar(indexedData.clienteNombre) ===
+                clienteClave
+        ) {
+            return {
+                clienteClave,
+                indexRef,
+                cuentaRef: indexedRef,
+                cuentaData: indexedData,
+            };
+        }
+    }
+
+    const keyedQuery = clienteRef
+        .collection("cuentasPorCobrar")
+        .where("clienteClave", "==", clienteClave);
+    const keyedSnap = await transaction.get(keyedQuery);
+    const keyedDoc = keyedSnap.docs.find((docSnap) =>
+        cuentaPorCobrarEstaActiva(docSnap.data() || {})
+    );
+
+    if (keyedDoc) {
+        return {
+            clienteClave,
+            indexRef,
+            cuentaRef: keyedDoc.ref,
+            cuentaData: keyedDoc.data() || {},
+        };
+    }
+
+    const activeQuery = clienteRef
+        .collection("cuentasPorCobrar")
+        .where("estado", "in", ["pendiente", "parcial"]);
+    const activeSnap = await transaction.get(activeQuery);
+    const legacyDoc = activeSnap.docs.find((docSnap) => {
+        const data = docSnap.data() || {};
+        return (
+            cuentaPorCobrarEstaActiva(data) &&
+            normalizarClaveClienteCuentaPorCobrar(data.clienteNombre) ===
+                clienteClave
+        );
+    });
+
+    return {
+        clienteClave,
+        indexRef,
+        cuentaRef: legacyDoc?.ref || null,
+        cuentaData: legacyDoc?.data() || null,
+    };
+}
+
 function normalizarCuentaPorCobrarManual(
     value
 ) {
@@ -9989,199 +10141,203 @@ exports.crearCuentaPorCobrarManual =
             const {
                 ref: clienteRef,
                 snap: clienteSnap,
-            } =
-                await resolverClienteAutenticado(
-                    request.auth
-                );
+            } = await resolverClienteAutenticado(request.auth);
 
-            const clienteData =
-                clienteSnap.data();
+            const clienteData = clienteSnap.data();
 
-            validarLicencia(
-                clienteData
+            validarLicencia(clienteData);
+            validarSesionNoRevocada(request.auth, clienteData);
+
+            const deviceId = validarId(request.data?.deviceId, "deviceId");
+
+            const operadorAutorizado = await validarSesionOperadorInterna(
+                clienteRef,
+                request.data?.operadorSesion,
+                { deviceId }
             );
 
-            validarSesionNoRevocada(
-                request.auth,
-                clienteData
-            );
+            const cuenta = normalizarCuentaPorCobrarManual(request.data?.cuenta);
+            const nuevaCuentaRef = clienteRef.collection("cuentasPorCobrar").doc();
+            const operacionId = `manual_${crypto.randomUUID()}`;
 
-            const deviceId =
-                validarId(
-                    request.data
-                        ?.deviceId,
-                    "deviceId"
+            const operadorNombre = textoSeguro(
+                operadorAutorizado?.data?.nombre,
+                80
+            );
+            const operadorRol = validarRolOperador(operadorAutorizado.rol);
+
+            const result = await db.runTransaction(async (transaction) => {
+                const sessionId = await obtenerSessionIdCajaAbiertaEnTransaccion(
+                    transaction,
+                    clienteRef
                 );
 
-            const operadorAutorizado =
-                await validarSesionOperadorInterna(
+                const resolved = await resolverCuentaPorCobrarActivaEnTransaccion(
+                    transaction,
                     clienteRef,
-                    request.data
-                        ?.operadorSesion,
+                    cuenta.clienteNombre
+                );
+
+                const cuentaRef = resolved.cuentaRef || nuevaCuentaRef;
+                const existente = resolved.cuentaData || {};
+                const agrupada = Boolean(resolved.cuentaRef);
+                const operacionesPrevias = agrupada
+                    ? operacionesCuentaPorCobrarExistentes(existente, cuentaRef.id)
+                    : [];
+
+                const operacion = {
+                    id: operacionId,
+                    tipo: "manual",
+                    importe: cuenta.importeOriginal,
+                    fechaOrigen: cuenta.fechaOrigen,
+                    vencimiento: cuenta.vencimiento,
+                    concepto: cuenta.concepto,
+                    notas: cuenta.notas,
+                    ventaId: null,
+                    sessionIdOrigen: sessionId || null,
+                    creadoEn: admin.firestore.Timestamp.now(),
+                };
+
+                const operaciones = [...operacionesPrevias, operacion];
+                const importeAnterior = agrupada
+                    ? redondearDineroCuentaPorCobrar(existente.importeOriginal)
+                    : 0;
+                const pagadoAnterior = agrupada
+                    ? redondearDineroCuentaPorCobrar(existente.totalPagado)
+                    : 0;
+                const saldoAnterior = agrupada
+                    ? redondearDineroCuentaPorCobrar(existente.saldoPendiente)
+                    : 0;
+                const importeOriginal = redondearDineroCuentaPorCobrar(
+                    importeAnterior + cuenta.importeOriginal
+                );
+                const saldoPendiente = redondearDineroCuentaPorCobrar(
+                    saldoAnterior + cuenta.importeOriginal
+                );
+                const estado = pagadoAnterior > 0 ? "parcial" : "pendiente";
+                const origen = resumenOrigenCuentaPorCobrar(operaciones);
+                const fechaOrigen = fechaMasAntiguaCuentaPorCobrar(
+                    existente.fechaOrigen,
+                    cuenta.fechaOrigen
+                );
+                const vencimiento = fechaMasAntiguaCuentaPorCobrar(
+                    existente.vencimiento,
+                    cuenta.vencimiento
+                );
+
+                transaction.set(
+                    cuentaRef,
                     {
-                        deviceId,
-                    }
-                );
-
-            const cuenta =
-                normalizarCuentaPorCobrarManual(
-                    request.data
-                        ?.cuenta
-                );
-
-            const cuentaRef =
-                clienteRef
-                    .collection(
-                        "cuentasPorCobrar"
-                    )
-                    .doc();
-
-            const operadorNombre =
-                textoSeguro(
-                    operadorAutorizado
-                        ?.data
-                        ?.nombre,
-                    80
-                );
-
-            const operadorRol =
-                validarRolOperador(
-                    operadorAutorizado
-                        .rol
-                );
-
-            const result =
-                await db.runTransaction(
-                    async (
-                        transaction
-                    ) => {
-                        const sessionId =
-                            await obtenerSessionIdCajaAbiertaEnTransaccion(
-                                transaction,
-                                clienteRef
-                            );
-
-                        transaction.set(
-                            cuentaRef,
-                            {
-                                ...cuenta,
-
-                                origen:
-                                    "manual",
-
-                                ventaId:
-                                    null,
-
-                                totalPagado:
-                                    0,
-
-                                saldoPendiente:
-                                    cuenta
-                                        .importeOriginal,
-
-                                estado:
-                                    "pendiente",
-
+                        clienteNombre: agrupada
+                            ? textoSeguro(existente.clienteNombre, 120) || cuenta.clienteNombre
+                            : cuenta.clienteNombre,
+                        clienteClave: resolved.clienteClave,
+                        clienteTelefono:
+                            cuenta.clienteTelefono ||
+                            textoSeguro(existente.clienteTelefono, 50) ||
+                            "",
+                        concepto: operaciones.length > 1
+                            ? "Cuenta corriente"
+                            : cuenta.concepto,
+                        notas: agrupada ? textoSeguro(existente.notas, 1000) : cuenta.notas,
+                        importeOriginal,
+                        fechaOrigen,
+                        vencimiento,
+                        origen,
+                        ventaId: textoSeguro(existente.ventaId, 180) || null,
+                        sessionIdOrigen:
+                            textoSeguro(existente.sessionIdOrigen, 180) ||
+                            sessionId ||
+                            null,
+                        totalPagado: pagadoAnterior,
+                        saldoPendiente,
+                        estado,
+                        operaciones,
+                        ...(agrupada
+                            ? {}
+                            : {
+                                pagos: [],
                                 creadoPor: {
-                                    operadorId:
-                                        operadorAutorizado
-                                            .id,
-
+                                    operadorId: operadorAutorizado.id,
                                     operadorNombre,
-
                                     operadorRol,
                                 },
-
-                                creadoEn:
-                                    admin.firestore.FieldValue.serverTimestamp(),
-
-                                actualizadoEn:
-                                    admin.firestore.FieldValue.serverTimestamp(),
-                            }
-                        );
-
-                        const eventoAuditoria =
-                            crearEventoAuditoria({
-                                clienteRef,
-
-                                operador:
-                                    operadorAutorizado,
-
-                                accion:
-                                    AUDIT_ACTIONS
-                                        .ALTA_CUENTA_POR_COBRAR,
-
-                                sessionId,
-
-                                deviceId,
-
-                                detalle: {
-                                    cuentaId:
-                                        cuentaRef.id,
-
-                                    clienteNombre:
-                                        cuenta
-                                            .clienteNombre,
-
-                                    concepto:
-                                        cuenta
-                                            .concepto,
-
-                                    importeOriginal:
-                                        cuenta
-                                            .importeOriginal,
-
-                                    fechaOrigen:
-                                        cuenta
-                                            .fechaOrigen,
-
-                                    vencimiento:
-                                        cuenta
-                                            .vencimiento,
-
-                                    origen:
-                                        "manual",
-                                },
-                            });
-
-                        transaction.set(
-                            eventoAuditoria.ref,
-                            eventoAuditoria.data
-                        );
-
-                        return {
-                            sessionId,
-                        };
-                    }
+                                creadoEn: admin.firestore.FieldValue.serverTimestamp(),
+                            }),
+                        actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+                    },
+                    { merge: true }
                 );
+
+                transaction.set(
+                    resolved.indexRef,
+                    {
+                        clienteClave: resolved.clienteClave,
+                        clienteNombre: cuenta.clienteNombre,
+                        cuentaActivaId: cuentaRef.id,
+                        actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+                    },
+                    { merge: true }
+                );
+
+                const eventoAuditoria = crearEventoAuditoria({
+                    clienteRef,
+                    operador: operadorAutorizado,
+                    accion: AUDIT_ACTIONS.ALTA_CUENTA_POR_COBRAR,
+                    sessionId,
+                    deviceId,
+                    detalle: {
+                        cuentaId: cuentaRef.id,
+                        clienteNombre: cuenta.clienteNombre,
+                        concepto: cuenta.concepto,
+                        importeOriginal: cuenta.importeOriginal,
+                        fechaOrigen: cuenta.fechaOrigen,
+                        vencimiento: cuenta.vencimiento,
+                        origen: "manual",
+                        agrupadaEnCuentaExistente: agrupada,
+                        saldoAnterior,
+                        saldoPendiente,
+                        operaciones: operaciones.length,
+                    },
+                });
+
+                transaction.set(eventoAuditoria.ref, eventoAuditoria.data);
+
+                return {
+                    sessionId,
+                    cuentaId: cuentaRef.id,
+                    agrupada,
+                    clienteClave: resolved.clienteClave,
+                    importeOriginal,
+                    totalPagado: pagadoAnterior,
+                    saldoPendiente,
+                    estado,
+                    origen,
+                    fechaOrigen,
+                    vencimiento,
+                    operaciones: operaciones.length,
+                };
+            });
 
             return {
                 ok: true,
-
                 cuenta: {
-                    id:
-                        cuentaRef.id,
-
-                    ...cuenta,
-
-                    origen:
-                        "manual",
-
-                    ventaId:
-                        null,
-
-                    totalPagado:
-                        0,
-
-                    saldoPendiente:
-                        cuenta
-                            .importeOriginal,
-
-                    estado:
-                        "pendiente",
-
-                    sessionIdAuditoria:
-                        result.sessionId,
+                    id: result.cuentaId,
+                    clienteNombre: cuenta.clienteNombre,
+                    clienteTelefono: cuenta.clienteTelefono,
+                    concepto: result.operaciones > 1 ? "Cuenta corriente" : cuenta.concepto,
+                    notas: cuenta.notas,
+                    clienteClave: result.clienteClave,
+                    origen: result.origen,
+                    ventaId: null,
+                    importeOriginal: result.importeOriginal,
+                    totalPagado: result.totalPagado,
+                    saldoPendiente: result.saldoPendiente,
+                    estado: result.estado,
+                    fechaOrigen: result.fechaOrigen,
+                    vencimiento: result.vencimiento,
+                    agrupadaEnCuentaExistente: result.agrupada,
+                    sessionIdAuditoria: result.sessionId,
                 },
             };
         }
@@ -10439,6 +10595,24 @@ exports.registrarPagoCuentaPorCobrar =
                                 ? "pagado"
                                 : "parcial";
 
+                        const clienteClave =
+                            normalizarClaveClienteCuentaPorCobrar(
+                                cuenta.clienteNombre
+                            );
+                        const indexRef =
+                            clienteClave
+                                ? cuentaPorCobrarIndexRef(
+                                    clienteRef,
+                                    clienteClave
+                                )
+                                : null;
+                        const indexSnap =
+                            indexRef
+                                ? await transaction.get(
+                                    indexRef
+                                )
+                                : null;
+
                         const operadorNombre =
                             textoSeguro(
                                 operadorAutorizado
@@ -10507,6 +10681,32 @@ exports.registrarPagoCuentaPorCobrar =
                                     admin.firestore.FieldValue.serverTimestamp(),
                             }
                         );
+
+                        if (
+                            saldoRestante <= 0 &&
+                            indexRef &&
+                            textoSeguro(
+                                indexSnap?.data()?.cuentaActivaId,
+                                180
+                            ) === cuentaRef.id
+                        ) {
+                            transaction.set(
+                                indexRef,
+                                {
+                                    clienteClave,
+                                    clienteNombre:
+                                        textoSeguro(
+                                            cuenta.clienteNombre,
+                                            120
+                                        ),
+                                    cuentaActivaId:
+                                        null,
+                                    actualizadoEn:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                },
+                                { merge: true }
+                            );
+                        }
 
                         const sessionData =
                             sessionSnap.data() ||
@@ -15489,7 +15689,7 @@ exports.registrarVenta =
                     )
                     : null;
 
-            const cuentaRef =
+            const nuevaCuentaRef =
                 rawMethod ===
                     "cuenta"
                     ? clienteRef
@@ -15677,24 +15877,34 @@ exports.registrarVenta =
                             );
                         }
 
-                        if (cuentaRef) {
-                            const existingCuentaSnap =
-                                await transaction.get(
-                                    cuentaRef
+                        let cuentaRef = null;
+                        let cuentaDataExistente = {};
+                        let cuentaIndexRef = null;
+                        let cuentaClienteClave = "";
+                        let cuentaAgrupada = false;
+
+                        if (cuentaVenta) {
+                            const resolved =
+                                await resolverCuentaPorCobrarActivaEnTransaccion(
+                                    transaction,
+                                    clienteRef,
+                                    cuentaVenta.clienteNombre
                                 );
 
-                            if (
-                                existingCuentaSnap.exists
-                            ) {
-                                throw new HttpsError(
-                                    "already-exists",
-                                    "La cuenta por cobrar vinculada a esta venta ya existe.",
-                                    {
-                                        motivo:
-                                            "receivable-id-used",
-                                    }
+                            cuentaRef =
+                                resolved.cuentaRef ||
+                                nuevaCuentaRef;
+                            cuentaDataExistente =
+                                resolved.cuentaData ||
+                                {};
+                            cuentaIndexRef =
+                                resolved.indexRef;
+                            cuentaClienteClave =
+                                resolved.clienteClave;
+                            cuentaAgrupada =
+                                Boolean(
+                                    resolved.cuentaRef
                                 );
-                            }
                         }
 
                         const requiredByBarcode =
@@ -16371,6 +16581,158 @@ exports.registrarVenta =
                             ) +
                             1;
 
+                        let cuentaSaldoAnterior = 0;
+                        let cuentaSaldoPendiente = 0;
+                        let cuentaOperacionesCount = 0;
+                        let cuentaPayload = null;
+
+                        if (
+                            cuentaRef &&
+                            cuentaVenta
+                        ) {
+                            const operacionesPrevias =
+                                cuentaAgrupada
+                                    ? operacionesCuentaPorCobrarExistentes(
+                                        cuentaDataExistente,
+                                        cuentaRef.id
+                                    )
+                                    : [];
+
+                            const operacion = {
+                                id:
+                                    `venta_${saleId}`,
+                                tipo:
+                                    "venta",
+                                importe:
+                                    total,
+                                fechaOrigen:
+                                    cuentaVenta.fechaOrigen,
+                                vencimiento:
+                                    cuentaVenta.vencimiento,
+                                concepto:
+                                    "Venta a cuenta",
+                                notas:
+                                    cuentaVenta.notas,
+                                ventaId:
+                                    saleId,
+                                sessionIdOrigen:
+                                    sessionId,
+                                creadoEn:
+                                    admin.firestore.Timestamp.fromDate(
+                                        new Date(timestamp)
+                                    ),
+                            };
+
+                            const operaciones = [
+                                ...operacionesPrevias,
+                                operacion,
+                            ];
+
+                            const importeAnterior =
+                                cuentaAgrupada
+                                    ? redondearDineroCuentaPorCobrar(
+                                        cuentaDataExistente.importeOriginal
+                                    )
+                                    : 0;
+                            const pagadoAnterior =
+                                cuentaAgrupada
+                                    ? redondearDineroCuentaPorCobrar(
+                                        cuentaDataExistente.totalPagado
+                                    )
+                                    : 0;
+
+                            cuentaSaldoAnterior =
+                                cuentaAgrupada
+                                    ? redondearDineroCuentaPorCobrar(
+                                        cuentaDataExistente.saldoPendiente
+                                    )
+                                    : 0;
+                            cuentaSaldoPendiente =
+                                redondearDineroCuentaPorCobrar(
+                                    cuentaSaldoAnterior +
+                                    total
+                                );
+                            cuentaOperacionesCount =
+                                operaciones.length;
+
+                            cuentaPayload = {
+                                clienteNombre:
+                                    cuentaAgrupada
+                                        ? textoSeguro(
+                                            cuentaDataExistente.clienteNombre,
+                                            120
+                                        ) || cuentaVenta.clienteNombre
+                                        : cuentaVenta.clienteNombre,
+                                clienteClave:
+                                    cuentaClienteClave,
+                                clienteTelefono:
+                                    cuentaVenta.clienteTelefono ||
+                                    textoSeguro(
+                                        cuentaDataExistente.clienteTelefono,
+                                        50
+                                    ) ||
+                                    "",
+                                concepto:
+                                    operaciones.length > 1
+                                        ? "Cuenta corriente"
+                                        : "Venta a cuenta",
+                                notas:
+                                    cuentaAgrupada
+                                        ? textoSeguro(
+                                            cuentaDataExistente.notas,
+                                            1000
+                                        )
+                                        : cuentaVenta.notas,
+                                importeOriginal:
+                                    redondearDineroCuentaPorCobrar(
+                                        importeAnterior +
+                                        total
+                                    ),
+                                fechaOrigen:
+                                    fechaMasAntiguaCuentaPorCobrar(
+                                        cuentaDataExistente.fechaOrigen,
+                                        cuentaVenta.fechaOrigen
+                                    ),
+                                vencimiento:
+                                    fechaMasAntiguaCuentaPorCobrar(
+                                        cuentaDataExistente.vencimiento,
+                                        cuentaVenta.vencimiento
+                                    ),
+                                origen:
+                                    resumenOrigenCuentaPorCobrar(
+                                        operaciones
+                                    ),
+                                ventaId:
+                                    saleId,
+                                sessionIdOrigen:
+                                    sessionId,
+                                totalPagado:
+                                    pagadoAnterior,
+                                saldoPendiente:
+                                    cuentaSaldoPendiente,
+                                estado:
+                                    pagadoAnterior > 0
+                                        ? "parcial"
+                                        : "pendiente",
+                                operaciones,
+                                ...(cuentaAgrupada
+                                    ? {}
+                                    : {
+                                        pagos: [],
+                                        creadoPor: {
+                                            operadorId:
+                                                operadorAutorizado.id,
+                                            operadorNombre,
+                                            operadorRol,
+                                        },
+                                        creadoEn:
+                                            admin.firestore.FieldValue.serverTimestamp(),
+                                    }),
+                                actualizadoEn:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            };
+                        }
+
                         const sale = {
                             id:
                                 saleId,
@@ -16442,74 +16804,27 @@ exports.registrarVenta =
 
                         if (
                             cuentaRef &&
-                            cuentaVenta
+                            cuentaPayload
                         ) {
                             transaction.set(
                                 cuentaRef,
+                                cuentaPayload,
+                                { merge: true }
+                            );
+
+                            transaction.set(
+                                cuentaIndexRef,
                                 {
+                                    clienteClave:
+                                        cuentaClienteClave,
                                     clienteNombre:
-                                        cuentaVenta
-                                            .clienteNombre,
-
-                                    clienteTelefono:
-                                        cuentaVenta
-                                            .clienteTelefono,
-
-                                    concepto:
-                                        "Venta a cuenta",
-
-                                    notas:
-                                        cuentaVenta
-                                            .notas,
-
-                                    importeOriginal:
-                                        total,
-
-                                    fechaOrigen:
-                                        cuentaVenta
-                                            .fechaOrigen,
-
-                                    vencimiento:
-                                        cuentaVenta
-                                            .vencimiento,
-
-                                    origen:
-                                        "venta",
-
-                                    ventaId:
-                                        saleId,
-
-                                    sessionIdOrigen:
-                                        sessionId,
-
-                                    totalPagado:
-                                        0,
-
-                                    saldoPendiente:
-                                        total,
-
-                                    estado:
-                                        "pendiente",
-
-                                    pagos:
-                                        [],
-
-                                    creadoPor: {
-                                        operadorId:
-                                            operadorAutorizado
-                                                .id,
-
-                                        operadorNombre,
-
-                                        operadorRol,
-                                    },
-
-                                    creadoEn:
-                                        admin.firestore.FieldValue.serverTimestamp(),
-
+                                        cuentaVenta.clienteNombre,
+                                    cuentaActivaId:
+                                        cuentaRef.id,
                                     actualizadoEn:
                                         admin.firestore.FieldValue.serverTimestamp(),
-                                }
+                                },
+                                { merge: true }
                             );
                         }
 
@@ -16676,6 +16991,15 @@ exports.registrarVenta =
                                                 cuentaVenta
                                                     ?.clienteNombre ||
                                                 null,
+
+                                            cuentaAgrupada:
+                                                cuentaAgrupada,
+
+                                            saldoCuentaAnterior:
+                                                cuentaSaldoAnterior,
+
+                                            saldoCuentaPendiente:
+                                                cuentaSaldoPendiente,
                                         }
                                         : {}),
                                 },
@@ -16732,6 +17056,18 @@ exports.registrarVenta =
 
                                         origen:
                                             "venta",
+
+                                        agrupadaEnCuentaExistente:
+                                            cuentaAgrupada,
+
+                                        saldoAnterior:
+                                            cuentaSaldoAnterior,
+
+                                        saldoPendiente:
+                                            cuentaSaldoPendiente,
+
+                                        operaciones:
+                                            cuentaOperacionesCount,
                                     },
                                 });
 

@@ -372,13 +372,15 @@ export default function MoreDrawer({
                   onClick={() => navigate("compras")}
                 />
 
-                <DrawerRow
-                  icon={ProfitIcon}
-                  label="Ganancias"
-                  shortcut="Num 5"
-                  active={currentTab === "ganancias"}
-                  onClick={() => navigate("ganancias")}
-                />
+                {esAdministrador && (
+                  <DrawerRow
+                    icon={ProfitIcon}
+                    label="Ganancias"
+                    shortcut="Num 5"
+                    active={currentTab === "ganancias"}
+                    onClick={() => navigate("ganancias")}
+                  />
+                )}
 
                 <DrawerRow
                   icon={HistoryIcon}
