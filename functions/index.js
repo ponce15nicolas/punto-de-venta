@@ -6773,6 +6773,16 @@ exports.iniciarSesionOperador =
                 clienteData
             );
 
+            if (
+                request.data?.warmup ===
+                true
+            ) {
+                return {
+                    ok: true,
+                    warmed: true,
+                };
+            }
+
             const operadorId =
                 validarId(
                     request.data?.operadorId,

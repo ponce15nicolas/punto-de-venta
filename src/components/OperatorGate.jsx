@@ -87,6 +87,48 @@ const recuperarAdministradorPrincipalFunction =
     "recuperarAdministradorPrincipal"
   );
 
+const OPERATOR_LOGIN_WARMUP_TTL_MS = 4 * 60 * 1000;
+let operatorLoginWarmupPromise = null;
+let operatorLoginWarmupAt = 0;
+
+function warmOperatorLogin(deviceId) {
+  if (!browserIsOnline()) {
+    return Promise.resolve(false);
+  }
+
+  const now = Date.now();
+
+  if (operatorLoginWarmupPromise) {
+    return operatorLoginWarmupPromise;
+  }
+
+  if (now - operatorLoginWarmupAt < OPERATOR_LOGIN_WARMUP_TTL_MS) {
+    return Promise.resolve(true);
+  }
+
+  operatorLoginWarmupPromise = iniciarSesionOperadorFunction({
+    warmup: true,
+    deviceId: deviceId || null,
+  })
+    .then((response) => {
+      const warmed =
+        response?.data?.ok === true &&
+        response?.data?.warmed === true;
+
+      if (warmed) {
+        operatorLoginWarmupAt = Date.now();
+      }
+
+      return warmed;
+    })
+    .catch(() => false)
+    .finally(() => {
+      operatorLoginWarmupPromise = null;
+    });
+
+  return operatorLoginWarmupPromise;
+}
+
 /* =========================================================
    CONTEXTO
 ========================================================= */
@@ -450,6 +492,8 @@ export default function OperatorGate({
           return;
         }
 
+        void warmOperatorLogin(deviceId);
+
         try {
           const response =
             await obtenerEstadoOperadoresFunction();
@@ -488,6 +532,7 @@ export default function OperatorGate({
       [
         cargarOperadores,
         restaurarSesion,
+        deviceId,
       ]
     );
 
@@ -847,6 +892,10 @@ function OperatorLogin({
   onLogin,
   onReload,
 }) {
+  useEffect(() => {
+    void warmOperatorLogin(deviceId);
+  }, [deviceId]);
+
   const [
     operadorId,
     setOperadorId,
