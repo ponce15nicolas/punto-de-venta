@@ -310,15 +310,23 @@ export default function CuentasPorCobrar({
 
   const selectedAccount =
     useMemo(() => {
-      if (!selected?.id) {
+      if (
+        !selected?.id &&
+        !selected?.grupoClienteKey
+      ) {
         return null;
       }
 
       return (
         accounts.find(
           (account) =>
-            account?.id ===
-            selected.id
+            selected?.grupoClienteKey
+              ? account
+                  ?.grupoClienteKey ===
+                selected
+                  .grupoClienteKey
+              : account?.id ===
+                selected.id
         ) ||
         selected
       );
@@ -755,7 +763,10 @@ export default function CuentasPorCobrar({
               index
             ) => (
               <AccountCard
-                key={account.id}
+                key={
+                  account?.grupoClienteKey ||
+                  account.id
+                }
                 account={account}
                 index={index}
                 onClick={() => {
@@ -1965,6 +1976,50 @@ function PaymentHistoryRow({
           )}
         </span>
       </div>
+
+      {payment?.metodoPago ===
+        "efectivo" &&
+        Number.isFinite(
+          Number(
+            payment?.efectivoRecibido
+          )
+        ) &&
+        Number(
+          payment?.efectivoRecibido
+        ) >
+          Number(
+            payment?.importe || 0
+          ) && (
+        <div
+          className="
+            mt-2.5
+            flex
+            flex-wrap
+            items-center
+            gap-x-3
+            gap-y-1
+            border-t
+            border-white/10
+            pt-2.5
+            text-[10px]
+            font-semibold
+            text-white/35
+          "
+        >
+          <span>
+            Recibido {money(
+              payment
+                ?.efectivoRecibido
+            )}
+          </span>
+
+          <span>
+            Vuelto {money(
+              payment?.vuelto || 0
+            )}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

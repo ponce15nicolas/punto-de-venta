@@ -1766,43 +1766,145 @@ function normalizeReceivableClientKey(
     .replace(/\s+/g, " ");
 }
 
+function mergeReceivablePayments(
+  payments
+) {
+  const paymentMap = new Map();
+
+  for (const payment of payments) {
+    const paymentKey =
+      payment?.grupoPagoId ||
+      payment?.id;
+
+    if (!paymentKey) {
+      continue;
+    }
+
+    const existing =
+      paymentMap.get(
+        paymentKey
+      );
+
+    if (!existing) {
+      paymentMap.set(
+        paymentKey,
+        {
+          ...payment,
+          id: paymentKey,
+        }
+      );
+      continue;
+    }
+
+    paymentMap.set(
+      paymentKey,
+      {
+        ...existing,
+        id: paymentKey,
+        grupoPagoId:
+          existing.grupoPagoId ||
+          payment.grupoPagoId ||
+          null,
+        importe:
+          roundMoney(
+            toNumber(
+              existing.importe
+            ) +
+              toNumber(
+                payment.importe
+              )
+          ),
+        efectivoRecibido:
+          existing.efectivoRecibido ??
+          payment.efectivoRecibido ??
+          null,
+        vuelto:
+          Math.max(
+            toNumber(
+              existing.vuelto
+            ),
+            toNumber(
+              payment.vuelto
+            )
+          ),
+      }
+    );
+  }
+
+  return [
+    ...paymentMap.values(),
+  ].sort(
+    (a, b) =>
+      String(a?.fecha || "")
+        .localeCompare(
+          String(b?.fecha || "")
+        )
+  );
+}
+
 function groupActiveReceivablesByClient(
   cuentas
 ) {
   const grouped = new Map();
-  const settled = [];
 
   for (const cuenta of cuentas) {
-    const active =
-      cuenta?.estado !== "pagado" &&
-      cuenta?.estado !== "cancelado" &&
-      roundMoney(cuenta?.saldoPendiente) > 0;
-
-    if (!active) {
-      settled.push(cuenta);
-      continue;
-    }
-
     const key =
       normalizeReceivableClientKey(
         cuenta?.clienteNombre
       ) || `id:${cuenta.id}`;
+
+    const active =
+      cuenta?.estado !== "pagado" &&
+      cuenta?.estado !== "cancelado" &&
+      roundMoney(
+        cuenta?.saldoPendiente
+      ) > 0;
+
+    const source = {
+      id: cuenta.id,
+      estado: cuenta?.estado,
+      importeOriginal:
+        roundMoney(
+          cuenta?.importeOriginal
+        ),
+      totalPagado:
+        roundMoney(
+          cuenta?.totalPagado
+        ),
+      saldoPendiente:
+        roundMoney(
+          cuenta?.saldoPendiente
+        ),
+      fechaOrigen:
+        cuenta?.fechaOrigen || null,
+      vencimiento:
+        cuenta?.vencimiento || null,
+      creadoEn:
+        cuenta?.creadoEn || null,
+      activo: active,
+    };
 
     const current = grouped.get(key);
 
     if (!current) {
       grouped.set(key, {
         ...cuenta,
-        cuentaIds: [cuenta.id],
-        cuentasOrigen: [{
-          id: cuenta.id,
-          saldoPendiente:
-            roundMoney(cuenta?.saldoPendiente),
-          fechaOrigen:
-            cuenta?.fechaOrigen || null,
-          creadoEn:
-            cuenta?.creadoEn || null,
-        }],
+        grupoClienteKey: key,
+        cuentaIds:
+          active
+            ? [cuenta.id]
+            : [],
+        cuentasOrigen: [source],
+        pagos:
+          mergeReceivablePayments(
+            cuenta?.pagos || []
+          ),
+        totalPagadoActivo:
+          active
+            ? roundMoney(
+                cuenta?.totalPagado
+              )
+            : 0,
       });
       continue;
     }
@@ -1810,19 +1912,31 @@ function groupActiveReceivablesByClient(
     const importeOriginal =
       roundMoney(
         current.importeOriginal +
-        cuenta.importeOriginal
+          cuenta.importeOriginal
       );
 
     const totalPagado =
       roundMoney(
         current.totalPagado +
-        cuenta.totalPagado
+          cuenta.totalPagado
       );
 
     const saldoPendiente =
       roundMoney(
         current.saldoPendiente +
-        cuenta.saldoPendiente
+          cuenta.saldoPendiente
+      );
+
+    const totalPagadoActivo =
+      roundMoney(
+        toNumber(
+          current.totalPagadoActivo
+        ) +
+          (active
+            ? toNumber(
+                cuenta.totalPagado
+              )
+            : 0)
       );
 
     const operaciones = [
@@ -1843,84 +1957,92 @@ function groupActiveReceivablesByClient(
         )
     );
 
-    const paymentMap =
-      new Map();
-
-    for (
-      const payment of [
+    const pagos =
+      mergeReceivablePayments([
         ...(current.pagos || []),
         ...(cuenta.pagos || []),
-      ]
-    ) {
-      const paymentKey =
-        payment?.grupoPagoId ||
-        payment?.id;
+      ]);
 
-      if (!paymentKey) {
-        continue;
-      }
-
-      const existing =
-        paymentMap.get(
-          paymentKey
-        );
-
-      if (!existing) {
-        paymentMap.set(
-          paymentKey,
-          payment
-        );
-        continue;
-      }
-
-      paymentMap.set(
-        paymentKey,
-        {
-          ...existing,
-          importe:
-            roundMoney(
-              existing.importe +
-              payment.importe
-            ),
-          efectivoRecibido:
-            existing
-              .efectivoRecibido ??
-            payment
-              .efectivoRecibido ??
-            null,
-          vuelto:
-            Math.max(
-              existing.vuelto ||
-                0,
-              payment.vuelto ||
-                0
-            ),
-        }
-      );
-    }
-
-    const pagos = [
-      ...paymentMap.values(),
+    const cuentasOrigen = [
+      ...(current.cuentasOrigen || []),
+      source,
     ].sort(
       (a, b) =>
-        String(a?.fecha || "")
-          .localeCompare(
-            String(b?.fecha || "")
+        String(
+          a?.fechaOrigen ||
+          a?.creadoEn ||
+          ""
+        ).localeCompare(
+          String(
+            b?.fechaOrigen ||
+            b?.creadoEn ||
+            ""
           )
+        )
     );
 
-    const fechasOrigen = [
-      current.fechaOrigen,
-      cuenta.fechaOrigen,
-    ].filter(Boolean);
+    const activeSources =
+      cuentasOrigen.filter(
+        (item) =>
+          item?.activo === true &&
+          roundMoney(
+            item?.saldoPendiente
+          ) > 0
+      );
 
-    const vencimientos = [
-      current.vencimiento,
-      cuenta.vencimiento,
-    ].filter(Boolean);
+    const metadataSources =
+      activeSources.length > 0
+        ? activeSources
+        : cuentasOrigen;
+
+    const fechasOrigen =
+      metadataSources
+        .map(
+          (item) =>
+            item?.fechaOrigen
+        )
+        .filter(Boolean)
+        .sort();
+
+    const vencimientos =
+      metadataSources
+        .map(
+          (item) =>
+            item?.vencimiento
+        )
+        .filter(Boolean)
+        .sort();
+
+    const allCanceled =
+      cuentasOrigen.length > 0 &&
+      cuentasOrigen.every(
+        (item) =>
+          item?.estado ===
+          "cancelado"
+      );
+
+    const estado =
+      saldoPendiente > 0
+        ? totalPagadoActivo > 0
+          ? "parcial"
+          : "pendiente"
+        : allCanceled
+          ? "cancelado"
+          : "pagado";
+
+    const stableIds =
+      cuentasOrigen
+        .map((item) => item?.id)
+        .filter(Boolean)
+        .sort();
 
     grouped.set(key, {
       ...current,
+      id:
+        activeSources[0]?.id ||
+        stableIds[0] ||
+        current.id,
+      grupoClienteKey: key,
       clienteTelefono:
         current.clienteTelefono ||
         cuenta.clienteTelefono,
@@ -1932,66 +2054,118 @@ function groupActiveReceivablesByClient(
       importeOriginal,
       totalPagado,
       saldoPendiente,
-      estado:
-        totalPagado > 0
-          ? "parcial"
-          : "pendiente",
+      totalPagadoActivo,
+      estado,
       operaciones,
       pagos,
       fechaOrigen:
-        fechasOrigen.sort()[0] || null,
+        fechasOrigen[0] || null,
       vencimiento:
-        vencimientos.sort()[0] || null,
-      cuentaIds: [
-        ...(current.cuentaIds || [current.id]),
-        cuenta.id,
-      ],
-      cuentasOrigen: [
-        ...(current.cuentasOrigen || []),
-        {
-          id: cuenta.id,
-          saldoPendiente:
-            roundMoney(cuenta?.saldoPendiente),
-          fechaOrigen:
-            cuenta?.fechaOrigen || null,
-          creadoEn:
-            cuenta?.creadoEn || null,
-        },
-      ].sort(
-        (a, b) =>
-          String(
-            a?.fechaOrigen ||
-            a?.creadoEn ||
-            ""
-          ).localeCompare(
-            String(
-              b?.fechaOrigen ||
-              b?.creadoEn ||
-              ""
-            )
-          )
-      ),
+        vencimientos[0] || null,
+      cuentaIds:
+        activeSources.map(
+          (item) => item.id
+        ),
+      cuentasOrigen,
     });
   }
 
   return [
     ...grouped.values(),
-    ...settled.map(
-      (cuenta) => ({
-        ...cuenta,
-        cuentaIds: [cuenta.id],
-        cuentasOrigen: [{
-          id: cuenta.id,
-          saldoPendiente:
-            roundMoney(cuenta?.saldoPendiente),
-          fechaOrigen:
-            cuenta?.fechaOrigen || null,
-          creadoEn:
-            cuenta?.creadoEn || null,
-        }],
-      })
-    ),
-  ];
+  ].map((group) => {
+    const cuentasOrigen =
+      Array.isArray(
+        group?.cuentasOrigen
+      )
+        ? group.cuentasOrigen
+        : [];
+
+    const activeSources =
+      cuentasOrigen.filter(
+        (item) =>
+          item?.activo === true &&
+          roundMoney(
+            item?.saldoPendiente
+          ) > 0
+      );
+
+    const metadataSources =
+      activeSources.length > 0
+        ? activeSources
+        : cuentasOrigen;
+
+    const fechasOrigen =
+      metadataSources
+        .map(
+          (item) =>
+            item?.fechaOrigen
+        )
+        .filter(Boolean)
+        .sort();
+
+    const vencimientos =
+      metadataSources
+        .map(
+          (item) =>
+            item?.vencimiento
+        )
+        .filter(Boolean)
+        .sort();
+
+    const allCanceled =
+      cuentasOrigen.length > 0 &&
+      cuentasOrigen.every(
+        (item) =>
+          item?.estado ===
+          "cancelado"
+      );
+
+    const saldoPendiente =
+      roundMoney(
+        group?.saldoPendiente
+      );
+
+    const totalPagadoActivo =
+      roundMoney(
+        group?.totalPagadoActivo
+      );
+
+    const stableIds =
+      cuentasOrigen
+        .map((item) => item?.id)
+        .filter(Boolean)
+        .sort();
+
+    return {
+      ...group,
+      id:
+        activeSources[0]?.id ||
+        stableIds[0] ||
+        group.id,
+      cuentaIds:
+        activeSources.map(
+          (item) => item.id
+        ),
+      fechaOrigen:
+        fechasOrigen[0] ||
+        group?.fechaOrigen ||
+        null,
+      vencimiento:
+        vencimientos[0] || null,
+      estado:
+        saldoPendiente > 0
+          ? totalPagadoActivo > 0
+            ? "parcial"
+            : "pendiente"
+          : allCanceled
+            ? "cancelado"
+            : "pagado",
+      pagos:
+        mergeReceivablePayments(
+          group?.pagos || []
+        ),
+    };
+  });
 }
 
 /* =========================================================
