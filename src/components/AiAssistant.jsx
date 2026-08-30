@@ -23,11 +23,49 @@ import {
 } from "../services/ai/assistantContext";
 
 const QUICK_PROMPTS = [
-  "¿Cómo vendí hoy?",
-  "¿Qué productos debería reponer?",
-  "Resumime los últimos 7 días",
-  "¿Cómo está mi caja ahora?",
+  "Dame un resumen ejecutivo de hoy",
+  "Compará los últimos 7 días con los 7 anteriores",
+  "¿Qué debería reponer primero y cuánto?",
+  "Explicame el estado de caja y las últimas diferencias",
+  "¿Qué alertas requieren atención ahora?",
 ];
+
+const MONEY_FORMATTER =
+  new Intl.NumberFormat(
+    "es-AR",
+    {
+      style: "currency",
+      currency: "ARS",
+      maximumFractionDigits: 0,
+    }
+  );
+
+function formatMoney(value) {
+  const number = Number(value);
+
+  return MONEY_FORMATTER.format(
+    Number.isFinite(number)
+      ? number
+      : 0
+  );
+}
+
+function formatVariation(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(
+      Number(value)
+    )
+  ) {
+    return "Sin base";
+  }
+
+  const number =
+    Number(value);
+
+  return `${number > 0 ? "+" : ""}${number}%`;
+}
 
 function toDateMs(value) {
   if (!value) {
@@ -221,6 +259,59 @@ export default function AiAssistant({
       [config]
     );
 
+  const businessContext =
+    useMemo(
+      () =>
+        buildAssistantBusinessContext(
+          pos
+        ),
+      [
+        pos?.sales,
+        pos?.catalog,
+        pos?.openSession,
+        pos?.cashSessions,
+        pos?.accountsReceivable,
+        pos?.accountsPayable,
+        pos?.shoppingList,
+        pos?.promotions,
+        pos?.isOnline,
+        pos?.pendingOfflineCount,
+        pos?.shopName,
+        pos?.paymentBreakdown,
+      ]
+    );
+
+  const alerts =
+    Array.isArray(
+      businessContext?.alertas
+    )
+      ? businessContext.alertas
+      : [];
+
+  const attentionAlertCount =
+    alerts.filter(
+      (alert) =>
+        alert?.severidad ===
+          "alta" ||
+        alert?.severidad ===
+          "media"
+    ).length;
+
+  const todaySummary =
+    businessContext
+      ?.ventas?.hoy || {};
+
+  const weekVariation =
+    businessContext
+      ?.ventas
+      ?.comparaciones
+      ?.ultimos7Vs7Anteriores
+      ?.facturacionVariacionPct;
+
+  const currentCash =
+    businessContext
+      ?.caja?.actual || {};
+
   useEffect(() => {
     if (!open) {
       return;
@@ -302,11 +393,6 @@ export default function AiAssistant({
     setSending(true);
 
     try {
-      const contexto =
-        buildAssistantBusinessContext(
-          pos
-        );
-
       const result =
         await consultarAsistenteIa({
           pregunta:
@@ -315,7 +401,8 @@ export default function AiAssistant({
             historyForApi(
               previousMessages
             ),
-          contexto,
+          contexto:
+            businessContext,
           operadorSesion,
           deviceId,
         });
@@ -453,6 +540,14 @@ export default function AiAssistant({
             >
               <SparklesIcon className="h-4 w-4 text-[#FFC61A]" />
               Asistente IA
+              {attentionAlertCount > 0 && (
+                <span className="grid min-w-5 place-items-center rounded-full bg-[#FFC61A] px-1.5 py-0.5 text-[9px] font-black leading-none text-black">
+                  {Math.min(
+                    attentionAlertCount,
+                    9
+                  )}
+                </span>
+              )}
             </motion.button>
           )}
       </AnimatePresence>
@@ -576,9 +671,111 @@ export default function AiAssistant({
                         ¿Qué querés saber de tu negocio?
                       </p>
                       <p className="mt-1.5 text-xs leading-relaxed text-white/45">
-                        Puedo analizar ventas, caja, inventario, ganancias registradas, cuentas y reposición usando el resumen sincronizado del POS.
+                        Ahora puedo comparar períodos equivalentes, estimar reposición por ritmo de venta, revisar alertas y explicar el efectivo esperado de caja.
                       </p>
                     </div>
+
+                    <div className="mt-3 grid grid-cols-3 gap-2">
+                      <div className="rounded-2xl border border-white/8 bg-white/[0.035] p-3">
+                        <p className="text-[9px] font-black uppercase tracking-[0.12em] text-white/30">
+                          Hoy
+                        </p>
+                        <p className="mt-1 truncate text-xs font-black text-white/85">
+                          {formatMoney(
+                            todaySummary.facturacion
+                          )}
+                        </p>
+                        <p className="mt-1 text-[9px] text-white/35">
+                          {Number(
+                            todaySummary.operaciones ||
+                              0
+                          )} operaciones
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/8 bg-white/[0.035] p-3">
+                        <p className="text-[9px] font-black uppercase tracking-[0.12em] text-white/30">
+                          Tendencia 7d
+                        </p>
+                        <p className="mt-1 text-xs font-black text-white/85">
+                          {formatVariation(
+                            weekVariation
+                          )}
+                        </p>
+                        <p className="mt-1 text-[9px] text-white/35">
+                          vs. 7d anteriores
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/8 bg-white/[0.035] p-3">
+                        <p className="text-[9px] font-black uppercase tracking-[0.12em] text-white/30">
+                          Caja
+                        </p>
+                        <p className="mt-1 truncate text-xs font-black text-white/85">
+                          {currentCash.abierta
+                            ? formatMoney(
+                                currentCash.efectivoEsperado
+                              )
+                            : "Cerrada"}
+                        </p>
+                        <p className="mt-1 text-[9px] text-white/35">
+                          {currentCash.abierta
+                            ? "efectivo esperado"
+                            : "sin turno abierto"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {alerts.length > 0 && (
+                      <div className="mt-4">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.14em] text-white/35">
+                            Alertas detectadas
+                          </p>
+                          <span className="text-[9px] font-bold text-white/25">
+                            {alerts.length}
+                          </span>
+                        </div>
+
+                        <div className="grid gap-2">
+                          {alerts
+                            .slice(0, 3)
+                            .map(
+                              (alert) => (
+                                <button
+                                  type="button"
+                                  key={alert.id}
+                                  onClick={() =>
+                                    sendQuestion(
+                                      alert.preguntaSugerida ||
+                                        "Analizá esta alerta y decime qué debería revisar."
+                                    )
+                                  }
+                                  disabled={sending}
+                                  className={
+                                    alert.severidad ===
+                                    "alta"
+                                      ? "rounded-2xl border border-red-400/20 bg-red-500/[0.07] px-3.5 py-3 text-left transition hover:bg-red-500/[0.11] disabled:opacity-50"
+                                      : "rounded-2xl border border-[#FFC61A]/15 bg-[#FFC61A]/[0.035] px-3.5 py-3 text-left transition hover:bg-[#FFC61A]/[0.065] disabled:opacity-50"
+                                  }
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <p className="text-xs font-black text-white/85">
+                                        {alert.titulo}
+                                      </p>
+                                      <p className="mt-1 text-[10px] leading-relaxed text-white/40">
+                                        {alert.detalle}
+                                      </p>
+                                    </div>
+                                    <ChevronIcon className="mt-0.5 h-4 w-4 shrink-0 text-[#FFC61A]" />
+                                  </div>
+                                </button>
+                              )
+                            )}
+                        </div>
+                      </div>
+                    )}
 
                     <div className="mt-4 grid gap-2">
                       {QUICK_PROMPTS.map(

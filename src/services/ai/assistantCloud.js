@@ -15,7 +15,7 @@ const fnConsultarAsistenteIa =
     functions,
     "consultarAsistenteIa",
     {
-      timeout: 30000,
+      timeout: 35000,
     }
   );
 
