@@ -846,6 +846,306 @@ function suggestedRestockQuantity(
     : Math.ceil(missing);
 }
 
+
+const STOCK_QUERY_STOP_WORDS =
+  new Set([
+    "a",
+    "al",
+    "algo",
+    "cantidad",
+    "cuanto",
+    "cuantos",
+    "cuanta",
+    "cuantas",
+    "de",
+    "del",
+    "el",
+    "en",
+    "es",
+    "hay",
+    "la",
+    "las",
+    "los",
+    "me",
+    "mi",
+    "queda",
+    "quedan",
+    "stock",
+    "tengo",
+    "tenemos",
+    "un",
+    "una",
+    "unidades",
+    "unidad",
+    "producto",
+    "productos",
+    "inventario",
+  ]);
+
+function normalizeSearchText(
+  value
+) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function stockQueryTerms(
+  question
+) {
+  return normalizeSearchText(
+    question
+  )
+    .split(/\s+/)
+    .filter(
+      (term) =>
+        term.length >= 2 &&
+        !STOCK_QUERY_STOP_WORDS.has(
+          term
+        )
+    );
+}
+
+function stockUnitForProduct(
+  product
+) {
+  const type =
+    String(
+      product?.tipoVenta ||
+        "unidad"
+    );
+
+  if (type === "peso") {
+    return String(
+      product?.unidadMedida ||
+        "kg"
+    );
+  }
+
+  return "unidades";
+}
+
+function summarizeStockMatches(
+  catalog,
+  question
+) {
+  const cleanQuestion =
+    normalizeSearchText(
+      question
+    );
+
+  if (!cleanQuestion) {
+    return null;
+  }
+
+  const terms =
+    stockQueryTerms(
+      question
+    );
+
+  if (terms.length === 0) {
+    return null;
+  }
+
+  const matches =
+    normalizeCatalog(
+      catalog
+    )
+      .map(
+        (product) => {
+          const type =
+            String(
+              product?.tipoVenta ||
+                "unidad"
+            );
+
+          if (
+            type ===
+            "precio-libre"
+          ) {
+            return null;
+          }
+
+          const name =
+            String(
+              product?.name ||
+                "Producto"
+            )
+              .trim()
+              .slice(0, 90);
+
+          const barcode =
+            String(
+              product?.barcode ||
+                ""
+            )
+              .trim()
+              .slice(0, 80);
+
+          const normalizedName =
+            normalizeSearchText(
+              name
+            );
+
+          const normalizedBarcode =
+            normalizeSearchText(
+              barcode
+            );
+
+          const nameTokens =
+            normalizedName
+              .split(/\s+/)
+              .filter(
+                (token) =>
+                  token.length >= 3
+              );
+
+          let score = 0;
+          let matchedTerms = 0;
+
+          if (
+            barcode &&
+            cleanQuestion.includes(
+              normalizedBarcode
+            )
+          ) {
+            score += 1000;
+          }
+
+          if (
+            normalizedName &&
+            cleanQuestion.includes(
+              normalizedName
+            )
+          ) {
+            score += 500;
+          }
+
+          for (
+            const term of terms
+          ) {
+            if (
+              normalizedName.includes(
+                term
+              ) ||
+              normalizedBarcode.includes(
+                term
+              )
+            ) {
+              matchedTerms += 1;
+              score +=
+                normalizedName ===
+                term
+                  ? 120
+                  : 45;
+            }
+          }
+
+          if (
+            terms.length > 1 &&
+            matchedTerms ===
+              terms.length
+          ) {
+            score += 180;
+          }
+
+          const matchedNameTokens =
+            nameTokens.filter(
+              (token) =>
+                terms.some(
+                  (term) =>
+                    token.includes(
+                      term
+                    ) ||
+                    term.includes(
+                      token
+                    )
+                )
+            ).length;
+
+          score +=
+            matchedNameTokens * 12;
+
+          if (score <= 0) {
+            return null;
+          }
+
+          return {
+            nombre: name,
+            codigo:
+              barcode || null,
+            stockActual:
+              roundQuantity(
+                Math.max(
+                  0,
+                  toNumber(
+                    product?.stock
+                  )
+                )
+              ),
+            unidad:
+              stockUnitForProduct(
+                product
+              ),
+            tipoVenta:
+              type,
+            precioActual:
+              roundMoney(
+                toNumber(
+                  product?.price
+                )
+              ),
+            _score: score,
+          };
+        }
+      )
+      .filter(Boolean)
+      .sort(
+        (a, b) =>
+          b._score -
+          a._score
+      )
+      .slice(0, 8)
+      .map(
+        ({
+          _score,
+          ...item
+        }) => item
+      );
+
+  if (matches.length === 0) {
+    return {
+      consulta:
+        String(
+          question || ""
+        )
+          .trim()
+          .slice(0, 180),
+      coincidencias: [],
+      nota:
+        "No se encontraron productos del catálogo que coincidan claramente con la consulta.",
+    };
+  }
+
+  return {
+    consulta:
+      String(
+        question || ""
+      )
+        .trim()
+        .slice(0, 180),
+    coincidencias:
+      matches,
+    nota:
+      matches.length === 1
+        ? "Coincidencia directa del catálogo actual. Usá stockActual como cantidad de stock vigente."
+        : "Hay varias coincidencias posibles. Si el usuario no especificó la variante, mencioná las opciones y sus stocks en lugar de adivinar.",
+  };
+}
+
 function summarizeInventory(
   catalog,
   weekSales,
@@ -1828,7 +2128,8 @@ function buildAlerts({
 }
 
 export function buildAssistantBusinessContext(
-  pos
+  pos,
+  options = {}
 ) {
   const now =
     new Date();
@@ -1963,6 +2264,17 @@ export function buildAssistantBusinessContext(
       monthSales
     );
 
+  const stockQuery =
+    summarizeStockMatches(
+      pos?.catalog,
+      options?.question
+    );
+
+  if (stockQuery) {
+    inventory.consultaStock =
+      stockQuery;
+  }
+
   const currentCash =
     summarizeCurrentCash(
       pos
@@ -2047,7 +2359,7 @@ export function buildAssistantBusinessContext(
     });
 
   return {
-    version: 2,
+    version: 3,
     generadoEn:
       now.toISOString(),
     zonaHoraria:

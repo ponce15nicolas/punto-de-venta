@@ -393,6 +393,21 @@ export default function AiAssistant({
     setSending(true);
 
     try {
+      /*
+       * Para preguntas concretas (por ejemplo stock de un producto),
+       * generamos un contexto de consulta que agrega únicamente las
+       * coincidencias relevantes del catálogo actual. Así evitamos
+       * enviar todo el inventario a Gemini y mantenemos respuestas
+       * precisas incluso con catálogos grandes.
+       */
+      const requestContext =
+        buildAssistantBusinessContext(
+          pos,
+          {
+            question,
+          }
+        );
+
       const result =
         await consultarAsistenteIa({
           pregunta:
@@ -402,7 +417,7 @@ export default function AiAssistant({
               previousMessages
             ),
           contexto:
-            businessContext,
+            requestContext,
           operadorSesion,
           deviceId,
         });
