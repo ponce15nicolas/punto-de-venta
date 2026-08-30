@@ -739,7 +739,9 @@ function interpretarErrorFuncion(
         motivo ===
         "sesion-cerrada" ||
         motivo ===
-        "sesion-revocada"
+        "sesion-revocada" ||
+        motivo ===
+        "sesion-reemplazada"
     ) {
         return {
             estado:
@@ -747,7 +749,10 @@ function interpretarErrorFuncion(
 
             mensaje:
                 mensajeServidor ||
-                "Esta sesión fue cerrada desde el panel administrativo.",
+                (motivo ===
+                "sesion-reemplazada"
+                    ? "Este dispositivo inició una sesión más reciente. Iniciá sesión nuevamente para continuar."
+                    : "Esta sesión fue cerrada desde el panel administrativo."),
 
             dispositivosActivos,
             maxDispositivos,
@@ -1578,6 +1583,48 @@ export function useLicenseCheck() {
             }
         }
 
+        function revalidarAlVolver() {
+            if (
+                typeof document !==
+                    "undefined" &&
+                document.visibilityState ===
+                    "hidden"
+            ) {
+                return;
+            }
+
+            if (!browserIsOnline()) {
+                return;
+            }
+
+            void heartbeat();
+        }
+
+        if (
+            typeof document !==
+            "undefined"
+        ) {
+            document.addEventListener(
+                "visibilitychange",
+                revalidarAlVolver
+            );
+        }
+
+        if (
+            typeof window !==
+            "undefined"
+        ) {
+            window.addEventListener(
+                "pageshow",
+                revalidarAlVolver
+            );
+
+            window.addEventListener(
+                "focus",
+                revalidarAlVolver
+            );
+        }
+
         async function registrar() {
             if (!browserIsOnline() && hasOfflineAccess()) {
                 setEstadoDispositivo("activo");
@@ -1639,8 +1686,34 @@ export function useLicenseCheck() {
 
         return () => {
             cancelado = true;
+
             if (heartbeatTimer) {
                 window.clearInterval(heartbeatTimer);
+            }
+
+            if (
+                typeof document !==
+                "undefined"
+            ) {
+                document.removeEventListener(
+                    "visibilitychange",
+                    revalidarAlVolver
+                );
+            }
+
+            if (
+                typeof window !==
+                "undefined"
+            ) {
+                window.removeEventListener(
+                    "pageshow",
+                    revalidarAlVolver
+                );
+
+                window.removeEventListener(
+                    "focus",
+                    revalidarAlVolver
+                );
             }
         };
     }, [

@@ -8434,16 +8434,33 @@ exports.registrarSesion =
                                     .cierresDispositivos
                             );
 
+                        const cierrePrevio =
+                            cierresDispositivos[
+                            deviceId
+                            ];
+
                         /*
-                         * Un nuevo login usa un sessionId nuevo.
-                         * Eliminamos el marcador viejo de este deviceId
-                         * para mantener el documento acotado y limpio.
+                         * Un cierre remoto explícito debe sobrevivir a un
+                         * refresh/reapertura del navegador. Solo un login
+                         * realmente nuevo (sessionId distinto) puede limpiar
+                         * el marcador y volver a registrar el dispositivo.
                          */
                         if (
-                            cierresDispositivos[
-                                deviceId
-                            ]
+                            cierrePrevio
+                                ?.sessionId ===
+                            sessionId
                         ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Esta sesión fue cerrada desde el panel administrativo.",
+                                {
+                                    motivo:
+                                        "sesion-cerrada",
+                                }
+                            );
+                        }
+
+                        if (cierrePrevio) {
                             delete cierresDispositivos[
                                 deviceId
                             ];
@@ -8725,35 +8742,58 @@ exports.actualizarSesion =
                             clienteData
                         );
 
+                        const currentControl =
+                            controlSnap.exists
+                                ? controlSnap.data()
+                                : {};
+
+                        const rawSessions =
+                            esObjetoPlano(
+                                currentControl.sessions
+                            )
+                                ? currentControl.sessions
+                                : {};
+
+                        const rawCurrent =
+                            rawSessions[
+                            deviceId
+                            ];
+
                         const sessions =
                             limpiarSesionesActivas(
-                                controlSnap.exists
-                                    ? controlSnap.data()
-                                        .sessions
-                                    : {},
+                                rawSessions,
                                 nowMs
                             );
 
-                        const current =
+                        let current =
                             sessions[
                             deviceId
                             ];
 
+                        const cierresDispositivos =
+                            normalizarCierresDispositivos(
+                                clienteData
+                                    .cierresDispositivos
+                            );
+
+                        const cierreExplicito =
+                            cierresDispositivos[
+                            deviceId
+                            ];
+
                         /*
-                         * Si desapareció del control significa:
-                         *
-                         * - Admin cerró la sesión
-                         * - venció por inactividad
-                         * - otra sesión reemplazó la sesión actual
+                         * Solo un marcador de cierre explícito representa una
+                         * revocación real desde Admin (o por reducción de límite).
+                         * No confundimos ese caso con una pausa del navegador.
                          */
                         if (
-                            !current ||
-                            current.sessionId !==
+                            cierreExplicito
+                                ?.sessionId ===
                             sessionId
                         ) {
                             throw new HttpsError(
                                 "failed-precondition",
-                                "Este dispositivo ya no tiene una sesión autorizada.",
+                                "Esta sesión fue cerrada desde el panel administrativo.",
                                 {
                                     motivo:
                                         "sesion-cerrada",
@@ -8761,14 +8801,94 @@ exports.actualizarSesion =
                             );
                         }
 
+                        /*
+                         * Si existe otra sesión para el mismo deviceId, el login
+                         * actual fue reemplazado y no debe recuperar la anterior.
+                         */
+                        if (
+                            rawCurrent &&
+                            rawCurrent.sessionId !==
+                            sessionId
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Este dispositivo inició una sesión más reciente.",
+                                {
+                                    motivo:
+                                        "sesion-reemplazada",
+                                }
+                            );
+                        }
+
+                        /*
+                         * Safari/iOS puede suspender JavaScript cuando la app
+                         * queda en segundo plano. Si el heartbeat expiró pero no
+                         * hubo revocación explícita, recuperamos la misma sesión
+                         * siempre que siga habiendo lugar en la licencia.
+                         */
+                        if (!current) {
+                            const maxDispositivos =
+                                obtenerMaxDispositivos(
+                                    clienteData
+                                );
+
+                            if (
+                                contarSesiones(
+                                    sessions
+                                ) >=
+                                maxDispositivos
+                            ) {
+                                throw new HttpsError(
+                                    "resource-exhausted",
+                                    "Se alcanzó el límite de dispositivos de esta licencia.",
+                                    {
+                                        motivo:
+                                            "limite-dispositivos",
+
+                                        maxDispositivos,
+
+                                        dispositivosActivos:
+                                            contarSesiones(
+                                                sessions
+                                            ),
+                                    }
+                                );
+                            }
+
+                            current = {
+                                sessionId,
+
+                                dispositivo:
+                                    dispositivo ||
+                                    rawCurrent
+                                        ?.dispositivo ||
+                                    null,
+
+                                iniciadoEnMs:
+                                    numeroSeguro(
+                                        rawCurrent
+                                            ?.iniciadoEnMs,
+                                        nowMs
+                                    ),
+
+                                authUid:
+                                    request.auth.uid,
+                            };
+                        }
+
                         sessions[
                             deviceId
                         ] = {
                             ...current,
 
+                            sessionId,
+
                             dispositivo:
                                 dispositivo ||
                                 current.dispositivo,
+
+                            authUid:
+                                request.auth.uid,
 
                             lastSeenMs:
                                 nowMs,
