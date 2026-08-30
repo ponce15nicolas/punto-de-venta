@@ -140,6 +140,13 @@ const fnCerrarTodasSesiones =
     "cerrarTodasLasSesiones"
   );
 
+
+const fnActualizarAsistenteIa =
+  httpsCallable(
+    functions,
+    "actualizarAsistenteIa"
+  );
+
 /* =========================================================
    HELPERS
 ========================================================= */
@@ -1360,6 +1367,12 @@ export default function AdminPanel() {
                       "dispositivos"
                     )
                   }
+                  onAsistenteIa={() =>
+                    abrirModal(
+                      cliente,
+                      "asistente-ia"
+                    )
+                  }
                   onActivar={() =>
                     activarRapido(
                       cliente
@@ -1518,6 +1531,36 @@ export default function AdminPanel() {
       </Modal>
 
       {/* ===================================================
+          ASISTENTE IA
+      =================================================== */}
+
+      <Modal
+        open={
+          !!clienteModal &&
+          modo ===
+          "asistente-ia"
+        }
+        onClose={
+          cerrarModal
+        }
+        title="Asistente IA"
+      >
+        {clienteModal && (
+          <FormAsistenteIa
+            cliente={
+              clienteModal
+            }
+            onClose={
+              cerrarModal
+            }
+            onDone={
+              cargarClientes
+            }
+          />
+        )}
+      </Modal>
+
+      {/* ===================================================
           ELIMINAR
       =================================================== */}
 
@@ -1561,6 +1604,7 @@ function ClienteCard({
   onPassword,
   onEliminar,
   onDispositivos,
+  onAsistenteIa,
   onActivar,
 }) {
   const estilo =
@@ -1588,6 +1632,45 @@ function ClienteCard({
 
   const completo =
     activos >= maximo;
+
+  const aiConfig =
+    cliente?.asistenteIa ||
+    {};
+
+  const aiUsage =
+    cliente?.asistenteIaUso ||
+    {};
+
+  const aiEnabled =
+    aiConfig.enabled ===
+      true &&
+    aiConfig.vigente !==
+      false;
+
+  const aiExpired =
+    aiConfig.enabled ===
+      true &&
+    aiConfig.vigente ===
+      false;
+
+  const aiUsed =
+    Math.max(
+      0,
+      numeroSeguro(
+        aiUsage.usadas,
+        0
+      )
+    );
+
+  const aiLimit =
+    Math.max(
+      1,
+      numeroSeguro(
+        aiUsage.limite ??
+          aiConfig.monthlyLimit,
+        100
+      )
+    );
 
   return (
     <article
@@ -1819,6 +1902,113 @@ function ClienteCard({
           <ChevronIcon className="h-4 w-4 shrink-0 text-black/20 transition group-hover:text-[#9A7100]" />
         </button>
 
+        {/* ASISTENTE IA */}
+
+        <button
+          type="button"
+          onClick={
+            onAsistenteIa
+          }
+          className="
+            group
+            mt-2.5
+            flex
+            w-full
+            items-center
+            gap-3
+            rounded-[20px]
+            border
+            border-black/[0.06]
+            bg-[#F4F5F7]
+            p-3
+            text-left
+            transition
+            hover:border-[#FFC61A]/60
+            hover:bg-[#FFF9E8]
+            active:scale-[0.995]
+          "
+        >
+          <div
+            className="
+              grid
+              h-10
+              w-10
+              shrink-0
+              place-items-center
+              rounded-xl
+              bg-[#11151C]
+              text-[#FFC61A]
+            "
+          >
+            <SparklesIcon className="h-[18px] w-[18px]" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div
+              className="
+                text-[9px]
+                font-extrabold
+                uppercase
+                tracking-[0.1em]
+                text-black/35
+              "
+            >
+              Asistente IA
+            </div>
+
+            <div
+              className="
+                mt-0.5
+                text-sm
+                font-black
+                text-[#111318]
+              "
+            >
+              {aiEnabled
+                ? `${aiUsed} / ${aiLimit} consultas`
+                : aiExpired
+                  ? "Habilitación vencida"
+                  : "Upgrade opcional"}
+            </div>
+          </div>
+
+          <span
+            className={
+              `
+                shrink-0
+                rounded-full
+                px-2.5
+                py-1.5
+                text-[9px]
+                font-extrabold
+                uppercase
+              ` +
+              (aiEnabled
+                ? `
+                  bg-emerald-50
+                  text-emerald-600
+                `
+                : aiExpired
+                  ? `
+                    bg-[#FFF0BD]
+                    text-[#9A7100]
+                  `
+                  : `
+                    bg-black/5
+                    text-black/35
+                  `)
+            }
+          >
+            {aiEnabled
+              ? "Activo"
+              : aiExpired
+                ? "Vencido"
+                : "Inactivo"}
+          </span>
+
+          <ChevronIcon className="h-4 w-4 shrink-0 text-black/20 transition group-hover:text-[#9A7100]" />
+        </button>
+
         {/* ACCIONES */}
 
         <div className="mt-4">
@@ -1920,6 +2110,419 @@ function ClienteCard({
         </div>
       </div>
     </article>
+  );
+}
+
+/* =========================================================
+   CONFIGURAR ASISTENTE IA
+========================================================= */
+
+const AI_PLAN_OPTIONS = {
+  starter: {
+    label: "Starter",
+    defaultLimit: 100,
+    description:
+      "Consultas rápidas y de bajo costo.",
+  },
+  pro: {
+    label: "Pro",
+    defaultLimit: 300,
+    description:
+      "Mejor análisis para uso frecuente.",
+  },
+  business: {
+    label: "Business",
+    defaultLimit: 1000,
+    description:
+      "Mayor capacidad para comercios intensivos.",
+  },
+};
+
+function isoToDateInput(
+  value
+) {
+  if (!value) {
+    return "";
+  }
+
+  const date =
+    new Date(value);
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return "";
+  }
+
+  const year =
+    date.getFullYear();
+  const month =
+    String(
+      date.getMonth() + 1
+    ).padStart(2, "0");
+  const day =
+    String(
+      date.getDate()
+    ).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function FormAsistenteIa({
+  cliente,
+  onClose,
+  onDone,
+}) {
+  const initialConfig =
+    cliente?.asistenteIa ||
+    {};
+
+  const initialPlan =
+    Object.prototype.hasOwnProperty.call(
+      AI_PLAN_OPTIONS,
+      initialConfig.plan
+    )
+      ? initialConfig.plan
+      : "starter";
+
+  const [enabled, setEnabled] =
+    useState(
+      initialConfig.enabled ===
+      true
+    );
+
+  const [plan, setPlan] =
+    useState(initialPlan);
+
+  const [monthlyLimit, setMonthlyLimit] =
+    useState(
+      String(
+        Math.max(
+          1,
+          numeroSeguro(
+            initialConfig.monthlyLimit,
+            AI_PLAN_OPTIONS[
+              initialPlan
+            ].defaultLimit
+          )
+        )
+      )
+    );
+
+  const [enabledUntil, setEnabledUntil] =
+    useState(
+      isoToDateInput(
+        initialConfig.enabledUntil
+      )
+    );
+
+  const [saving, setSaving] =
+    useState(false);
+
+  const [error, setError] =
+    useState(null);
+
+  const usage =
+    cliente?.asistenteIaUso ||
+    {};
+
+  const used =
+    Math.max(
+      0,
+      numeroSeguro(
+        usage.usadas,
+        0
+      )
+    );
+
+  function changePlan(
+    nextPlan
+  ) {
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        AI_PLAN_OPTIONS,
+        nextPlan
+      )
+    ) {
+      return;
+    }
+
+    setPlan(nextPlan);
+    setMonthlyLimit(
+      String(
+        AI_PLAN_OPTIONS[
+          nextPlan
+        ].defaultLimit
+      )
+    );
+  }
+
+  async function save() {
+    const limit =
+      Number(monthlyLimit);
+
+    if (
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 5000
+    ) {
+      setError(
+        "El límite mensual debe estar entre 1 y 5000 consultas."
+      );
+      return;
+    }
+
+    let untilIso = null;
+
+    if (enabledUntil) {
+      const untilDate =
+        new Date(
+          `${enabledUntil}T23:59:59`
+        );
+
+      if (
+        Number.isNaN(
+          untilDate.getTime()
+        )
+      ) {
+        setError(
+          "La fecha de finalización no es válida."
+        );
+        return;
+      }
+
+      untilIso =
+        untilDate.toISOString();
+    }
+
+    setSaving(true);
+    setError(null);
+
+    try {
+      await fnActualizarAsistenteIa({
+        clienteId:
+          cliente.id,
+        enabled,
+        plan,
+        monthlyLimit:
+          limit,
+        enabledUntil:
+          untilIso,
+      });
+
+      await onDone?.({
+        silent: true,
+      });
+
+      onClose?.();
+    } catch (err) {
+      console.error(
+        "Error configurando asistente IA:",
+        err
+      );
+
+      setError(
+        mensajeError(
+          err,
+          "No se pudo actualizar el asistente IA."
+        )
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <ModalClientHeader
+        title={
+          cliente.nombreNegocio ||
+          "Sin nombre"
+        }
+        subtitle={
+          cliente.email
+        }
+      />
+
+      <div
+        className="
+          mb-4
+          rounded-[22px]
+          border
+          border-[#FFC61A]/15
+          bg-[#11151C]
+          p-4
+          text-white
+        "
+      >
+        <div className="flex items-start gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#FFC61A] text-black">
+            <SparklesIcon className="h-5 w-5" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-[#FFC61A]">
+              Upgrade por cliente
+            </p>
+            <p className="mt-1 text-sm font-black">
+              Asistente personal con Gemini
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-white/45">
+              Solo lectura. La IA puede analizar el resumen del POS, pero no puede modificar ventas, caja ni inventario.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <label className="flex cursor-pointer items-center justify-between gap-4 rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <div>
+            <p className="text-sm font-black">
+              Habilitar asistente IA
+            </p>
+            <p className="mt-1 text-xs text-black/45">
+              Se mostrará automáticamente dentro del POS.
+            </p>
+          </div>
+
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) =>
+              setEnabled(
+                event.target.checked
+              )
+            }
+            className="h-5 w-5 accent-[#FFC61A]"
+          />
+        </label>
+
+        <div className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <label className="block text-xs font-black text-black/55">
+            Plan de IA
+          </label>
+
+          <select
+            value={plan}
+            onChange={(event) =>
+              changePlan(
+                event.target.value
+              )
+            }
+            className="mt-2 w-full rounded-2xl border border-black/10 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-[#FFC61A]"
+          >
+            {Object.entries(
+              AI_PLAN_OPTIONS
+            ).map(
+              ([key, option]) => (
+                <option
+                  key={key}
+                  value={key}
+                >
+                  {option.label}
+                </option>
+              )
+            )}
+          </select>
+
+          <p className="mt-2 text-xs leading-relaxed text-black/45">
+            {AI_PLAN_OPTIONS[plan].description}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+            <span className="block text-xs font-black text-black/55">
+              Límite mensual
+            </span>
+            <input
+              type="number"
+              min="1"
+              max="5000"
+              step="1"
+              value={monthlyLimit}
+              onChange={(event) =>
+                setMonthlyLimit(
+                  event.target.value
+                )
+              }
+              className="mt-2 w-full rounded-2xl border border-black/10 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-[#FFC61A]"
+            />
+          </label>
+
+          <label className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+            <span className="block text-xs font-black text-black/55">
+              Habilitado hasta
+            </span>
+            <input
+              type="date"
+              value={enabledUntil}
+              onChange={(event) =>
+                setEnabledUntil(
+                  event.target.value
+                )
+              }
+              className="mt-2 w-full rounded-2xl border border-black/10 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-[#FFC61A]"
+            />
+            <span className="mt-1.5 block text-[10px] text-black/35">
+              Vacío = sin vencimiento propio.
+            </span>
+          </label>
+        </div>
+
+        <div className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-black text-black/55">
+                Uso del mes actual
+              </p>
+              <p className="mt-1 text-lg font-black">
+                {used} consultas
+              </p>
+            </div>
+
+            <span className="rounded-full bg-[#FFF0BD] px-3 py-1.5 text-[10px] font-black uppercase text-[#8B6500]">
+              {usage.periodo || "Mes actual"}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mt-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">
+          {error}
+        </div>
+      )}
+
+      <div className="mt-5 grid grid-cols-2 gap-2.5">
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={saving}
+          className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm font-bold text-black/55 transition hover:bg-black/[0.03] disabled:opacity-40"
+        >
+          Cancelar
+        </button>
+
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#FFC61A] px-4 py-3 text-sm font-black text-black transition hover:bg-[#FFD248] disabled:opacity-50"
+        >
+          {saving ? (
+            <SpinnerIcon className="h-4 w-4 animate-spin" />
+          ) : (
+            <SaveIcon className="h-4 w-4" />
+          )}
+          {saving
+            ? "Guardando..."
+            : "Guardar"}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -5429,6 +6032,28 @@ function RefreshIcon({
       <path d="M4 18v-5h5" />
       <path d="M18.2 9a7 7 0 0 0-11.7-2.2L4 11" />
       <path d="M5.8 15a7 7 0 0 0 11.7 2.2L20 13" />
+    </svg>
+  );
+}
+
+function SparklesIcon({
+  className = "",
+}) {
+  return (
+    <svg
+      className={
+        className
+      }
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m12 3-1.2 3.4a4 4 0 0 1-2.4 2.4L5 10l3.4 1.2a4 4 0 0 1 2.4 2.4L12 17l1.2-3.4a4 4 0 0 1 2.4-2.4L19 10l-3.4-1.2a4 4 0 0 1-2.4-2.4L12 3Z" />
+      <path d="m5 3 .4 1.1a2 2 0 0 0 1.2 1.2L8 6l-1.4.7a2 2 0 0 0-1.2 1.2L5 9l-.4-1.1a2 2 0 0 0-1.2-1.2L2 6l1.4-.7a2 2 0 0 0 1.2-1.2L5 3Z" />
     </svg>
   );
 }

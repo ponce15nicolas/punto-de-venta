@@ -35,6 +35,9 @@ const Historial = lazy(() => import("./pages/Historial"));
 const Actividad = lazy(() => import("./pages/Actividad"));
 const Compras = lazy(() => import("./pages/Compras"));
 const Ganancias = lazy(() => import("./pages/Ganancias"));
+const AiAssistant = lazy(() =>
+  import("./components/AiAssistant")
+);
 
 const THEME_STORAGE_KEY = "pos-theme";
 const EFFECTS_STORAGE_KEY = "pos-effects";
@@ -781,6 +784,29 @@ function PosApp({ license }) {
         toast={pos.toastMsg}
         onDone={pos.clearToast}
       />
+
+      {license.datosCliente
+        ?.asistenteIa
+        ?.enabled === true && (
+        <Suspense fallback={null}>
+          <AiAssistant
+            pos={pos}
+            config={
+              license.datosCliente
+                ?.asistenteIa
+            }
+            operadorSesion={
+              operadorSesion
+            }
+            deviceId={
+              license.deviceId
+            }
+            launcherVisible={
+              !moreOpen
+            }
+          />
+        </Suspense>
+      )}
 
       <UpdateNotice />
     </div>
