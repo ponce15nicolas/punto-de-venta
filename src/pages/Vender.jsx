@@ -146,6 +146,7 @@ export default function Vender({
 
   const [scanOpen, setScanOpen] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
+  const [checkoutPending, setCheckoutPending] = useState(false);
   const [promotionOpen, setPromotionOpen] = useState(false);
 
   const [saleProduct, setSaleProduct] = useState(null);
@@ -1446,6 +1447,7 @@ export default function Vender({
 
     checkoutInFlightRef.current =
       true;
+    setCheckoutPending(true);
 
     try {
       const ok =
@@ -1469,6 +1471,7 @@ export default function Vender({
     } finally {
       checkoutInFlightRef.current =
         false;
+      setCheckoutPending(false);
     }
   }
 
@@ -2636,9 +2639,13 @@ export default function Vender({
         total={
           total
         }
+        processing={
+          checkoutPending
+        }
         onClose={() => {
           if (
-            checkoutInFlightRef.current
+            checkoutInFlightRef.current ||
+            checkoutPending
           ) {
             return;
           }

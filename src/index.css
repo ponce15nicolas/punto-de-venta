@@ -2457,3 +2457,18 @@ html[data-theme="light"] .pos-sync-link:hover {
   background: rgba(17, 19, 24, 0.04);
   color: rgba(17, 19, 24, 0.78);
 }
+
+
+/* =========================================================
+   INTERACCIONES TÁCTILES
+   Evita demoras percibidas en taps y mantiene los controles
+   principales del POS reactivos en navegadores móviles.
+========================================================= */
+
+button,
+[role="button"],
+input[type="button"],
+input[type="submit"],
+input[type="reset"] {
+  touch-action: manipulation;
+}

@@ -66,6 +66,7 @@ export default function PaymentModal({
   onClose,
   total,
   onConfirm,
+  processing = false,
 }) {
   const [method, setMethod] = useState("efectivo");
   const [received, setReceived] = useState("");
@@ -171,7 +172,7 @@ export default function PaymentModal({
   const SelectedMethodIcon = selectedMethod.icon;
 
   const confirmar = () => {
-    if (!canConfirm) return;
+    if (!canConfirm || processing) return;
 
     if (splitEnabled) {
       const parts = [
@@ -276,7 +277,10 @@ export default function PaymentModal({
       onClose={onClose}
       title="Finalizar venta"
     >
-      <div>
+      <div
+        aria-busy={processing}
+        className={processing ? "pointer-events-none select-none" : ""}
+      >
         {/* =================================================
             TOTAL A COBRAR
         ================================================= */}
@@ -1105,7 +1109,8 @@ export default function PaymentModal({
         <button
           type="button"
           data-modal-primary="true"
-          disabled={!canConfirm}
+          disabled={!canConfirm || processing}
+          aria-busy={processing}
           onClick={confirmar}
           className="
             inline-flex
@@ -1128,12 +1133,18 @@ export default function PaymentModal({
             disabled:opacity-40
           "
         >
-          <CheckIcon className="h-4 w-4" />
-          {splitEnabled
-            ? `Confirmar pago combinado · ${money(total)}`
-            : method === "cuenta"
-              ? `Registrar a cuenta · ${money(total)}`
-              : `Confirmar cobro · ${money(total)}`}
+          {processing ? (
+            <LoadingIcon className="h-4 w-4 animate-spin" />
+          ) : (
+            <CheckIcon className="h-4 w-4" />
+          )}
+          {processing
+            ? "Registrando venta..."
+            : splitEnabled
+              ? `Confirmar pago combinado · ${money(total)}`
+              : method === "cuenta"
+                ? `Registrar a cuenta · ${money(total)}`
+                : `Confirmar cobro · ${money(total)}`}
         </button>
       </div>
     </Modal>
@@ -1313,6 +1324,24 @@ function ChangeIcon({ className = "" }) {
       <path d="m4 9 3 3 3-3" />
       <path d="M4 17h9a4 4 0 0 0 4-4v-1" />
       <path d="m20 15-3-3-3 3" />
+    </svg>
+  );
+}
+
+function LoadingIcon({ className = "" }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      aria-hidden="true"
+    >
+      <path
+        d="M12 3a9 9 0 1 0 9 9"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }

@@ -16310,10 +16310,70 @@ exports.registrarVenta =
                                     sessionId
                                 );
 
-                        const sessionSnap =
-                            await transaction.get(
-                                sessionRef
+                        const requiredByBarcode =
+                            new Map();
+
+                        for (
+                            const item of
+                            itemsEntrada
+                        ) {
+                            const current =
+                                requiredByBarcode.get(
+                                    item.barcode
+                                ) ||
+                                0;
+
+                            const required =
+                                item.tipoVenta ===
+                                    "precio-libre"
+                                    ? 0
+                                    : item.qty;
+
+                            requiredByBarcode.set(
+                                item.barcode,
+                                redondearCantidadVenta(
+                                    current +
+                                    required
+                                )
                             );
+                        }
+
+                        /*
+                         * La caja y todos los productos se leen en un único
+                         * getAll. Antes cada producto esperaba un round-trip
+                         * independiente dentro de la transacción, lo que hacía
+                         * crecer la latencia del cobro a medida que aumentaban
+                         * las líneas del ticket.
+                         */
+                        const productReadEntries =
+                            Array.from(
+                                requiredByBarcode.entries(),
+                                ([barcode, required]) => ({
+                                    barcode,
+                                    required,
+                                    ref:
+                                        clienteRef
+                                            .collection(
+                                                "productos"
+                                            )
+                                            .doc(
+                                                encodeURIComponent(
+                                                    barcode
+                                                )
+                                            ),
+                                })
+                            );
+
+                        const batchedSnaps =
+                            await transaction.getAll(
+                                sessionRef,
+                                ...productReadEntries.map(
+                                    (entry) => entry.ref
+                                )
+                            );
+
+                        const sessionSnap =
+                            batchedSnaps[0];
 
                         if (
                             !sessionSnap.exists ||
@@ -16327,6 +16387,57 @@ exports.registrarVenta =
                                 {
                                     motivo:
                                         "cash-not-open",
+                                }
+                            );
+                        }
+
+                        const productEntries =
+                            new Map();
+
+                        for (
+                            let index = 0;
+                            index <
+                            productReadEntries.length;
+                            index += 1
+                        ) {
+                            const entry =
+                                productReadEntries[
+                                    index
+                                ];
+
+                            const productSnap =
+                                batchedSnaps[
+                                    index + 1
+                                ];
+
+                            if (
+                                !productSnap.exists
+                            ) {
+                                throw new HttpsError(
+                                    "not-found",
+                                    `Producto no encontrado: ${entry.barcode}.`,
+                                    {
+                                        motivo:
+                                            "product-not-found",
+
+                                        barcode:
+                                            entry.barcode,
+                                    }
+                                );
+                            }
+
+                            productEntries.set(
+                                entry.barcode,
+                                {
+                                    ref:
+                                        entry.ref,
+
+                                    data:
+                                        productSnap.data() ||
+                                        {},
+
+                                    required:
+                                        entry.required,
                                 }
                             );
                         }
@@ -16359,90 +16470,6 @@ exports.registrarVenta =
                                 Boolean(
                                     resolved.cuentaRef
                                 );
-                        }
-
-                        const requiredByBarcode =
-                            new Map();
-
-                        for (
-                            const item of
-                            itemsEntrada
-                        ) {
-                            const current =
-                                requiredByBarcode.get(
-                                    item.barcode
-                                ) ||
-                                0;
-
-                            const required =
-                                item.tipoVenta ===
-                                    "precio-libre"
-                                    ? 0
-                                    : item.qty;
-
-                            requiredByBarcode.set(
-                                item.barcode,
-                                redondearCantidadVenta(
-                                    current +
-                                    required
-                                )
-                            );
-                        }
-
-                        const productEntries =
-                            new Map();
-
-                        for (
-                            const [
-                                barcode,
-                                required,
-                            ] of
-                            requiredByBarcode
-                        ) {
-                            const productRef =
-                                clienteRef
-                                    .collection(
-                                        "productos"
-                                    )
-                                    .doc(
-                                        encodeURIComponent(
-                                            barcode
-                                        )
-                                    );
-
-                            const productSnap =
-                                await transaction.get(
-                                    productRef
-                                );
-
-                            if (
-                                !productSnap.exists
-                            ) {
-                                throw new HttpsError(
-                                    "not-found",
-                                    `Producto no encontrado: ${barcode}.`,
-                                    {
-                                        motivo:
-                                            "product-not-found",
-
-                                        barcode,
-                                    }
-                                );
-                            }
-
-                            productEntries.set(
-                                barcode,
-                                {
-                                    ref:
-                                        productRef,
-
-                                    data:
-                                        productSnap.data() ||
-                                        {},
-
-                                    required,
-                                }
-                            );
                         }
 
                         const promotionsSnap =
