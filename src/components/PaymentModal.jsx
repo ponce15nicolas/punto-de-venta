@@ -69,10 +69,12 @@ export default function PaymentModal({
 }) {
   const [method, setMethod] = useState("efectivo");
   const [received, setReceived] = useState("");
+  const [receivedTouched, setReceivedTouched] = useState(false);
   const [splitEnabled, setSplitEnabled] = useState(false);
   const [secondMethod, setSecondMethod] = useState("transferencia");
   const [splitAmount, setSplitAmount] = useState("");
   const [secondReceived, setSecondReceived] = useState("");
+  const [secondReceivedTouched, setSecondReceivedTouched] = useState(false);
   const [clienteNombre, setClienteNombre] = useState("");
   const [clienteTelefono, setClienteTelefono] = useState("");
   const [vencimiento, setVencimiento] = useState("");
@@ -82,10 +84,12 @@ export default function PaymentModal({
     if (open) {
       setMethod("efectivo");
       setReceived("");
+      setReceivedTouched(false);
       setSplitEnabled(false);
       setSecondMethod("transferencia");
       setSplitAmount("");
       setSecondReceived("");
+      setSecondReceivedTouched(false);
       setClienteNombre("");
       setClienteTelefono("");
       setVencimiento("");
@@ -104,6 +108,16 @@ export default function PaymentModal({
   const secondSplitAmount = splitEnabled
     ? roundMoney(total - firstSplitAmount)
     : 0;
+
+  useEffect(() => {
+    if (!splitEnabled || method !== "efectivo" || receivedTouched) return;
+    setReceived(String(firstSplitAmount));
+  }, [splitEnabled, method, firstSplitAmount, receivedTouched]);
+
+  useEffect(() => {
+    if (!splitEnabled || secondMethod !== "efectivo" || secondReceivedTouched) return;
+    setSecondReceived(String(secondSplitAmount));
+  }, [splitEnabled, secondMethod, secondSplitAmount, secondReceivedTouched]);
 
   const firstCashChange =
     method === "efectivo" && Number.isFinite(receivedNum)
@@ -214,17 +228,23 @@ export default function PaymentModal({
 
   function selectPrimaryMethod(nextMethod) {
     setMethod(nextMethod);
+    setReceivedTouched(false);
 
     if (nextMethod === "cuenta") {
       setSplitEnabled(false);
       setSplitAmount("");
       setSecondReceived("");
+      setSecondReceivedTouched(false);
       return;
     }
 
     if (nextMethod === secondMethod) {
       const alternative = SPLIT_METHODS.find((item) => item.id !== nextMethod);
-      if (alternative) setSecondMethod(alternative.id);
+      if (alternative) {
+        setSecondMethod(alternative.id);
+        setSecondReceived("");
+        setSecondReceivedTouched(false);
+      }
     }
   }
 
@@ -236,10 +256,15 @@ export default function PaymentModal({
       if (next) {
         setSplitAmount(String(roundMoney(total / 2)));
         setReceived("");
+        setReceivedTouched(false);
         setSecondReceived("");
+        setSecondReceivedTouched(false);
       } else {
         setSplitAmount("");
+        setReceived("");
+        setReceivedTouched(false);
         setSecondReceived("");
+        setSecondReceivedTouched(false);
       }
       return next;
     });
@@ -481,7 +506,11 @@ export default function PaymentModal({
                       key={item.id}
                       type="button"
                       data-modal-horizontal-item="true"
-                      onClick={() => { setSecondMethod(item.id); setSecondReceived(""); }}
+                      onClick={() => {
+                        setSecondMethod(item.id);
+                        setSecondReceived("");
+                        setSecondReceivedTouched(false);
+                      }}
                       className={
                         `flex items-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-extrabold transition ` +
                         (active
@@ -508,7 +537,10 @@ export default function PaymentModal({
                 <input
                   type="number" min="0" step="0.01" inputMode="decimal"
                   value={received}
-                  onChange={(event) => setReceived(event.target.value)}
+                  onChange={(event) => {
+                    setReceivedTouched(true);
+                    setReceived(event.target.value);
+                  }}
                   placeholder={String(firstSplitAmount)}
                   className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-4 py-3.5 text-sm font-black text-white outline-none focus:border-[#FFC61A]"
                 />
@@ -526,7 +558,10 @@ export default function PaymentModal({
                 <input
                   type="number" min="0" step="0.01" inputMode="decimal"
                   value={secondReceived}
-                  onChange={(event) => setSecondReceived(event.target.value)}
+                  onChange={(event) => {
+                    setSecondReceivedTouched(true);
+                    setSecondReceived(event.target.value);
+                  }}
                   placeholder={String(secondSplitAmount)}
                   className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-4 py-3.5 text-sm font-black text-white outline-none focus:border-[#FFC61A]"
                 />
