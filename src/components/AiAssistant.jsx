@@ -195,6 +195,20 @@ function errorMessage(error) {
   );
 }
 
+function cn(...parts) {
+  return parts.filter(Boolean).join(" ");
+}
+
+function getActiveUiTheme() {
+  if (typeof document === "undefined") {
+    return "dark";
+  }
+
+  return document.documentElement?.dataset?.theme === "light"
+    ? "light"
+    : "dark";
+}
+
 function historyForApi(
   messages
 ) {
@@ -233,6 +247,11 @@ export default function AiAssistant({
   const [open, setOpen] =
     useState(false);
 
+  const [uiTheme, setUiTheme] =
+    useState(() =>
+      getActiveUiTheme()
+    );
+
   const [input, setInput] =
     useState("");
 
@@ -256,6 +275,39 @@ export default function AiAssistant({
 
   const messagesEndRef =
     useRef(null);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return undefined;
+    }
+
+    const syncTheme = () => {
+      setUiTheme(
+        getActiveUiTheme()
+      );
+    };
+
+    syncTheme();
+
+    const observer =
+      new MutationObserver(
+        syncTheme
+      );
+
+    observer.observe(
+      document.documentElement,
+      {
+        attributes: true,
+        attributeFilter: [
+          "data-theme",
+        ],
+      }
+    );
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
 
   const sendingRef =
     useRef(false);
@@ -1049,6 +1101,25 @@ export default function AiAssistant({
     }
   }
 
+  const isLightTheme =
+    uiTheme === "light";
+
+  const launcherClassName =
+    cn(
+      "group fixed bottom-[calc(102px+env(safe-area-inset-bottom))] right-4 z-30 inline-flex h-[54px] items-center gap-2.5 overflow-hidden rounded-[20px] px-2.5 pr-3.5 text-left shadow-[0_18px_46px_rgba(0,0,0,0.20)] backdrop-blur-2xl transition-[transform,border-color,box-shadow] duration-200 active:scale-[0.97] lg:bottom-6 lg:right-6",
+      isLightTheme
+        ? "border border-[#D6C28B] bg-[linear-gradient(135deg,rgba(255,251,240,0.97),rgba(247,240,222,0.94))] text-[#161B22] shadow-[0_18px_42px_rgba(177,138,34,0.16),0_0_0_1px_rgba(255,198,26,0.08)] hover:border-[#D2A826]/55 hover:shadow-[0_22px_52px_rgba(177,138,34,0.22),0_0_20px_rgba(255,198,26,0.12)]"
+        : "border border-white/10 bg-[linear-gradient(135deg,rgba(23,28,39,0.96),rgba(11,13,18,0.94))] text-white shadow-[0_18px_46px_rgba(0,0,0,0.36),0_0_0_1px_rgba(255,198,26,0.04)] hover:border-[#FFC61A]/30 hover:shadow-[0_20px_52px_rgba(0,0,0,0.42),0_0_24px_rgba(255,198,26,0.10)]"
+    );
+
+  const panelClassName =
+    cn(
+      "fixed bottom-2 right-0 top-2 z-50 flex w-[min(94vw,430px)] flex-col overflow-hidden rounded-l-[30px] border shadow-[-20px_0_70px_rgba(0,0,0,0.22)] sm:bottom-4 sm:right-3 sm:top-4 sm:rounded-[30px]",
+      isLightTheme
+        ? "border-[#E3D7B0] bg-[#F6F2E8] text-[#131922]"
+        : "border-white/10 bg-[#0D1118] text-white shadow-[-20px_0_70px_rgba(0,0,0,0.42)]"
+    );
+
   function clearConversation() {
     if (
       sending ||
@@ -1088,54 +1159,11 @@ export default function AiAssistant({
               onClick={() =>
                 setOpen(true)
               }
-              className="
-                group
-                fixed
-                bottom-[calc(102px+env(safe-area-inset-bottom))]
-                right-4
-                z-30
-                inline-flex
-                h-[54px]
-                items-center
-                gap-2.5
-                overflow-hidden
-                rounded-[20px]
-                border
-                border-white/10
-                bg-[linear-gradient(135deg,rgba(23,28,39,0.96),rgba(11,13,18,0.94))]
-                px-2.5
-                pr-3.5
-                text-left
-                text-white
-                shadow-[0_18px_46px_rgba(0,0,0,0.36),0_0_0_1px_rgba(255,198,26,0.04)]
-                backdrop-blur-2xl
-                transition-[transform,border-color,box-shadow]
-                duration-200
-                hover:border-[#FFC61A]/30
-                hover:shadow-[0_20px_52px_rgba(0,0,0,0.42),0_0_24px_rgba(255,198,26,0.10)]
-                active:scale-[0.97]
-                lg:bottom-6
-                lg:right-6
-              "
+              className={launcherClassName}
               aria-label="Abrir asistente IA"
             >
               <span
-                className="
-                  relative
-                  grid
-                  h-9
-                  w-9
-                  shrink-0
-                  place-items-center
-                  rounded-[14px]
-                  border
-                  border-[#FFC61A]/20
-                  bg-[#FFC61A]/10
-                  shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]
-                  transition
-                  duration-200
-                  group-hover:bg-[#FFC61A]/15
-                "
+                className={cn("relative grid h-9 w-9 shrink-0 place-items-center rounded-[14px] border shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] transition duration-200", isLightTheme ? "border-[#D6C28B] bg-[#FFF0B3] group-hover:bg-[#FFE38A]" : "border-[#FFC61A]/20 bg-[#FFC61A]/10 group-hover:bg-[#FFC61A]/15")}
               >
                 <SparklesIcon className="h-[17px] w-[17px] text-[#FFC61A]" />
                 <span
@@ -1154,27 +1182,12 @@ export default function AiAssistant({
 
               <span className="min-w-0 leading-none">
                 <span
-                  className="
-                    block
-                    text-[8px]
-                    font-extrabold
-                    uppercase
-                    tracking-[0.18em]
-                    text-white/35
-                  "
+                  className={cn("block text-[8px] font-extrabold uppercase tracking-[0.18em]", isLightTheme ? "text-black/40" : "text-white/35")}
                 >
                   Copiloto
                 </span>
                 <span
-                  className="
-                    mt-1
-                    block
-                    whitespace-nowrap
-                    text-[12px]
-                    font-black
-                    tracking-[-0.01em]
-                    text-white
-                  "
+                  className={cn("mt-1 block whitespace-nowrap text-[12px] font-black tracking-[-0.01em]", isLightTheme ? "text-[#161B22]" : "text-white")}
                 >
                   Asistente IA
                 </span>
@@ -1230,7 +1243,7 @@ export default function AiAssistant({
                   setOpen(false);
                 }
               }}
-              className="fixed inset-0 z-40 bg-black/55 backdrop-blur-[3px]"
+              className={cn("fixed inset-0 z-40 backdrop-blur-[3px]", isLightTheme ? "bg-[#1D1400]/20" : "bg-black/55")}
               aria-label="Cerrar asistente"
             />
 
@@ -1257,31 +1270,11 @@ export default function AiAssistant({
                 duration: 0.16,
                 ease: "easeOut",
               }}
-              className="
-                fixed
-                bottom-2
-                right-0
-                top-2
-                z-50
-                flex
-                w-[min(94vw,430px)]
-                flex-col
-                overflow-hidden
-                rounded-l-[30px]
-                border
-                border-white/10
-                bg-[#0D1118]
-                text-white
-                shadow-[-20px_0_70px_rgba(0,0,0,0.42)]
-                sm:bottom-4
-                sm:right-3
-                sm:top-4
-                sm:rounded-[30px]
-              "
+              className={panelClassName}
             >
-              <div className="border-b border-white/8 px-4 pb-4 pt-4 sm:px-5">
+              <div className={cn("border-b px-4 pb-4 pt-4 sm:px-5", isLightTheme ? "border-black/8 bg-[#F6F2E8]" : "border-white/8")}>
                 <div className="flex items-center gap-3">
-                  <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#FFC61A] text-black shadow-[0_10px_30px_rgba(255,198,26,0.16)]">
+                  <div className={cn("grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#FFC61A] text-black shadow-[0_10px_30px_rgba(255,198,26,0.16)]", isLightTheme ? "ring-1 ring-[#D9BC65]/45" : "")}>
                     <SparklesIcon className="h-5 w-5" />
                   </div>
 
@@ -1292,7 +1285,7 @@ export default function AiAssistant({
                     <h2 className="mt-1 truncate text-base font-black">
                       Asistente IA
                     </h2>
-                    <p className="mt-0.5 text-[11px] text-white/40">
+                    <p className={cn("mt-0.5 text-[11px]", isLightTheme ? "text-black/50" : "text-white/40")}>
                       Acciones con confirmación · auditoría protegida
                     </p>
                   </div>
@@ -1303,7 +1296,7 @@ export default function AiAssistant({
                       setOpen(false)
                     }
                     disabled={sending}
-                    className="grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-white/5 text-white/55 transition hover:text-white disabled:opacity-35"
+                    className={cn("grid h-9 w-9 place-items-center rounded-xl border transition disabled:opacity-35", isLightTheme ? "border-black/10 bg-black/[0.035] text-black/55 hover:bg-black/[0.05] hover:text-black" : "border-white/10 bg-white/5 text-white/55 hover:text-white")}
                     aria-label="Cerrar asistente"
                   >
                     <CloseIcon className="h-4 w-4" />
@@ -1311,7 +1304,7 @@ export default function AiAssistant({
                 </div>
 
                 {usage && (
-                  <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-white/8 bg-white/[0.035] px-3 py-2 text-[10px] text-white/45">
+                  <div className={cn("mt-3 flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-[10px]", isLightTheme ? "border-black/8 bg-black/[0.03] text-black/55" : "border-white/8 bg-white/[0.035] text-white/45")}>
                     <span>
                       Plan {String(usage.plan || config?.plan || "IA").toUpperCase()}
                     </span>
@@ -1325,26 +1318,26 @@ export default function AiAssistant({
               <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-5">
                 {messages.length === 0 ? (
                   <div>
-                    <div className="rounded-[24px] border border-[#FFC61A]/15 bg-[#FFC61A]/[0.055] p-4">
-                      <p className="text-sm font-black text-white">
+                    <div className={cn("rounded-[24px] border p-4", isLightTheme ? "border-[#D6C28B] bg-[linear-gradient(180deg,rgba(255,246,219,0.88),rgba(255,250,238,0.94))]" : "border-[#FFC61A]/15 bg-[#FFC61A]/[0.055]")}>
+                      <p className={cn("text-sm font-black", isLightTheme ? "text-[#151922]" : "text-white")}>
                         ¿Qué querés saber de tu negocio?
                       </p>
-                      <p className="mt-1.5 text-xs leading-relaxed text-white/45">
+                      <p className={cn("mt-1.5 text-xs leading-relaxed", isLightTheme ? "text-black/55" : "text-white/45")}>
                         Ahora puedo comparar períodos equivalentes, estimar reposición por ritmo de venta, revisar alertas y explicar el efectivo esperado de caja.
                       </p>
                     </div>
 
                     <div className="mt-3 grid grid-cols-3 gap-2">
-                      <div className="rounded-2xl border border-white/8 bg-white/[0.035] p-3">
-                        <p className="text-[9px] font-black uppercase tracking-[0.12em] text-white/30">
+                      <div className={cn("rounded-2xl border p-3", isLightTheme ? "border-black/8 bg-white/80 shadow-[0_6px_18px_rgba(17,24,39,0.04)]" : "border-white/8 bg-white/[0.035]")}>
+                        <p className={cn("text-[9px] font-black uppercase tracking-[0.12em]", isLightTheme ? "text-black/35" : "text-white/30")}>
                           Hoy
                         </p>
-                        <p className="mt-1 truncate text-xs font-black text-white/85">
+                        <p className={cn("mt-1 truncate text-xs font-black", isLightTheme ? "text-[#141922]" : "text-white/85")}>
                           {formatMoney(
                             todaySummary.facturacion
                           )}
                         </p>
-                        <p className="mt-1 text-[9px] text-white/35">
+                        <p className={cn("mt-1 text-[9px]", isLightTheme ? "text-black/40" : "text-white/35")}>
                           {Number(
                             todaySummary.operaciones ||
                               0
@@ -1352,32 +1345,32 @@ export default function AiAssistant({
                         </p>
                       </div>
 
-                      <div className="rounded-2xl border border-white/8 bg-white/[0.035] p-3">
-                        <p className="text-[9px] font-black uppercase tracking-[0.12em] text-white/30">
+                      <div className={cn("rounded-2xl border p-3", isLightTheme ? "border-black/8 bg-white/80 shadow-[0_6px_18px_rgba(17,24,39,0.04)]" : "border-white/8 bg-white/[0.035]")}>
+                        <p className={cn("text-[9px] font-black uppercase tracking-[0.12em]", isLightTheme ? "text-black/35" : "text-white/30")}>
                           Tendencia 7d
                         </p>
-                        <p className="mt-1 text-xs font-black text-white/85">
+                        <p className={cn("mt-1 text-xs font-black", isLightTheme ? "text-[#141922]" : "text-white/85")}>
                           {formatVariation(
                             weekVariation
                           )}
                         </p>
-                        <p className="mt-1 text-[9px] text-white/35">
+                        <p className={cn("mt-1 text-[9px]", isLightTheme ? "text-black/40" : "text-white/35")}>
                           vs. 7d anteriores
                         </p>
                       </div>
 
-                      <div className="rounded-2xl border border-white/8 bg-white/[0.035] p-3">
-                        <p className="text-[9px] font-black uppercase tracking-[0.12em] text-white/30">
+                      <div className={cn("rounded-2xl border p-3", isLightTheme ? "border-black/8 bg-white/80 shadow-[0_6px_18px_rgba(17,24,39,0.04)]" : "border-white/8 bg-white/[0.035]")}>
+                        <p className={cn("text-[9px] font-black uppercase tracking-[0.12em]", isLightTheme ? "text-black/35" : "text-white/30")}>
                           Caja
                         </p>
-                        <p className="mt-1 truncate text-xs font-black text-white/85">
+                        <p className={cn("mt-1 truncate text-xs font-black", isLightTheme ? "text-[#141922]" : "text-white/85")}>
                           {currentCash.abierta
                             ? formatMoney(
                                 currentCash.efectivoEsperado
                               )
                             : "Cerrada"}
                         </p>
-                        <p className="mt-1 text-[9px] text-white/35">
+                        <p className={cn("mt-1 text-[9px]", isLightTheme ? "text-black/40" : "text-white/35")}>
                           {currentCash.abierta
                             ? "efectivo esperado"
                             : "sin turno abierto"}
@@ -1388,10 +1381,10 @@ export default function AiAssistant({
                     {alerts.length > 0 && (
                       <div className="mt-4">
                         <div className="mb-2 flex items-center justify-between gap-3">
-                          <p className="text-[10px] font-black uppercase tracking-[0.14em] text-white/35">
+                          <p className={cn("text-[10px] font-black uppercase tracking-[0.14em]", isLightTheme ? "text-black/40" : "text-white/35")}>
                             Alertas detectadas
                           </p>
-                          <span className="text-[9px] font-bold text-white/25">
+                          <span className={cn("text-[9px] font-bold", isLightTheme ? "text-black/30" : "text-white/25")}>
                             {alerts.length}
                           </span>
                         </div>
@@ -1414,16 +1407,16 @@ export default function AiAssistant({
                                   className={
                                     alert.severidad ===
                                     "alta"
-                                      ? "rounded-2xl border border-red-400/20 bg-red-500/[0.07] px-3.5 py-3 text-left transition hover:bg-red-500/[0.11] disabled:opacity-50"
-                                      : "rounded-2xl border border-[#FFC61A]/15 bg-[#FFC61A]/[0.035] px-3.5 py-3 text-left transition hover:bg-[#FFC61A]/[0.065] disabled:opacity-50"
+                                      ? isLightTheme ? "rounded-2xl border border-red-300/50 bg-red-50 px-3.5 py-3 text-left transition hover:bg-red-100 disabled:opacity-50" : "rounded-2xl border border-red-400/20 bg-red-500/[0.07] px-3.5 py-3 text-left transition hover:bg-red-500/[0.11] disabled:opacity-50"
+                                      : isLightTheme ? "rounded-2xl border border-[#D6C28B] bg-white/85 px-3.5 py-3 text-left transition hover:bg-[#FFF7DE] disabled:opacity-50" : "rounded-2xl border border-[#FFC61A]/15 bg-[#FFC61A]/[0.035] px-3.5 py-3 text-left transition hover:bg-[#FFC61A]/[0.065] disabled:opacity-50"
                                   }
                                 >
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
-                                      <p className="text-xs font-black text-white/85">
+                                      <p className={cn("text-xs font-black", isLightTheme ? "text-[#151922]" : "text-white/85")}>
                                         {alert.titulo}
                                       </p>
-                                      <p className="mt-1 text-[10px] leading-relaxed text-white/40">
+                                      <p className={cn("mt-1 text-[10px] leading-relaxed", isLightTheme ? "text-black/50" : "text-white/40")}>
                                         {alert.detalle}
                                       </p>
                                     </div>
@@ -1448,7 +1441,7 @@ export default function AiAssistant({
                               )
                             }
                             disabled={sending}
-                            className="flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/[0.035] px-3.5 py-3 text-left text-xs font-bold text-white/70 transition hover:border-[#FFC61A]/25 hover:bg-white/[0.055] hover:text-white disabled:opacity-50"
+                            className={cn("flex items-center justify-between gap-3 rounded-2xl border px-3.5 py-3 text-left text-xs font-bold transition disabled:opacity-50", isLightTheme ? "border-black/8 bg-white/80 text-black/70 hover:border-[#D2A826]/35 hover:bg-[#FFF7DE] hover:text-black" : "border-white/8 bg-white/[0.035] text-white/70 hover:border-[#FFC61A]/25 hover:bg-white/[0.055] hover:text-white")}
                           >
                             <span>{prompt}</span>
                             <ChevronIcon className="h-4 w-4 shrink-0 text-[#FFC61A]" />
@@ -1466,11 +1459,11 @@ export default function AiAssistant({
                           className={
                             message.role ===
                             "user"
-                              ? "ml-auto max-w-[88%] rounded-[20px] rounded-br-md bg-[#FFC61A] px-3.5 py-3 text-sm font-semibold leading-relaxed text-black"
+                              ? "ml-auto max-w-[88%] rounded-[20px] rounded-br-md bg-[#FFC61A] px-3.5 py-3 text-sm font-semibold leading-relaxed text-black shadow-[0_8px_18px_rgba(255,198,26,0.14)]"
                               : message.role ===
                                   "error"
-                                ? "max-w-[94%] rounded-[20px] border border-red-400/20 bg-red-500/10 px-3.5 py-3 text-sm leading-relaxed text-red-100"
-                                : "max-w-[94%] rounded-[20px] rounded-bl-md border border-white/8 bg-white/[0.045] px-3.5 py-3 text-sm leading-relaxed text-white/80"
+                                ? isLightTheme ? "max-w-[94%] rounded-[20px] border border-red-300/50 bg-red-50 px-3.5 py-3 text-sm leading-relaxed text-red-700" : "max-w-[94%] rounded-[20px] border border-red-400/20 bg-red-500/10 px-3.5 py-3 text-sm leading-relaxed text-red-100"
+                                : isLightTheme ? "max-w-[94%] rounded-[20px] rounded-bl-md border border-black/8 bg-white/85 px-3.5 py-3 text-sm leading-relaxed text-black/80 shadow-[0_8px_18px_rgba(17,24,39,0.04)]" : "max-w-[94%] rounded-[20px] rounded-bl-md border border-white/8 bg-white/[0.045] px-3.5 py-3 text-sm leading-relaxed text-white/80"
                           }
                         >
                           <div className="whitespace-pre-wrap break-words">
@@ -1498,6 +1491,7 @@ export default function AiAssistant({
                                     message
                                   )
                                 }
+                                isLightTheme={isLightTheme}
                               />
                             )}
                         </div>
@@ -1505,7 +1499,7 @@ export default function AiAssistant({
                     )}
 
                     {sending && (
-                      <div className="flex max-w-[94%] items-center gap-2 rounded-[20px] rounded-bl-md border border-white/8 bg-white/[0.045] px-3.5 py-3 text-xs font-bold text-white/45">
+                      <div className={cn("flex max-w-[94%] items-center gap-2 rounded-[20px] rounded-bl-md border px-3.5 py-3 text-xs font-bold", isLightTheme ? "border-black/8 bg-white/85 text-black/50" : "border-white/8 bg-white/[0.045] text-white/45")}>
                         <SpinnerIcon className="h-4 w-4 animate-spin text-[#FFC61A]" />
                         Analizando datos del POS…
                       </div>
@@ -1516,7 +1510,7 @@ export default function AiAssistant({
                 )}
               </div>
 
-              <div className="border-t border-white/8 bg-[#0A0E14] px-4 pb-[calc(14px+env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-4">
+              <div className={cn("border-t px-4 pb-[calc(14px+env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-4", isLightTheme ? "border-black/8 bg-[#F9F5EA]" : "border-white/8 bg-[#0A0E14]")}>
                 {messages.length > 0 && (
                   <div className="mb-2 flex justify-end">
                     <button
@@ -1528,7 +1522,7 @@ export default function AiAssistant({
                           executingActionId
                         )
                       }
-                      className="text-[10px] font-bold text-white/30 transition hover:text-white/60 disabled:opacity-30"
+                      className={cn("text-[10px] font-bold transition disabled:opacity-30", isLightTheme ? "text-black/35 hover:text-black/65" : "text-white/30 hover:text-white/60")}
                     >
                       Limpiar conversación
                     </button>
@@ -1567,7 +1561,7 @@ export default function AiAssistant({
                     disabled={sending}
                     rows={1}
                     placeholder="Preguntá o pedí una tarea sobre tu negocio…"
-                    className="max-h-28 min-h-11 flex-1 resize-none rounded-2xl border border-white/10 bg-white/[0.045] px-3.5 py-3 text-sm text-white outline-none transition placeholder:text-white/25 focus:border-[#FFC61A]/45 disabled:opacity-55"
+                    className={cn("max-h-28 min-h-11 flex-1 resize-none rounded-2xl border px-3.5 py-3 text-sm outline-none transition focus:border-[#FFC61A]/45 disabled:opacity-55", isLightTheme ? "border-black/10 bg-white text-black placeholder:text-black/35" : "border-white/10 bg-white/[0.045] text-white placeholder:text-white/25")}
                   />
 
                   <button
@@ -1602,6 +1596,7 @@ function AiActionCard({
   executing,
   onConfirm,
   onCancel,
+  isLightTheme = false,
 }) {
   const destructive =
     action?.destructiva ===
@@ -1726,16 +1721,20 @@ function AiActionCard({
     <div
       className={
         destructive
-          ? "mt-3 rounded-2xl border border-red-400/25 bg-red-500/[0.07] p-3"
-          : "mt-3 rounded-2xl border border-[#FFC61A]/20 bg-[#FFC61A]/[0.045] p-3"
+          ? isLightTheme
+            ? "mt-3 rounded-2xl border border-red-300/60 bg-red-50 p-3"
+            : "mt-3 rounded-2xl border border-red-400/25 bg-red-500/[0.07] p-3"
+          : isLightTheme
+            ? "mt-3 rounded-2xl border border-[#D6C28B] bg-[#FFF9E7] p-3"
+            : "mt-3 rounded-2xl border border-[#FFC61A]/20 bg-[#FFC61A]/[0.045] p-3"
       }
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[10px] font-black uppercase tracking-[0.14em] text-white/35">
+          <p className={cn("text-[10px] font-black uppercase tracking-[0.14em]", isLightTheme ? "text-black/40" : "text-white/35")}>
             Acción propuesta
           </p>
-          <p className="mt-1 text-xs font-black text-white/90">
+          <p className={cn("mt-1 text-xs font-black", isLightTheme ? "text-[#151922]" : "text-white/90")}>
             {action?.titulo ||
               "Acción"}
           </p>
@@ -1743,8 +1742,12 @@ function AiActionCard({
         <span
           className={
             destructive
-              ? "rounded-full bg-red-400/10 px-2 py-1 text-[9px] font-black uppercase tracking-[0.1em] text-red-200"
-              : "rounded-full bg-[#FFC61A]/10 px-2 py-1 text-[9px] font-black uppercase tracking-[0.1em] text-[#FFD65B]"
+              ? isLightTheme
+                ? "rounded-full bg-red-100 px-2 py-1 text-[9px] font-black uppercase tracking-[0.1em] text-red-700"
+                : "rounded-full bg-red-400/10 px-2 py-1 text-[9px] font-black uppercase tracking-[0.1em] text-red-200"
+              : isLightTheme
+                ? "rounded-full bg-[#FFF0B3] px-2 py-1 text-[9px] font-black uppercase tracking-[0.1em] text-[#8C6A00]"
+                : "rounded-full bg-[#FFC61A]/10 px-2 py-1 text-[9px] font-black uppercase tracking-[0.1em] text-[#FFD65B]"
           }
         >
           {destructive
@@ -1755,24 +1758,24 @@ function AiActionCard({
         </span>
       </div>
 
-      <p className="mt-2 text-[11px] leading-relaxed text-white/55">
+      <p className={cn("mt-2 text-[11px] leading-relaxed", isLightTheme ? "text-black/55" : "text-white/55")}>
         {action?.descripcion}
       </p>
 
       {action?.tipo ===
         "sumar_stock" && (
-          <div className="mt-2 rounded-xl bg-black/20 px-3 py-2 text-[11px] text-white/55">
+          <div className={cn("mt-2 rounded-xl px-3 py-2 text-[11px]", isLightTheme ? "bg-black/[0.045] text-black/60" : "bg-black/20 text-white/55")}>
             Stock: {action?.payload?.stockActual ?? "—"} → {action?.payload?.stockResultante ?? "—"} {action?.payload?.unidad || ""}
           </div>
         )}
 
       {financialDetails.length > 0 && (
-        <div className="mt-2 space-y-1 rounded-xl bg-black/20 px-3 py-2">
+        <div className={cn("mt-2 space-y-1 rounded-xl px-3 py-2", isLightTheme ? "bg-black/[0.045]" : "bg-black/20")}>
           {financialDetails.map(
             (detail) => (
               <p
                 key={detail}
-                className="text-[11px] text-white/55"
+                className={cn("text-[11px]", isLightTheme ? "text-black/60" : "text-white/55")}
               >
                 {detail}
               </p>
@@ -1782,12 +1785,12 @@ function AiActionCard({
       )}
 
       {items.length > 0 && (
-        <div className="mt-2 space-y-1 rounded-xl bg-black/20 px-3 py-2">
+        <div className={cn("mt-2 space-y-1 rounded-xl px-3 py-2", isLightTheme ? "bg-black/[0.045]" : "bg-black/20")}>
           {items.map(
             (item, index) => (
               <p
                 key={`${item?.concepto || "item"}-${index}`}
-                className="text-[11px] text-white/55"
+                className={cn("text-[11px]", isLightTheme ? "text-black/60" : "text-white/55")}
               >
                 {item?.cantidad || 1} × {item?.concepto || "Ítem"}
                 {item?.proveedor
@@ -1803,10 +1806,16 @@ function AiActionCard({
         <div
           className={
             status === "success"
-              ? "mt-2 rounded-xl border border-emerald-400/15 bg-emerald-400/[0.07] px-3 py-2 text-[11px] font-semibold text-emerald-100"
+              ? isLightTheme
+                ? "mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-semibold text-emerald-700"
+                : "mt-2 rounded-xl border border-emerald-400/15 bg-emerald-400/[0.07] px-3 py-2 text-[11px] font-semibold text-emerald-100"
               : status === "cancelled"
-                ? "mt-2 rounded-xl border border-white/8 bg-white/[0.035] px-3 py-2 text-[11px] font-semibold text-white/45"
-                : "mt-2 rounded-xl border border-red-400/15 bg-red-400/[0.06] px-3 py-2 text-[11px] font-semibold text-red-100"
+                ? isLightTheme
+                  ? "mt-2 rounded-xl border border-black/8 bg-black/[0.035] px-3 py-2 text-[11px] font-semibold text-black/50"
+                  : "mt-2 rounded-xl border border-white/8 bg-white/[0.035] px-3 py-2 text-[11px] font-semibold text-white/45"
+                : isLightTheme
+                  ? "mt-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-semibold text-red-700"
+                  : "mt-2 rounded-xl border border-red-400/15 bg-red-400/[0.06] px-3 py-2 text-[11px] font-semibold text-red-100"
           }
         >
           {result}
@@ -1820,7 +1829,7 @@ function AiActionCard({
               type="button"
               onClick={onCancel}
               disabled={executing}
-              className="flex-1 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2 text-[11px] font-black text-white/55 transition hover:bg-white/[0.06] disabled:opacity-40"
+              className={cn("flex-1 rounded-xl border px-3 py-2 text-[11px] font-black transition disabled:opacity-40", isLightTheme ? "border-black/10 bg-black/[0.035] text-black/60 hover:bg-black/[0.06]" : "border-white/10 bg-white/[0.035] text-white/55 hover:bg-white/[0.06]")}
             >
               Cancelar
             </button>
@@ -1830,8 +1839,8 @@ function AiActionCard({
               disabled={executing}
               className={
                 destructive
-                  ? "flex-1 rounded-xl bg-red-500 px-3 py-2 text-[11px] font-black text-white transition hover:bg-red-400 active:scale-[0.98] disabled:opacity-45"
-                  : "flex-1 rounded-xl bg-[#FFC61A] px-3 py-2 text-[11px] font-black text-black transition hover:bg-[#FFD248] active:scale-[0.98] disabled:opacity-45"
+                  ? cn("flex-1 rounded-xl px-3 py-2 text-[11px] font-black transition active:scale-[0.98] disabled:opacity-45", isLightTheme ? "bg-red-600 text-white hover:bg-red-500" : "bg-red-500 text-white hover:bg-red-400")
+                  : cn("flex-1 rounded-xl bg-[#FFC61A] px-3 py-2 text-[11px] font-black text-black transition hover:bg-[#FFD248] active:scale-[0.98] disabled:opacity-45", isLightTheme ? "shadow-[0_8px_18px_rgba(255,198,26,0.12)]" : "")
               }
             >
               {executing
