@@ -21,6 +21,8 @@ import Modal from "../components/Modal";
 import PaymentModal from "../components/PaymentModal";
 import Scanner from "../components/Scanner";
 import PromotionSaleModal from "../components/PromotionSaleModal";
+import SaleTicketModal from "../components/SaleTicketModal";
+import { useOperator } from "../components/OperatorGate";
 
 /* =========================================================
    HELPERS
@@ -126,7 +128,12 @@ function getCartLineKey(item, index) {
 export default function Vender({
   pos,
   goInventario,
+  ticketEnabled = false,
 }) {
+  const {
+    operador,
+  } = useOperator();
+
   const {
     catalog,
     cart,
@@ -148,6 +155,15 @@ export default function Vender({
   const [payOpen, setPayOpen] = useState(false);
   const [checkoutPending, setCheckoutPending] = useState(false);
   const [promotionOpen, setPromotionOpen] = useState(false);
+  const [ticketOpen, setTicketOpen] = useState(false);
+  const [lastTicket, setLastTicket] = useState(null);
+
+  useEffect(() => {
+    if (!ticketEnabled) {
+      setTicketOpen(false);
+      setLastTicket(null);
+    }
+  }, [ticketEnabled]);
 
   const [saleProduct, setSaleProduct] = useState(null);
   const [editingIndex, setEditingIndex] = useState(null);
@@ -531,6 +547,7 @@ export default function Vender({
         scanOpen ||
         payOpen ||
         promotionOpen ||
+        ticketOpen ||
         saleProduct ||
         checkoutInFlightRef.current
       ) {
@@ -663,6 +680,7 @@ export default function Vender({
     openSession,
     payOpen,
     promotionOpen,
+    ticketOpen,
     products,
     saleProduct,
     scanOpen,
@@ -1445,18 +1463,84 @@ export default function Vender({
       return;
     }
 
+    /*
+     * Guardamos una foto del ticket antes del checkout porque
+     * usePosData vacía el carrito cuando la venta se confirma.
+     */
+    const cartSnapshot =
+      ticketEnabled
+        ? cart.map((item) => ({
+            ...item,
+          }))
+        : [];
+
+    const totalSnapshot =
+      total;
+
+    const discountSnapshot =
+      promotionDiscountTotal;
+
     checkoutInFlightRef.current =
       true;
     setCheckoutPending(true);
 
     try {
-      const ok =
+      const result =
         await Promise.resolve(
           checkout(payment)
         );
 
-      if (ok) {
+      if (result) {
+        const sale =
+          typeof result === "object"
+            ? result
+            : {
+                id: `local-${Date.now()}`,
+                timestamp: new Date().toISOString(),
+                items: cartSnapshot,
+                total: totalSnapshot,
+                promotionDiscountTotal: discountSnapshot,
+                payment,
+              };
+
         setPayOpen(false);
+
+        if (ticketEnabled) {
+          setLastTicket({
+            sale: {
+              ...sale,
+              items:
+                Array.isArray(sale?.items) &&
+                sale.items.length > 0
+                  ? sale.items
+                  : cartSnapshot,
+              total:
+                Number.isFinite(Number(sale?.total))
+                  ? Number(sale.total)
+                  : totalSnapshot,
+              promotionDiscountTotal:
+                Number.isFinite(
+                  Number(
+                    sale?.promotionDiscountTotal
+                  )
+                )
+                  ? Number(
+                      sale.promotionDiscountTotal
+                    )
+                  : discountSnapshot,
+              payment:
+                sale?.payment ||
+                payment,
+            },
+            shopName:
+              pos?.shopName ||
+              "Mi Negocio",
+            operatorName:
+              operador?.nombre ||
+              "Operador",
+          });
+          setTicketOpen(true);
+        }
       }
     } catch (error) {
       console.error(
@@ -2658,6 +2742,20 @@ export default function Vender({
           handlePaymentConfirm
         }
       />
+
+      {ticketEnabled && (
+        <SaleTicketModal
+          open={
+            ticketOpen
+          }
+          ticket={
+            lastTicket
+          }
+          onClose={() => {
+            setTicketOpen(false);
+          }}
+        />
+      )}
 
       {/* =====================================================
           PESO / IMPORTE LIBRE

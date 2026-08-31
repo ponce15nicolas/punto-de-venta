@@ -6620,7 +6620,14 @@ export function usePosData({
                   )}`
           );
 
-          return true;
+          /*
+           * Devolvemos la venta confirmada para que la interfaz
+           * pueda imprimir, descargar o compartir su ticket sin
+           * reconstruir datos después de vaciar el carrito.
+           * Los consumidores anteriores que esperaban un booleano
+           * siguen funcionando porque el objeto es truthy.
+           */
+          return sale;
         } catch (error) {
           console.error(
             "Error registrando venta:",

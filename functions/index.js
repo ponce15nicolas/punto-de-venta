@@ -72,6 +72,24 @@ const CALLABLE_OPTIONS = {
 };
 
 /* =========================================================
+   FACTURACIÓN ARCA — ETAPA 1 / SANDBOX
+========================================================= */
+
+/*
+ * Esta primera etapa NO emite comprobantes fiscales ni se conecta
+ * a producción. El entorno queda bloqueado en sandbox hasta que
+ * exista una integración WSAA/WSFEv1 validada de punta a punta.
+ */
+const ARCA_ENVIRONMENT = "sandbox";
+const ARCA_REQUIRED_COUNT = 5;
+const ARCA_FISCAL_CONDITIONS = new Set([
+    "monotributo",
+    "monotributo_social",
+    "responsable_inscripto",
+    "exento",
+]);
+
+/* =========================================================
    ASISTENTE IA
 ========================================================= */
 
@@ -1749,6 +1767,9 @@ const AUDIT_ACTIONS = Object.freeze({
 
     ELIMINACION_PROMOCION:
         "eliminacion-promocion",
+
+    CONFIGURACION_ARCA:
+        "configuracion-arca",
 });
 
 const AUDIT_ACTION_VALUES =
@@ -10793,6 +10814,798 @@ exports.actualizarConfigGlobalAsistenteIa =
                 config:
                     obtenerConfigGlobalIa(
                         config
+                    ),
+            };
+        }
+    );
+
+/* =========================================================
+   ARCA — HELPERS DE CONFIGURACIÓN SANDBOX
+========================================================= */
+
+function soloDigitosArca(
+    value
+) {
+    return String(
+        value || ""
+    ).replace(
+        /\D/g,
+        ""
+    );
+}
+
+function esCuitArcaValido(
+    value
+) {
+    const digits =
+        soloDigitosArca(
+            value
+        );
+
+    if (
+        digits.length !== 11
+    ) {
+        return false;
+    }
+
+    const weights = [
+        5,
+        4,
+        3,
+        2,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+    ];
+
+    let total = 0;
+
+    for (
+        let index = 0;
+        index < 10;
+        index += 1
+    ) {
+        total +=
+            Number(
+                digits[index]
+            ) *
+            weights[index];
+    }
+
+    const remainder =
+        total % 11;
+
+    const verifier =
+        remainder === 0
+            ? 0
+            : remainder === 1
+                ? 9
+                : 11 - remainder;
+
+    return (
+        verifier ===
+        Number(
+            digits[10]
+        )
+    );
+}
+
+function normalizarCuitArca(
+    value
+) {
+    const digits =
+        soloDigitosArca(
+            value
+        );
+
+    if (!digits) {
+        return null;
+    }
+
+    if (
+        !esCuitArcaValido(
+            digits
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El CUIT no es válido."
+        );
+    }
+
+    return digits;
+}
+
+function formatearCuitArca(
+    value
+) {
+    const digits =
+        soloDigitosArca(
+            value
+        );
+
+    if (
+        digits.length !== 11
+    ) {
+        return "";
+    }
+
+    return `${digits.slice(0, 2)}-${digits.slice(2, 10)}-${digits.slice(10)}`;
+}
+
+function normalizarTextoArcaOpcional(
+    value,
+    fieldName,
+    {
+        minLength = 2,
+        maxLength = 180,
+    } = {}
+) {
+    if (
+        value == null ||
+        String(value).trim() === ""
+    ) {
+        return null;
+    }
+
+    return validarTextoEstricto(
+        String(value),
+        fieldName,
+        {
+            minLength,
+            maxLength,
+        }
+    );
+}
+
+function normalizarCondicionFiscalArca(
+    value
+) {
+    const normalized =
+        String(
+            value || ""
+        )
+            .trim()
+            .toLowerCase();
+
+    if (!normalized) {
+        return null;
+    }
+
+    if (
+        !ARCA_FISCAL_CONDITIONS.has(
+            normalized
+        )
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "La condición fiscal seleccionada no es válida."
+        );
+    }
+
+    return normalized;
+}
+
+function normalizarPuntoVentaArca(
+    value
+) {
+    if (
+        value == null ||
+        String(value).trim() === ""
+    ) {
+        return null;
+    }
+
+    const number =
+        Number(value);
+
+    if (
+        !Number.isInteger(
+            number
+        ) ||
+        number < 1 ||
+        number > 99999
+    ) {
+        throw new HttpsError(
+            "invalid-argument",
+            "El punto de venta debe ser un número entre 1 y 99999."
+        );
+    }
+
+    return number;
+}
+
+function evaluarConfiguracionArca(
+    config = {}
+) {
+    const requirements = {
+        cuit:
+            esCuitArcaValido(
+                config.cuit
+            ),
+        razonSocial:
+            Boolean(
+                textoSeguro(
+                    config.razonSocial,
+                    120
+                )
+            ),
+        condicionFiscal:
+            ARCA_FISCAL_CONDITIONS.has(
+                String(
+                    config.condicionFiscal ||
+                    ""
+                )
+            ),
+        domicilioFiscal:
+            Boolean(
+                textoSeguro(
+                    config.domicilioFiscal,
+                    220
+                )
+            ),
+        puntoVenta:
+            Number.isInteger(
+                Number(
+                    config.puntoVenta
+                )
+            ) &&
+            Number(
+                config.puntoVenta
+            ) >= 1 &&
+            Number(
+                config.puntoVenta
+            ) <= 99999,
+    };
+
+    const completed =
+        Object.values(
+            requirements
+        ).filter(Boolean).length;
+
+    const hasAnyData =
+        completed > 0 ||
+        Boolean(
+            config.cuit ||
+            config.razonSocial ||
+            config.condicionFiscal ||
+            config.domicilioFiscal ||
+            config.puntoVenta
+        );
+
+    const ready =
+        completed ===
+        ARCA_REQUIRED_COUNT;
+
+    return {
+        requirements,
+        completed,
+        total:
+            ARCA_REQUIRED_COUNT,
+        ready,
+        status:
+            ready
+                ? "sandbox-operativo"
+                : hasAnyData
+                    ? "configurando"
+                    : "no-configurado",
+    };
+}
+
+function serializarConfiguracionArca(
+    config = {}
+) {
+    const evaluation =
+        evaluarConfiguracionArca(
+            config
+        );
+
+    const cuit =
+        soloDigitosArca(
+            config.cuit
+        );
+
+    return {
+        cuit:
+            cuit || "",
+        cuitFormato:
+            cuit
+                ? formatearCuitArca(
+                    cuit
+                )
+                : "",
+        razonSocial:
+            textoSeguro(
+                config.razonSocial,
+                120
+            ) || "",
+        condicionFiscal:
+            ARCA_FISCAL_CONDITIONS.has(
+                String(
+                    config.condicionFiscal ||
+                    ""
+                )
+            )
+                ? String(
+                    config.condicionFiscal
+                )
+                : "",
+        domicilioFiscal:
+            textoSeguro(
+                config.domicilioFiscal,
+                220
+            ) || "",
+        puntoVenta:
+            Number.isInteger(
+                Number(
+                    config.puntoVenta
+                )
+            )
+                ? Number(
+                    config.puntoVenta
+                )
+                : null,
+        environment:
+            ARCA_ENVIRONMENT,
+        productionEnabled:
+            false,
+        ...evaluation,
+    };
+}
+
+function resumenArcaDesdeConfig(
+    config,
+    enabled
+) {
+    const evaluation =
+        evaluarConfiguracionArca(
+            config
+        );
+
+    return {
+        enabled:
+            enabled === true,
+        environment:
+            ARCA_ENVIRONMENT,
+        productionEnabled:
+            false,
+        status:
+            evaluation.status,
+        completedRequirements:
+            evaluation.completed,
+        requiredRequirements:
+            evaluation.total,
+        ready:
+            evaluation.ready,
+    };
+}
+
+/* =========================================================
+   ADMIN — HABILITAR TICKETS POR CLIENTE
+========================================================= */
+
+exports.actualizarModuloTicket =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            await verificarAdmin(
+                request.auth
+            );
+
+            const clienteId =
+                validarId(
+                    request.data
+                        ?.clienteId,
+                    "clienteId"
+                );
+
+            const enabled =
+                request.data
+                    ?.enabled ===
+                true;
+
+            const clienteRef =
+                db
+                    .collection(
+                        "clientes"
+                    )
+                    .doc(
+                        clienteId
+                    );
+
+            const clienteSnap =
+                await clienteRef.get();
+
+            if (
+                !clienteSnap.exists
+            ) {
+                throw new HttpsError(
+                    "not-found",
+                    "Cliente no encontrado."
+                );
+            }
+
+            const ticket = {
+                enabled,
+                thermal58Enabled:
+                    true,
+                thermal80Enabled:
+                    true,
+                pdfEnabled:
+                    true,
+                shareEnabled:
+                    true,
+            };
+
+            await clienteRef.set(
+                {
+                    ticket: {
+                        ...ticket,
+                        updatedAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                        updatedBy:
+                            request.auth.uid,
+                    },
+                },
+                {
+                    merge: true,
+                }
+            );
+
+            return {
+                ok: true,
+                ticket,
+            };
+        }
+    );
+
+/* =========================================================
+   ADMIN — HABILITAR MÓDULO ARCA POR CLIENTE
+========================================================= */
+
+exports.actualizarModuloArca =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            await verificarAdmin(
+                request.auth
+            );
+
+            const clienteId =
+                validarId(
+                    request.data
+                        ?.clienteId,
+                    "clienteId"
+                );
+
+            const enabled =
+                request.data
+                    ?.enabled ===
+                true;
+
+            const clienteRef =
+                db
+                    .collection(
+                        "clientes"
+                    )
+                    .doc(
+                        clienteId
+                    );
+
+            const configRef =
+                clienteRef
+                    .collection(
+                        "configuracion"
+                    )
+                    .doc(
+                        "arca"
+                    );
+
+            const [
+                clienteSnap,
+                configSnap,
+            ] =
+                await Promise.all([
+                    clienteRef.get(),
+                    configRef.get(),
+                ]);
+
+            if (
+                !clienteSnap.exists
+            ) {
+                throw new HttpsError(
+                    "not-found",
+                    "Cliente no encontrado."
+                );
+            }
+
+            const summary =
+                resumenArcaDesdeConfig(
+                    configSnap.exists
+                        ? configSnap.data()
+                        : {},
+                    enabled
+                );
+
+            await clienteRef.set(
+                {
+                    arca: {
+                        ...summary,
+                        updatedAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                        updatedBy:
+                            request.auth.uid,
+                    },
+                },
+                {
+                    merge: true,
+                }
+            );
+
+            return {
+                ok: true,
+                arca:
+                    summary,
+            };
+        }
+    );
+
+/* =========================================================
+   CLIENTE — LEER CONFIGURACIÓN ARCA
+========================================================= */
+
+exports.obtenerConfiguracionArca =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const context =
+                await resolverContextoEscrituraPos(
+                    request,
+                    {
+                        requireRole:
+                            "admin",
+                    }
+                );
+
+            if (
+                context.clienteData
+                    ?.arca
+                    ?.enabled !==
+                true
+            ) {
+                throw new HttpsError(
+                    "permission-denied",
+                    "El módulo ARCA no está habilitado para esta licencia."
+                );
+            }
+
+            const configSnap =
+                await context
+                    .clienteRef
+                    .collection(
+                        "configuracion"
+                    )
+                    .doc(
+                        "arca"
+                    )
+                    .get();
+
+            const config =
+                serializarConfiguracionArca(
+                    configSnap.exists
+                        ? configSnap.data()
+                        : {}
+                );
+
+            return {
+                ok: true,
+                config,
+            };
+        }
+    );
+
+/* =========================================================
+   CLIENTE — GUARDAR ONBOARDING ARCA / SANDBOX
+========================================================= */
+
+exports.guardarConfiguracionArca =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const context =
+                await resolverContextoEscrituraPos(
+                    request,
+                    {
+                        requireRole:
+                            "admin",
+                    }
+                );
+
+            if (
+                context.clienteData
+                    ?.arca
+                    ?.enabled !==
+                true
+            ) {
+                throw new HttpsError(
+                    "permission-denied",
+                    "El módulo ARCA no está habilitado para esta licencia."
+                );
+            }
+
+            if (
+                request.data
+                    ?.environment &&
+                request.data
+                    ?.environment !==
+                    ARCA_ENVIRONMENT
+            ) {
+                throw new HttpsError(
+                    "permission-denied",
+                    "Producción ARCA está bloqueada en esta etapa."
+                );
+            }
+
+            const cuit =
+                normalizarCuitArca(
+                    request.data
+                        ?.cuit
+                );
+
+            const razonSocial =
+                normalizarTextoArcaOpcional(
+                    request.data
+                        ?.razonSocial,
+                    "Razón social",
+                    {
+                        minLength: 2,
+                        maxLength: 120,
+                    }
+                );
+
+            const condicionFiscal =
+                normalizarCondicionFiscalArca(
+                    request.data
+                        ?.condicionFiscal
+                );
+
+            const domicilioFiscal =
+                normalizarTextoArcaOpcional(
+                    request.data
+                        ?.domicilioFiscal,
+                    "Domicilio fiscal",
+                    {
+                        minLength: 4,
+                        maxLength: 220,
+                    }
+                );
+
+            const puntoVenta =
+                normalizarPuntoVentaArca(
+                    request.data
+                        ?.puntoVenta
+                );
+
+            const nextConfig = {
+                cuit,
+                razonSocial,
+                condicionFiscal,
+                domicilioFiscal,
+                puntoVenta,
+                environment:
+                    ARCA_ENVIRONMENT,
+                productionEnabled:
+                    false,
+            };
+
+            const evaluation =
+                evaluarConfiguracionArca(
+                    nextConfig
+                );
+
+            const configRef =
+                context
+                    .clienteRef
+                    .collection(
+                        "configuracion"
+                    )
+                    .doc(
+                        "arca"
+                    );
+
+            const summary =
+                resumenArcaDesdeConfig(
+                    nextConfig,
+                    true
+                );
+
+            await db.runTransaction(
+                async (
+                    transaction
+                ) => {
+                    transaction.set(
+                        configRef,
+                        {
+                            ...nextConfig,
+                            status:
+                                evaluation.status,
+                            completedRequirements:
+                                evaluation.completed,
+                            requiredRequirements:
+                                evaluation.total,
+                            sandboxValidatedAt:
+                                evaluation.ready
+                                    ? admin.firestore.FieldValue.serverTimestamp()
+                                    : null,
+                            updatedAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                            updatedByOperatorId:
+                                context.operador.id,
+                        },
+                        {
+                            merge: true,
+                        }
+                    );
+
+                    transaction.set(
+                        context
+                            .clienteRef,
+                        {
+                            arca: {
+                                ...summary,
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            },
+                        },
+                        {
+                            merge: true,
+                        }
+                    );
+
+                    const auditEvent =
+                        crearEventoAuditoria({
+                            clienteRef:
+                                context
+                                    .clienteRef,
+                            operador:
+                                context
+                                    .operador,
+                            accion:
+                                AUDIT_ACTIONS
+                                    .CONFIGURACION_ARCA,
+                            deviceId:
+                                context
+                                    .deviceId,
+                            sessionId:
+                                context
+                                    .sessionId,
+                            detalle: {
+                                estado:
+                                    evaluation.status,
+                                requisitosCompletos:
+                                    evaluation.completed,
+                                requisitosTotales:
+                                    evaluation.total,
+                                entorno:
+                                    ARCA_ENVIRONMENT,
+                            },
+                        });
+
+                    transaction.set(
+                        auditEvent.ref,
+                        auditEvent.data
+                    );
+                }
+            );
+
+            return {
+                ok: true,
+                config:
+                    serializarConfiguracionArca(
+                        nextConfig
                     ),
             };
         }

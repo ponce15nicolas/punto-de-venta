@@ -35,6 +35,7 @@ const Historial = lazy(() => import("./pages/Historial"));
 const Actividad = lazy(() => import("./pages/Actividad"));
 const Compras = lazy(() => import("./pages/Compras"));
 const Ganancias = lazy(() => import("./pages/Ganancias"));
+const Arca = lazy(() => import("./pages/Arca"));
 const AiAssistant = lazy(() =>
   import("./components/AiAssistant")
 );
@@ -264,6 +265,16 @@ function PosApp({ license }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [syncCenterOpen, setSyncCenterOpen] = useState(false);
 
+  const arcaEnabled =
+    license.datosCliente
+      ?.arca
+      ?.enabled === true;
+
+  const ticketEnabled =
+    license.datosCliente
+      ?.ticket
+      ?.enabled === true;
+
   const notebookShortcutTimerRef = useRef(null);
   const notebookScannerIdleTimerRef = useRef(null);
   const notebookLastPrintableRef = useRef(0);
@@ -290,6 +301,10 @@ function PosApp({ license }) {
       void import("./pages/Ganancias");
       void import("./pages/Historial");
       void import("./pages/Actividad");
+
+      if (arcaEnabled) {
+        void import("./pages/Arca");
+      }
     };
 
     if (typeof window.requestIdleCallback === "function") {
@@ -309,7 +324,7 @@ function PosApp({ license }) {
      * por primera vez a esa sección.
      */
     return undefined;
-  }, [pos.loaded]);
+  }, [pos.loaded, arcaEnabled]);
 
   /* =========================================================
      ATAJOS DE NAVEGACIÓN — PC + NOTEBOOK
@@ -451,13 +466,25 @@ function PosApp({ license }) {
   }, [operadorEsAdministrador]);
 
   useEffect(() => {
-    if (
+    const protectedTabWithoutAdmin =
       !operadorEsAdministrador &&
-      tab === "ganancias"
+      (
+        tab === "ganancias" ||
+        tab === "arca"
+      );
+
+    const arcaUnavailable =
+      tab === "arca" &&
+      !arcaEnabled;
+
+    if (
+      protectedTabWithoutAdmin ||
+      arcaUnavailable
     ) {
       setTab("vender");
     }
   }, [
+    arcaEnabled,
     operadorEsAdministrador,
     tab,
   ]);
@@ -693,6 +720,7 @@ function PosApp({ license }) {
                 pos={pos}
                 goInventario={goInventario}
                 effectsMode={effectsMode}
+                ticketEnabled={ticketEnabled}
               />
             )}
 
@@ -730,6 +758,15 @@ function PosApp({ license }) {
                 clienteId={license.clienteId}
               />
             )}
+
+            {tab === "arca" &&
+              operadorEsAdministrador &&
+              arcaEnabled && (
+              <Arca
+                license={license}
+                operadorSesion={operadorSesion}
+              />
+            )}
           </Suspense>
         </motion.div>
       </main>
@@ -762,6 +799,7 @@ function PosApp({ license }) {
         offlineSyncState={pos.offlineSyncState}
         isOnline={pos.isOnline}
         onOpenSync={() => setSyncCenterOpen(true)}
+        arcaEnabled={arcaEnabled}
         deviceId={license.deviceId}
         theme={theme}
         onToggleTheme={handleToggleTheme}
@@ -859,6 +897,12 @@ function PageLabel({ tab, effectsMode = "complete" }) {
       eyebrow: "Control",
       label: "Actividad",
       icon: ActivityIcon,
+    },
+
+    arca: {
+      eyebrow: "Fiscal",
+      label: "Facturación ARCA",
+      icon: ReceiptIcon,
     },
   };
 

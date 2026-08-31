@@ -159,6 +159,18 @@ const fnActualizarConfigGlobalAsistenteIa =
     "actualizarConfigGlobalAsistenteIa"
   );
 
+const fnActualizarModuloArca =
+  httpsCallable(
+    functions,
+    "actualizarModuloArca"
+  );
+
+const fnActualizarModuloTicket =
+  httpsCallable(
+    functions,
+    "actualizarModuloTicket"
+  );
+
 /* =========================================================
    HELPERS
 ========================================================= */
@@ -1520,6 +1532,18 @@ export default function AdminPanel() {
                       "asistente-ia"
                     )
                   }
+                  onArca={() =>
+                    abrirModal(
+                      cliente,
+                      "arca"
+                    )
+                  }
+                  onTicket={() =>
+                    abrirModal(
+                      cliente,
+                      "ticket"
+                    )
+                  }
                   onActivar={() =>
                     activarRapido(
                       cliente
@@ -1738,6 +1762,66 @@ export default function AdminPanel() {
       </Modal>
 
       {/* ===================================================
+          TICKETS
+      =================================================== */}
+
+      <Modal
+        open={
+          !!clienteModal &&
+          modo ===
+          "ticket"
+        }
+        onClose={
+          cerrarModal
+        }
+        title="Tickets"
+      >
+        {clienteModal && (
+          <FormTicket
+            cliente={
+              clienteModal
+            }
+            onClose={
+              cerrarModal
+            }
+            onDone={
+              cargarClientes
+            }
+          />
+        )}
+      </Modal>
+
+      {/* ===================================================
+          FACTURACIÓN ARCA
+      =================================================== */}
+
+      <Modal
+        open={
+          !!clienteModal &&
+          modo ===
+          "arca"
+        }
+        onClose={
+          cerrarModal
+        }
+        title="Facturación ARCA"
+      >
+        {clienteModal && (
+          <FormArca
+            cliente={
+              clienteModal
+            }
+            onClose={
+              cerrarModal
+            }
+            onDone={
+              cargarClientes
+            }
+          />
+        )}
+      </Modal>
+
+      {/* ===================================================
           ELIMINAR
       =================================================== */}
 
@@ -1782,6 +1866,8 @@ function ClienteCard({
   onEliminar,
   onDispositivos,
   onAsistenteIa,
+  onArca,
+  onTicket,
   onActivar,
 }) {
   const estilo =
@@ -1848,6 +1934,43 @@ function ClienteCard({
         100
       )
     );
+
+  const ticketConfig =
+    cliente?.ticket || {};
+
+  const ticketEnabled =
+    ticketConfig.enabled ===
+    true;
+
+  const arcaConfig =
+    cliente?.arca || {};
+
+  const arcaEnabled =
+    arcaConfig.enabled ===
+    true;
+
+  const arcaCompleted =
+    Math.max(
+      0,
+      numeroSeguro(
+        arcaConfig.completedRequirements,
+        0
+      )
+    );
+
+  const arcaTotal =
+    Math.max(
+      1,
+      numeroSeguro(
+        arcaConfig.requiredRequirements,
+        5
+      )
+    );
+
+  const arcaSandboxReady =
+    arcaEnabled &&
+    arcaConfig.status ===
+      "sandbox-operativo";
 
   return (
     <article
@@ -2180,6 +2303,211 @@ function ClienteCard({
               ? "Activo"
               : aiExpired
                 ? "Vencido"
+                : "Inactivo"}
+          </span>
+
+          <ChevronIcon className="h-4 w-4 shrink-0 text-black/20 transition group-hover:text-[#9A7100]" />
+        </button>
+
+        {/* TICKETS */}
+
+        <button
+          type="button"
+          onClick={
+            onTicket
+          }
+          className="
+            group
+            mt-2.5
+            flex
+            w-full
+            items-center
+            gap-3
+            rounded-[20px]
+            border
+            border-black/[0.06]
+            bg-[#F4F5F7]
+            p-3
+            text-left
+            transition
+            hover:border-[#FFC61A]/60
+            hover:bg-[#FFF9E8]
+            active:scale-[0.995]
+          "
+        >
+          <div
+            className="
+              grid
+              h-10
+              w-10
+              shrink-0
+              place-items-center
+              rounded-xl
+              bg-[#11151C]
+              text-[#FFC61A]
+            "
+          >
+            <PaymentIcon className="h-[18px] w-[18px]" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div
+              className="
+                text-[9px]
+                font-extrabold
+                uppercase
+                tracking-[0.1em]
+                text-black/35
+              "
+            >
+              Tickets
+            </div>
+
+            <div
+              className="
+                mt-0.5
+                text-sm
+                font-black
+                text-[#111318]
+              "
+            >
+              {ticketEnabled
+                ? "Impresión + PDF + compartir"
+                : "Módulo opcional"}
+            </div>
+          </div>
+
+          <span
+            className={
+              `
+                shrink-0
+                rounded-full
+                px-2.5
+                py-1.5
+                text-[9px]
+                font-extrabold
+                uppercase
+              ` +
+              (ticketEnabled
+                ? `
+                  bg-emerald-50
+                  text-emerald-600
+                `
+                : `
+                  bg-black/5
+                  text-black/35
+                `)
+            }
+          >
+            {ticketEnabled
+              ? "Activo"
+              : "Inactivo"}
+          </span>
+
+          <ChevronIcon className="h-4 w-4 shrink-0 text-black/20 transition group-hover:text-[#9A7100]" />
+        </button>
+
+        {/* FACTURACIÓN ARCA */}
+
+        <button
+          type="button"
+          onClick={
+            onArca
+          }
+          className="
+            group
+            mt-2.5
+            flex
+            w-full
+            items-center
+            gap-3
+            rounded-[20px]
+            border
+            border-black/[0.06]
+            bg-[#F4F5F7]
+            p-3
+            text-left
+            transition
+            hover:border-[#FFC61A]/60
+            hover:bg-[#FFF9E8]
+            active:scale-[0.995]
+          "
+        >
+          <div
+            className="
+              grid
+              h-10
+              w-10
+              shrink-0
+              place-items-center
+              rounded-xl
+              bg-[#11151C]
+              text-[#FFC61A]
+            "
+          >
+            <PaymentIcon className="h-[18px] w-[18px]" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div
+              className="
+                text-[9px]
+                font-extrabold
+                uppercase
+                tracking-[0.1em]
+                text-black/35
+              "
+            >
+              Facturación ARCA
+            </div>
+
+            <div
+              className="
+                mt-0.5
+                text-sm
+                font-black
+                text-[#111318]
+              "
+            >
+              {arcaEnabled
+                ? arcaSandboxReady
+                  ? "Sandbox operativo"
+                  : `${arcaCompleted} / ${arcaTotal} requisitos`
+                : "Módulo opcional"}
+            </div>
+          </div>
+
+          <span
+            className={
+              `
+                shrink-0
+                rounded-full
+                px-2.5
+                py-1.5
+                text-[9px]
+                font-extrabold
+                uppercase
+              ` +
+              (arcaSandboxReady
+                ? `
+                  bg-emerald-50
+                  text-emerald-600
+                `
+                : arcaEnabled
+                  ? `
+                    bg-[#FFF0BD]
+                    text-[#9A7100]
+                  `
+                  : `
+                    bg-black/5
+                    text-black/35
+                  `)
+            }
+          >
+            {arcaSandboxReady
+              ? "Listo"
+              : arcaEnabled
+                ? "Habilitado"
                 : "Inactivo"}
           </span>
 
@@ -3170,6 +3498,351 @@ function isoToDateInput(
     ).padStart(2, "0");
 
   return `${year}-${month}-${day}`;
+}
+
+function FormTicket({
+  cliente,
+  onClose,
+  onDone,
+}) {
+  const ticket =
+    cliente?.ticket || {};
+
+  const [enabled, setEnabled] =
+    useState(
+      ticket.enabled === true
+    );
+
+  const [saving, setSaving] =
+    useState(false);
+
+  const [error, setError] =
+    useState(null);
+
+  async function save() {
+    if (saving) {
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+
+    try {
+      await fnActualizarModuloTicket({
+        clienteId:
+          cliente.id,
+        enabled,
+      });
+
+      await onDone?.({
+        silent: true,
+      });
+
+      onClose?.();
+    } catch (err) {
+      console.error(
+        "Error configurando módulo de tickets:",
+        err
+      );
+
+      setError(
+        mensajeError(
+          err,
+          "No se pudo actualizar el módulo de tickets."
+        )
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <ModalClientHeader
+        title={
+          cliente.nombreNegocio ||
+          "Sin nombre"
+        }
+        subtitle={
+          cliente.email
+        }
+      />
+
+      <div className="mb-4 rounded-[22px] border border-[#FFC61A]/15 bg-[#11151C] p-4 text-white">
+        <div className="flex items-start gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#FFC61A] text-black">
+            <PaymentIcon className="h-5 w-5" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-[#FFC61A]">
+              Módulo por cliente
+            </p>
+            <p className="mt-1 text-sm font-black">
+              Tickets
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-white/45">
+              Controla si este cliente puede generar el ticket posterior a la venta, imprimir en 58/80 mm, descargar PDF y compartirlo desde el dispositivo.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <label className="flex cursor-pointer items-center justify-between gap-4 rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <div>
+            <p className="text-sm font-black">
+              Habilitar tickets
+            </p>
+            <p className="mt-1 text-xs text-black/45">
+              Al confirmar una venta aparecerán las opciones para imprimir, descargar o compartir el ticket.
+            </p>
+          </div>
+
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) =>
+              setEnabled(
+                event.target.checked
+              )
+            }
+            className="h-5 w-5 accent-[#FFC61A]"
+          />
+        </label>
+
+        <div className="grid grid-cols-2 gap-2">
+          {["58 mm", "80 mm", "PDF", "Compartir"].map(
+            (feature) => (
+              <div
+                key={feature}
+                className="rounded-[18px] border border-black/[0.07] bg-[#F4F5F7] px-3 py-3 text-center text-xs font-black text-[#111318]"
+              >
+                {feature}
+              </div>
+            )
+          )}
+        </div>
+
+        {error && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 px-3.5 py-3 text-xs font-bold text-red-600">
+            {error}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className="w-full rounded-2xl bg-[#FFC61A] px-4 py-3.5 text-sm font-black text-black transition hover:bg-[#FFD248] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {saving
+            ? "Guardando…"
+            : "Guardar configuración"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   FACTURACIÓN ARCA — CONFIGURACIÓN POR CLIENTE
+========================================================= */
+
+function FormArca({
+  cliente,
+  onClose,
+  onDone,
+}) {
+  const arca =
+    cliente?.arca || {};
+
+  const [enabled, setEnabled] =
+    useState(
+      arca.enabled === true
+    );
+
+  const [saving, setSaving] =
+    useState(false);
+
+  const [error, setError] =
+    useState(null);
+
+  const completed =
+    Math.max(
+      0,
+      numeroSeguro(
+        arca.completedRequirements,
+        0
+      )
+    );
+
+  const total =
+    Math.max(
+      1,
+      numeroSeguro(
+        arca.requiredRequirements,
+        5
+      )
+    );
+
+  const ready =
+    arca.status ===
+    "sandbox-operativo";
+
+  async function save() {
+    if (saving) {
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+
+    try {
+      await fnActualizarModuloArca({
+        clienteId:
+          cliente.id,
+        enabled,
+      });
+
+      await onDone?.({
+        silent: true,
+      });
+
+      onClose?.();
+    } catch (err) {
+      console.error(
+        "Error configurando módulo ARCA:",
+        err
+      );
+
+      setError(
+        mensajeError(
+          err,
+          "No se pudo actualizar el módulo ARCA."
+        )
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <ModalClientHeader
+        title={
+          cliente.nombreNegocio ||
+          "Sin nombre"
+        }
+        subtitle={
+          cliente.email
+        }
+      />
+
+      <div className="mb-4 rounded-[22px] border border-[#FFC61A]/15 bg-[#11151C] p-4 text-white">
+        <div className="flex items-start gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#FFC61A] text-black">
+            <PaymentIcon className="h-5 w-5" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-[#FFC61A]">
+              Módulo por cliente
+            </p>
+            <p className="mt-1 text-sm font-black">
+              Facturación ARCA
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-white/45">
+              Al habilitarlo, el administrador del negocio verá la sección ARCA y podrá completar su onboarding sin intervención manual desde este panel.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <label className="flex cursor-pointer items-center justify-between gap-4 rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <div>
+            <p className="text-sm font-black">
+              Habilitar módulo ARCA
+            </p>
+            <p className="mt-1 text-xs text-black/45">
+              El cliente lo configurará desde su POS con un usuario administrador.
+            </p>
+          </div>
+
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) =>
+              setEnabled(
+                event.target.checked
+              )
+            }
+            className="h-5 w-5 accent-[#FFC61A]"
+          />
+        </label>
+
+        <div className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-black text-black/55">
+                Progreso del cliente
+              </p>
+              <p className="mt-1 text-sm font-black">
+                {ready
+                  ? "Sandbox operativo"
+                  : `${completed} / ${total} requisitos`}
+              </p>
+            </div>
+
+            <span
+              className={
+                ready
+                  ? "rounded-full bg-emerald-50 px-2.5 py-1.5 text-[9px] font-black uppercase text-emerald-600"
+                  : "rounded-full bg-[#FFF0BD] px-2.5 py-1.5 text-[9px] font-black uppercase text-[#9A7100]"
+              }
+            >
+              {ready
+                ? "Listo"
+                : "Sandbox"}
+            </span>
+          </div>
+
+          <p className="mt-2 text-xs leading-relaxed text-black/45">
+            Producción permanece bloqueada. Esta etapa no permite emitir comprobantes, obtener CAE ni cargar certificados.
+          </p>
+        </div>
+
+        {error && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs font-semibold text-red-600">
+            {error}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="flex-1 rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm font-black text-black/60 transition hover:bg-black/[0.03] disabled:opacity-40"
+          >
+            Cancelar
+          </button>
+
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="flex-1 rounded-2xl bg-[#FFC61A] px-4 py-3 text-sm font-black text-black transition hover:bg-[#FFD248] active:scale-[0.99] disabled:opacity-45"
+          >
+            {saving
+              ? "Guardando…"
+              : "Guardar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function FormAsistenteIa({
