@@ -147,6 +147,18 @@ const fnActualizarAsistenteIa =
     "actualizarAsistenteIa"
   );
 
+const fnObtenerEstadoGlobalAsistenteIa =
+  httpsCallable(
+    functions,
+    "obtenerEstadoGlobalAsistenteIa"
+  );
+
+const fnActualizarConfigGlobalAsistenteIa =
+  httpsCallable(
+    functions,
+    "actualizarConfigGlobalAsistenteIa"
+  );
+
 /* =========================================================
    HELPERS
 ========================================================= */
@@ -573,6 +585,26 @@ export default function AdminPanel() {
     setTheme,
   ] = useState(getAdminTheme);
 
+  const [
+    estadoIaGlobal,
+    setEstadoIaGlobal,
+  ] = useState(null);
+
+  const [
+    cargandoIaGlobal,
+    setCargandoIaGlobal,
+  ] = useState(true);
+
+  const [
+    errorIaGlobal,
+    setErrorIaGlobal,
+  ] = useState(null);
+
+  const [
+    mostrarConfigIaGlobal,
+    setMostrarConfigIaGlobal,
+  ] = useState(false);
+
   function handleToggleTheme() {
     setTheme((current) => {
       const next = current === "light" ? "dark" : "light";
@@ -678,6 +710,54 @@ export default function AdminPanel() {
       []
     );
 
+  const cargarEstadoIaGlobal =
+    useCallback(
+      async (
+        options = {}
+      ) => {
+        const silent =
+          options?.silent ===
+          true;
+
+        if (!silent) {
+          setCargandoIaGlobal(
+            true
+          );
+        }
+
+        setErrorIaGlobal(null);
+
+        try {
+          const response =
+            await fnObtenerEstadoGlobalAsistenteIa();
+
+          setEstadoIaGlobal(
+            response?.data ||
+            null
+          );
+        } catch (err) {
+          console.error(
+            "Error cargando uso global de IA:",
+            err
+          );
+
+          setErrorIaGlobal(
+            mensajeError(
+              err,
+              "No se pudo cargar el uso global de IA."
+            )
+          );
+        } finally {
+          if (!silent) {
+            setCargandoIaGlobal(
+              false
+            );
+          }
+        }
+      },
+      []
+    );
+
   useEffect(() => {
     cargarClientes();
 
@@ -720,6 +800,50 @@ export default function AdminPanel() {
     };
   }, [
     cargarClientes,
+  ]);
+
+  useEffect(() => {
+    cargarEstadoIaGlobal();
+
+    const refrescar =
+      () => {
+        if (
+          typeof document !==
+            "undefined" &&
+          document.visibilityState ===
+            "hidden"
+        ) {
+          return;
+        }
+
+        cargarEstadoIaGlobal({
+          silent: true,
+        });
+      };
+
+    const intervalId =
+      window.setInterval(
+        refrescar,
+        15000
+      );
+
+    window.addEventListener(
+      "focus",
+      refrescar
+    );
+
+    return () => {
+      window.clearInterval(
+        intervalId
+      );
+
+      window.removeEventListener(
+        "focus",
+        refrescar
+      );
+    };
+  }, [
+    cargarEstadoIaGlobal,
   ]);
 
   /* =======================================================
@@ -1146,6 +1270,29 @@ export default function AdminPanel() {
           </div>
         </section>
 
+        <GlobalAiUsagePanel
+          estado={
+            estadoIaGlobal
+          }
+          cargando={
+            cargandoIaGlobal
+          }
+          error={
+            errorIaGlobal
+          }
+          clientes={
+            clientes
+          }
+          onRefresh={() =>
+            cargarEstadoIaGlobal()
+          }
+          onConfigure={() =>
+            setMostrarConfigIaGlobal(
+              true
+            )
+          }
+        />
+
         {/* =================================================
             FILTROS
         ================================================= */}
@@ -1528,6 +1675,36 @@ export default function AdminPanel() {
             }
           />
         )}
+      </Modal>
+
+      {/* ===================================================
+          USO GLOBAL IA
+      =================================================== */}
+
+      <Modal
+        open={
+          mostrarConfigIaGlobal
+        }
+        onClose={() =>
+          setMostrarConfigIaGlobal(
+            false
+          )
+        }
+        title="Control global de IA"
+      >
+        <FormConfiguracionGlobalIa
+          estado={
+            estadoIaGlobal
+          }
+          onClose={() =>
+            setMostrarConfigIaGlobal(
+              false
+            )
+          }
+          onDone={
+            cargarEstadoIaGlobal
+          }
+        />
       </Modal>
 
       {/* ===================================================
@@ -2114,6 +2291,831 @@ function ClienteCard({
 }
 
 /* =========================================================
+   CONTROL GLOBAL DE IA
+========================================================= */
+
+const AI_GLOBAL_STATUS = {
+  normal: {
+    label: "Normal",
+    badge:
+      "border-emerald-400/20 bg-emerald-500/10 text-emerald-300",
+    bar:
+      "bg-emerald-400",
+  },
+  warning: {
+    label: "Advertencia",
+    badge:
+      "border-[#FFC61A]/25 bg-[#FFC61A]/10 text-[#FFC61A]",
+    bar:
+      "bg-[#FFC61A]",
+  },
+  alert: {
+    label: "Alerta",
+    badge:
+      "border-orange-400/25 bg-orange-500/10 text-orange-300",
+    bar:
+      "bg-orange-400",
+  },
+  savings: {
+    label: "Modo ahorro",
+    badge:
+      "border-red-400/25 bg-red-500/10 text-red-300",
+    bar:
+      "bg-red-400",
+  },
+  blocked: {
+    label: "Bloqueado",
+    badge:
+      "border-red-400/30 bg-red-500/15 text-red-300",
+    bar:
+      "bg-red-500",
+  },
+};
+
+function GlobalAiUsagePanel({
+  estado,
+  cargando,
+  error,
+  clientes,
+  onRefresh,
+  onConfigure,
+}) {
+  const today =
+    estado?.today || {};
+
+  const config =
+    estado?.config || {};
+
+  const month =
+    estado?.month || {};
+
+  const requests =
+    Math.max(
+      0,
+      numeroSeguro(
+        today.requests,
+        0
+      )
+    );
+
+  const internalLimit =
+    Math.max(
+      1,
+      numeroSeguro(
+        config.internalDailyLimit,
+        450
+      )
+    );
+
+  const technicalLimit =
+    Math.max(
+      internalLimit,
+      numeroSeguro(
+        config.technicalDailyLimit,
+        500
+      )
+    );
+
+  const rpmUsed =
+    Math.max(
+      0,
+      numeroSeguro(
+        today?.rpm?.used,
+        0
+      )
+    );
+
+  const rpmLimit =
+    Math.max(
+      1,
+      numeroSeguro(
+        today?.rpm?.limit ??
+          config.internalRpmLimit,
+        14
+      )
+    );
+
+  const technicalRpmLimit =
+    Math.max(
+      rpmLimit,
+      numeroSeguro(
+        today?.rpm?.technicalLimit ??
+          config.technicalRpmLimit,
+        15
+      )
+    );
+
+  const percentage =
+    Math.max(
+      0,
+      Math.min(
+        100,
+        numeroSeguro(
+          today.percentage,
+          (
+            requests /
+            internalLimit
+          ) * 100
+        )
+      )
+    );
+
+  const status =
+    AI_GLOBAL_STATUS[
+      today.level
+    ] ||
+    AI_GLOBAL_STATUS.normal;
+
+  const clientMap =
+    new Map(
+      (Array.isArray(clientes)
+        ? clientes
+        : []
+      ).map(
+        (cliente) => [
+          cliente.id,
+          cliente,
+        ]
+      )
+    );
+
+  const ranking =
+    Array.isArray(
+      estado?.ranking
+    )
+      ? estado.ranking
+          .slice(0, 5)
+      : [];
+
+  return (
+    <section
+      className="
+        mb-5
+        overflow-hidden
+        rounded-[28px]
+        border
+        border-[#FFC61A]/15
+        bg-[linear-gradient(145deg,#121821,#0D1118)]
+        shadow-2xl
+        shadow-black/20
+      "
+    >
+      <div className="p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-[#FFC61A]/20 bg-[#FFC61A]/10 text-[#FFC61A]">
+              <SparklesIcon className="h-5 w-5" />
+            </div>
+
+            <div className="min-w-0">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#FFC61A]">
+                Uso global del proveedor
+              </p>
+              <h2 className="mt-1 text-lg font-black text-white">
+                Capacidad de Gemini
+              </h2>
+              <p className="mt-1 text-xs leading-relaxed text-white/40">
+                El límite diario interno protege la cuota compartida entre todos los clientes.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={cargando}
+              className="grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-white/5 text-white/45 transition hover:border-white/20 hover:text-[#FFC61A] disabled:opacity-40"
+              aria-label="Actualizar uso global de IA"
+            >
+              <RefreshIcon
+                className={
+                  `h-4 w-4 ${
+                    cargando
+                      ? "animate-spin"
+                      : ""
+                  }`
+                }
+              />
+            </button>
+
+            <button
+              type="button"
+              onClick={onConfigure}
+              className="rounded-xl border border-[#FFC61A]/25 bg-[#FFC61A]/10 px-3 py-2 text-xs font-black text-[#FFC61A] transition hover:bg-[#FFC61A]/15 active:scale-[0.98]"
+            >
+              Configurar
+            </button>
+          </div>
+        </div>
+
+        {error ? (
+          <div className="mt-4 rounded-2xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-xs font-semibold text-red-200">
+            {error}
+          </div>
+        ) : (
+          <>
+            <div className="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-5">
+              <GlobalAiMetric
+                label="Hoy"
+                value={
+                  cargando && !estado
+                    ? "…"
+                    : `${requests} / ${internalLimit}`
+                }
+                detail="solicitudes API"
+              />
+
+              <GlobalAiMetric
+                label="RPM"
+                value={`${rpmUsed} / ${rpmLimit}`}
+                detail={`techo técnico ${technicalRpmLimit}/min`}
+              />
+
+              <GlobalAiMetric
+                label="Reserva"
+                value={
+                  Math.max(
+                    0,
+                    technicalLimit -
+                      internalLimit
+                  )
+                }
+                detail={`de ${technicalLimit} RPD técnicos`}
+              />
+
+              <GlobalAiMetric
+                label="Mes"
+                value={
+                  Math.max(
+                    0,
+                    numeroSeguro(
+                      month.consultations,
+                      0
+                    )
+                  )
+                }
+                detail="consultas respondidas"
+              />
+
+              <GlobalAiMetric
+                label="Estado"
+                value={status.label}
+                detail={
+                  today.level === "savings"
+                    ? "Flash Lite + contexto reducido"
+                    : today.level === "blocked"
+                      ? "se alcanzó el techo interno"
+                      : "protección automática activa"
+                }
+              />
+            </div>
+
+            <div className="mt-4 rounded-[22px] border border-white/10 bg-black/15 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black text-white">
+                    Consumo diario
+                  </p>
+                  <p className="mt-1 text-[10px] text-white/35">
+                    Reinicia según el día de cuota de Gemini ({today.timeZone || "America/Los_Angeles"}).
+                  </p>
+                </div>
+
+                <span
+                  className={`rounded-full border px-2.5 py-1 text-[10px] font-black ${status.badge}`}
+                >
+                  {Math.round(percentage)}%
+                </span>
+              </div>
+
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className={`h-full rounded-full transition-[width] duration-300 ${status.bar}`}
+                  style={{
+                    width:
+                      `${percentage}%`,
+                  }}
+                />
+              </div>
+
+              <div className="mt-2 flex flex-wrap justify-between gap-2 text-[10px] font-semibold text-white/35">
+                <span>
+                  70% aviso · 85% alerta · 95% ahorro
+                </span>
+                <span>
+                  {Math.max(
+                    0,
+                    internalLimit -
+                      requests
+                  )} disponibles antes del límite interno
+                </span>
+              </div>
+            </div>
+
+            {ranking.length > 0 && (
+              <div className="mt-4 rounded-[22px] border border-white/10 bg-white/[0.03] p-4">
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-white/35">
+                      Mayor uso este mes
+                    </p>
+                    <p className="mt-1 text-sm font-black text-white">
+                      Clientes con más consultas
+                    </p>
+                  </div>
+
+                  <span className="text-[10px] font-bold text-white/30">
+                    Top {ranking.length}
+                  </span>
+                </div>
+
+                <div className="mt-3 space-y-2">
+                  {ranking.map(
+                    (entry, index) => {
+                      const client =
+                        clientMap.get(
+                          entry.clienteId
+                        );
+
+                      return (
+                        <div
+                          key={entry.clienteId}
+                          className="flex items-center justify-between gap-3 rounded-2xl border border-white/[0.06] bg-black/10 px-3 py-2.5"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-black text-white/80">
+                              {index + 1}. {client?.nombreNegocio || client?.email || "Cliente"}
+                            </p>
+                            <p className="mt-0.5 truncate text-[10px] text-white/30">
+                              {client?.email || entry.clienteId}
+                            </p>
+                          </div>
+
+                          <span className="shrink-0 text-xs font-black text-[#FFC61A]">
+                            {Math.max(
+                              0,
+                              numeroSeguro(
+                                entry.consultas,
+                                0
+                              )
+                            )}
+                          </span>
+                        </div>
+                      );
+                    }
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function GlobalAiMetric({
+  label,
+  value,
+  detail,
+}) {
+  return (
+    <div className="rounded-[20px] border border-white/[0.07] bg-white/[0.035] p-3.5">
+      <p className="text-[9px] font-black uppercase tracking-[0.14em] text-white/30">
+        {label}
+      </p>
+      <p className="mt-1.5 truncate text-base font-black text-white">
+        {value}
+      </p>
+      <p className="mt-1 text-[10px] leading-snug text-white/30">
+        {detail}
+      </p>
+    </div>
+  );
+}
+
+function FormConfiguracionGlobalIa({
+  estado,
+  onClose,
+  onDone,
+}) {
+  const initialConfig =
+    estado?.config || {};
+
+  const [technicalLimit, setTechnicalLimit] =
+    useState(
+      String(
+        Math.max(
+          1,
+          numeroSeguro(
+            initialConfig.technicalDailyLimit,
+            500
+          )
+        )
+      )
+    );
+
+  const [internalLimit, setInternalLimit] =
+    useState(
+      String(
+        Math.max(
+          1,
+          numeroSeguro(
+            initialConfig.internalDailyLimit,
+            450
+          )
+        )
+      )
+    );
+
+  const [technicalRpmLimit, setTechnicalRpmLimit] =
+    useState(
+      String(
+        Math.max(
+          1,
+          numeroSeguro(
+            initialConfig.technicalRpmLimit,
+            15
+          )
+        )
+      )
+    );
+
+  const [internalRpmLimit, setInternalRpmLimit] =
+    useState(
+      String(
+        Math.max(
+          1,
+          numeroSeguro(
+            initialConfig.internalRpmLimit,
+            14
+          )
+        )
+      )
+    );
+
+  const [retry429, setRetry429] =
+    useState(
+      initialConfig.retry429 !==
+      false
+    );
+
+  const [fallbackEnabled, setFallbackEnabled] =
+    useState(
+      initialConfig.fallbackEnabled !==
+      false
+    );
+
+  const [saving, setSaving] =
+    useState(false);
+
+  const [error, setError] =
+    useState(null);
+
+  const technicalNumber =
+    Number(technicalLimit);
+
+  const internalNumber =
+    Number(internalLimit);
+
+  const technicalRpmNumber =
+    Number(technicalRpmLimit);
+
+  const internalRpmNumber =
+    Number(internalRpmLimit);
+
+  const reserve =
+    Number.isFinite(technicalNumber) &&
+    Number.isFinite(internalNumber)
+      ? Math.max(
+          0,
+          technicalNumber -
+            internalNumber
+        )
+      : 0;
+
+  async function save() {
+    if (
+      !Number.isInteger(
+        technicalNumber
+      ) ||
+      technicalNumber < 1 ||
+      technicalNumber > 1000000
+    ) {
+      setError(
+        "El límite técnico diario debe ser un número entero válido."
+      );
+      return;
+    }
+
+    if (
+      !Number.isInteger(
+        internalNumber
+      ) ||
+      internalNumber < 1 ||
+      internalNumber >
+        technicalNumber
+    ) {
+      setError(
+        "El límite interno debe ser mayor a 0 y no puede superar el límite técnico."
+      );
+      return;
+    }
+
+    if (
+      !Number.isInteger(
+        technicalRpmNumber
+      ) ||
+      technicalRpmNumber < 1 ||
+      technicalRpmNumber > 10000
+    ) {
+      setError(
+        "El límite técnico por minuto debe ser un número entero válido."
+      );
+      return;
+    }
+
+    if (
+      !Number.isInteger(
+        internalRpmNumber
+      ) ||
+      internalRpmNumber < 1 ||
+      internalRpmNumber >
+        technicalRpmNumber
+    ) {
+      setError(
+        "El límite interno por minuto debe ser mayor a 0 y no puede superar el límite técnico."
+      );
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+
+    try {
+      await fnActualizarConfigGlobalAsistenteIa({
+        technicalDailyLimit:
+          technicalNumber,
+        internalDailyLimit:
+          internalNumber,
+        technicalRpmLimit:
+          technicalRpmNumber,
+        internalRpmLimit:
+          internalRpmNumber,
+        retry429,
+        fallbackEnabled,
+      });
+
+      await onDone?.({
+        silent: true,
+      });
+
+      onClose?.();
+    } catch (err) {
+      console.error(
+        "Error actualizando configuración global de IA:",
+        err
+      );
+
+      setError(
+        mensajeError(
+          err,
+          "No se pudo actualizar la configuración global de IA."
+        )
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-4 rounded-[22px] border border-[#FFC61A]/15 bg-[#11151C] p-4 text-white">
+        <div className="flex items-start gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#FFC61A] text-black">
+            <SparklesIcon className="h-5 w-5" />
+          </div>
+
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-[#FFC61A]">
+              Protección del proveedor
+            </p>
+            <p className="mt-1 text-sm font-black">
+              Cuota global compartida
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-white/45">
+              Estas reglas se aplican antes de enviar cada solicitud real a Gemini. Los límites mensuales por cliente continúan funcionando de forma independiente.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+            <span className="block text-xs font-black text-black/55">
+              Límite técnico diario
+            </span>
+            <input
+              type="number"
+              min="1"
+              max="1000000"
+              step="1"
+              value={technicalLimit}
+              onChange={(event) =>
+                setTechnicalLimit(
+                  event.target.value
+                )
+              }
+              className="mt-2 w-full rounded-2xl border border-black/10 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-[#FFC61A]"
+            />
+            <span className="mt-1.5 block text-[10px] text-black/35">
+              Actualmente Gemini muestra 500 RPD para Flash Lite.
+            </span>
+          </label>
+
+          <label className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+            <span className="block text-xs font-black text-black/55">
+              Límite interno diario
+            </span>
+            <input
+              type="number"
+              min="1"
+              max={technicalLimit || undefined}
+              step="1"
+              value={internalLimit}
+              onChange={(event) =>
+                setInternalLimit(
+                  event.target.value
+                )
+              }
+              className="mt-2 w-full rounded-2xl border border-black/10 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-[#FFC61A]"
+            />
+            <span className="mt-1.5 block text-[10px] text-black/35">
+              Reserva actual: {reserve} solicitudes.
+            </span>
+          </label>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+            <span className="block text-xs font-black text-black/55">
+              RPM técnico
+            </span>
+            <input
+              type="number"
+              min="1"
+              max="10000"
+              step="1"
+              value={technicalRpmLimit}
+              onChange={(event) =>
+                setTechnicalRpmLimit(
+                  event.target.value
+                )
+              }
+              className="mt-2 w-full rounded-2xl border border-black/10 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-[#FFC61A]"
+            />
+            <span className="mt-1.5 block text-[10px] text-black/35">
+              Gemini muestra actualmente 15 solicitudes/minuto.
+            </span>
+          </label>
+
+          <label className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+            <span className="block text-xs font-black text-black/55">
+              RPM interno
+            </span>
+            <input
+              type="number"
+              min="1"
+              max={technicalRpmLimit || undefined}
+              step="1"
+              value={internalRpmLimit}
+              onChange={(event) =>
+                setInternalRpmLimit(
+                  event.target.value
+                )
+              }
+              className="mt-2 w-full rounded-2xl border border-black/10 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-[#FFC61A]"
+            />
+            <span className="mt-1.5 block text-[10px] text-black/35">
+              14/min deja una solicitud de margen.
+            </span>
+          </label>
+        </div>
+
+        <label className="flex cursor-pointer items-center justify-between gap-4 rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <div>
+            <p className="text-sm font-black">
+              Reintentar ante saturación 429
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-black/45">
+              Hace un único reintento breve cuando el error parece ser temporal. Nunca reintenta una cuota diaria agotada.
+            </p>
+          </div>
+
+          <input
+            type="checkbox"
+            checked={retry429}
+            onChange={(event) =>
+              setRetry429(
+                event.target.checked
+              )
+            }
+            className="h-5 w-5 shrink-0 accent-[#FFC61A]"
+          />
+        </label>
+
+        <label className="flex cursor-pointer items-center justify-between gap-4 rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <div>
+            <p className="text-sm font-black">
+              Fallback de modelos
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-black/45">
+              Si un modelo devuelve 404/503, permite probar el siguiente modelo compatible. En modo ahorro se utiliza una sola solicitud Flash Lite.
+            </p>
+          </div>
+
+          <input
+            type="checkbox"
+            checked={fallbackEnabled}
+            onChange={(event) =>
+              setFallbackEnabled(
+                event.target.checked
+              )
+            }
+            className="h-5 w-5 shrink-0 accent-[#FFC61A]"
+          />
+        </label>
+
+        <div className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <p className="text-xs font-black text-black/55">
+            Escalado automático
+          </p>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-2xl bg-white px-2 py-3">
+              <p className="text-sm font-black text-[#9A7100]">
+                70%
+              </p>
+              <p className="mt-1 text-[9px] font-bold text-black/35">
+                Aviso
+              </p>
+            </div>
+            <div className="rounded-2xl bg-white px-2 py-3">
+              <p className="text-sm font-black text-orange-600">
+                85%
+              </p>
+              <p className="mt-1 text-[9px] font-bold text-black/35">
+                Alerta
+              </p>
+            </div>
+            <div className="rounded-2xl bg-white px-2 py-3">
+              <p className="text-sm font-black text-red-600">
+                95%
+              </p>
+              <p className="mt-1 text-[9px] font-bold text-black/35">
+                Ahorro
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {error && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+            {error}
+          </div>
+        )}
+
+        <div className="flex gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="flex-1 rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm font-black text-black/55 transition hover:bg-black/[0.03] disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-[#FFC61A] px-4 py-3 text-sm font-black text-black transition hover:bg-[#FFD248] disabled:opacity-50"
+          >
+            {saving ? (
+              <SpinnerIcon className="h-4 w-4 animate-spin" />
+            ) : (
+              <SaveIcon className="h-4 w-4" />
+            )}
+            Guardar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
    CONFIGURAR ASISTENTE IA
 ========================================================= */
 
@@ -2370,7 +3372,7 @@ function FormAsistenteIa({
               Asistente personal con Gemini
             </p>
             <p className="mt-1 text-xs leading-relaxed text-white/45">
-              Solo lectura. La IA puede analizar el resumen del POS, pero no puede modificar ventas, caja ni inventario.
+              Puede analizar el negocio y proponer acciones operativas. Las modificaciones sensibles siempre requieren confirmación explícita antes de ejecutarse.
             </p>
           </div>
         </div>

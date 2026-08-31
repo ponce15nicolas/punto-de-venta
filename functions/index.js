@@ -132,6 +132,36 @@ const AI_MIN_REQUEST_GAP_MS = 800;
 const AI_FETCH_TIMEOUT_MS = 22000;
 const AI_MAX_ACTION_ITEMS = 12;
 
+/*
+ * Protección global del proveedor.
+ *
+ * Gemini 3.5 Flash Lite expone actualmente 500 RPD para el
+ * proyecto. El POS usa 450 como techo operativo por defecto
+ * para conservar una reserva de seguridad.
+ *
+ * Estos valores también pueden ajustarse desde el panel
+ * proveedor sin volver a desplegar Functions.
+ */
+const AI_GLOBAL_DEFAULT_TECHNICAL_DAILY_LIMIT = 500;
+const AI_GLOBAL_DEFAULT_INTERNAL_DAILY_LIMIT = 450;
+const AI_GLOBAL_DEFAULT_TECHNICAL_RPM_LIMIT = 15;
+const AI_GLOBAL_DEFAULT_INTERNAL_RPM_LIMIT = 14;
+const AI_GLOBAL_MAX_TECHNICAL_DAILY_LIMIT = 1000000;
+const AI_GLOBAL_MAX_TECHNICAL_RPM_LIMIT = 10000;
+const AI_GLOBAL_RPM_WINDOW_MS = 60 * 1000;
+const AI_GLOBAL_WARNING_PCT = 70;
+const AI_GLOBAL_ALERT_PCT = 85;
+const AI_GLOBAL_SAVINGS_PCT = 95;
+const AI_GLOBAL_RETRY_429_DELAY_MS = 1600;
+const AI_GLOBAL_CONFIG_COLLECTION =
+    "configuracionProveedor";
+const AI_GLOBAL_CONFIG_DOC =
+    "asistenteIaGlobal";
+const AI_GLOBAL_USAGE_COLLECTION =
+    "asistenteIaUsoGlobal";
+const AI_GEMINI_DAY_TIMEZONE =
+    "America/Los_Angeles";
+
 /* =========================================================
    OPERADORES INTERNOS DEL CLIENTE
 ========================================================= */
@@ -7929,6 +7959,836 @@ function getAiUsageRef(
         );
 }
 
+function getAiGlobalConfigRef() {
+    return db
+        .collection(
+            AI_GLOBAL_CONFIG_COLLECTION
+        )
+        .doc(
+            AI_GLOBAL_CONFIG_DOC
+        );
+}
+
+function obtenerClaveFechaIa({
+    date = new Date(),
+    timeZone,
+    includeDay = true,
+}) {
+    try {
+        const options = {
+            timeZone,
+            year: "numeric",
+            month: "2-digit",
+        };
+
+        if (includeDay) {
+            options.day = "2-digit";
+        }
+
+        const parts =
+            new Intl.DateTimeFormat(
+                "en-CA",
+                options
+            ).formatToParts(
+                date
+            );
+
+        const year =
+            parts.find(
+                (part) =>
+                    part.type ===
+                    "year"
+            )?.value;
+
+        const month =
+            parts.find(
+                (part) =>
+                    part.type ===
+                    "month"
+            )?.value;
+
+        const day =
+            includeDay
+                ? parts.find(
+                    (part) =>
+                        part.type ===
+                        "day"
+                )?.value
+                : null;
+
+        if (
+            year &&
+            month &&
+            (
+                !includeDay ||
+                day
+            )
+        ) {
+            return includeDay
+                ? `${year}-${month}-${day}`
+                : `${year}-${month}`;
+        }
+    } catch {
+        // Fallback UTC si Intl no estuviera disponible.
+    }
+
+    return date
+        .toISOString()
+        .slice(
+            0,
+            includeDay
+                ? 10
+                : 7
+        );
+}
+
+function obtenerDiaGeminiIa(
+    date = new Date()
+) {
+    return obtenerClaveFechaIa({
+        date,
+        timeZone:
+            AI_GEMINI_DAY_TIMEZONE,
+        includeDay: true,
+    });
+}
+
+function getAiGlobalDailyUsageRef(
+    day = obtenerDiaGeminiIa()
+) {
+    return db
+        .collection(
+            AI_GLOBAL_USAGE_COLLECTION
+        )
+        .doc(
+            `dia-${day}`
+        );
+}
+
+function getAiGlobalMonthlyUsageRef(
+    periodo = obtenerPeriodoIa()
+) {
+    return db
+        .collection(
+            AI_GLOBAL_USAGE_COLLECTION
+        )
+        .doc(
+            `mes-${periodo}`
+        );
+}
+
+function obtenerConfigGlobalIa(
+    rawValue
+) {
+    const raw =
+        esObjetoPlano(
+            rawValue
+        )
+            ? rawValue
+            : {};
+
+    const technicalDailyLimit =
+        Math.min(
+            AI_GLOBAL_MAX_TECHNICAL_DAILY_LIMIT,
+            Math.max(
+                1,
+                enteroSeguro(
+                    raw.technicalDailyLimit,
+                    AI_GLOBAL_DEFAULT_TECHNICAL_DAILY_LIMIT
+                )
+            )
+        );
+
+    const internalDailyLimit =
+        Math.min(
+            technicalDailyLimit,
+            Math.max(
+                1,
+                enteroSeguro(
+                    raw.internalDailyLimit,
+                    Math.min(
+                        AI_GLOBAL_DEFAULT_INTERNAL_DAILY_LIMIT,
+                        technicalDailyLimit
+                    )
+                )
+            )
+        );
+
+    const technicalRpmLimit =
+        Math.min(
+            AI_GLOBAL_MAX_TECHNICAL_RPM_LIMIT,
+            Math.max(
+                1,
+                enteroSeguro(
+                    raw.technicalRpmLimit,
+                    AI_GLOBAL_DEFAULT_TECHNICAL_RPM_LIMIT
+                )
+            )
+        );
+
+    const internalRpmLimit =
+        Math.min(
+            technicalRpmLimit,
+            Math.max(
+                1,
+                enteroSeguro(
+                    raw.internalRpmLimit,
+                    Math.min(
+                        AI_GLOBAL_DEFAULT_INTERNAL_RPM_LIMIT,
+                        technicalRpmLimit
+                    )
+                )
+            )
+        );
+
+    return {
+        technicalDailyLimit,
+        internalDailyLimit,
+        technicalRpmLimit,
+        internalRpmLimit,
+        retry429:
+            raw.retry429 !==
+            false,
+        fallbackEnabled:
+            raw.fallbackEnabled !==
+            false,
+        warningPct:
+            AI_GLOBAL_WARNING_PCT,
+        alertPct:
+            AI_GLOBAL_ALERT_PCT,
+        savingsPct:
+            AI_GLOBAL_SAVINGS_PCT,
+    };
+}
+
+function calcularEstadoConsumoGlobalIa({
+    requests = 0,
+    config,
+}) {
+    const safeConfig =
+        obtenerConfigGlobalIa(
+            config
+        );
+
+    const used =
+        Math.max(
+            0,
+            enteroSeguro(
+                requests,
+                0
+            )
+        );
+
+    const limit =
+        safeConfig.internalDailyLimit;
+
+    const percentage =
+        limit > 0
+            ? Math.min(
+                999,
+                Math.round(
+                    (
+                        used /
+                        limit
+                    ) * 1000
+                ) / 10
+            )
+            : 100;
+
+    let level = "normal";
+
+    if (used >= limit) {
+        level = "blocked";
+    } else if (
+        percentage >=
+        safeConfig.savingsPct
+    ) {
+        level = "savings";
+    } else if (
+        percentage >=
+        safeConfig.alertPct
+    ) {
+        level = "alert";
+    } else if (
+        percentage >=
+        safeConfig.warningPct
+    ) {
+        level = "warning";
+    }
+
+    return {
+        level,
+        percentage,
+        used,
+        limit,
+        remaining:
+            Math.max(
+                0,
+                limit - used
+            ),
+        reserve:
+            Math.max(
+                0,
+                safeConfig
+                    .technicalDailyLimit -
+                    limit
+            ),
+        savingsMode:
+            level === "savings",
+        blocked:
+            level === "blocked",
+    };
+}
+
+function obtenerRpmGlobalActual(
+    usage,
+    nowMs = Date.now()
+) {
+    const windowStartMs =
+        Math.max(
+            0,
+            numeroSeguro(
+                usage?.rpmWindowStartMs,
+                0
+            )
+        );
+
+    if (
+        !windowStartMs ||
+        nowMs -
+            windowStartMs >=
+            AI_GLOBAL_RPM_WINDOW_MS
+    ) {
+        return 0;
+    }
+
+    return Math.max(
+        0,
+        enteroSeguro(
+            usage?.rpmWindowCount,
+            0
+        )
+    );
+}
+
+async function leerEstadoGlobalIa() {
+    const day =
+        obtenerDiaGeminiIa();
+
+    const [
+        configSnap,
+        usageSnap,
+    ] = await Promise.all([
+        getAiGlobalConfigRef().get(),
+        getAiGlobalDailyUsageRef(
+            day
+        ).get(),
+    ]);
+
+    const config =
+        obtenerConfigGlobalIa(
+            configSnap.data()
+        );
+
+    const usage =
+        usageSnap.data() || {};
+
+    return {
+        day,
+        config,
+        usage,
+        rpm: {
+            used:
+                obtenerRpmGlobalActual(
+                    usage
+                ),
+            limit:
+                config.internalRpmLimit,
+            technicalLimit:
+                config.technicalRpmLimit,
+        },
+        status:
+            calcularEstadoConsumoGlobalIa({
+                requests:
+                    usage.requests,
+                config,
+            }),
+    };
+}
+
+async function reservarSolicitudGlobalIa({
+    clienteId,
+    model,
+}) {
+    const day =
+        obtenerDiaGeminiIa();
+
+    const configRef =
+        getAiGlobalConfigRef();
+
+    const usageRef =
+        getAiGlobalDailyUsageRef(
+            day
+        );
+
+    let result = null;
+
+    await db.runTransaction(
+        async (
+            transaction
+        ) => {
+            const [
+                configSnap,
+                usageSnap,
+            ] = await Promise.all([
+                transaction.get(
+                    configRef
+                ),
+                transaction.get(
+                    usageRef
+                ),
+            ]);
+
+            const config =
+                obtenerConfigGlobalIa(
+                    configSnap.data()
+                );
+
+            const usage =
+                usageSnap.data() || {};
+
+            const currentRequests =
+                Math.max(
+                    0,
+                    enteroSeguro(
+                        usage.requests,
+                        0
+                    )
+                );
+
+            const currentStatus =
+                calcularEstadoConsumoGlobalIa({
+                    requests:
+                        currentRequests,
+                    config,
+                });
+
+            if (
+                currentStatus.blocked
+            ) {
+                throw new HttpsError(
+                    "resource-exhausted",
+                    "El asistente alcanzó temporalmente su capacidad diaria. Volvé a intentar cuando se renueve la cuota de Gemini.",
+                    {
+                        motivo:
+                            "ai-global-daily-limit",
+                    }
+                );
+            }
+
+            const nowMs =
+                Date.now();
+
+            let rpmWindowStartMs =
+                Math.max(
+                    0,
+                    numeroSeguro(
+                        usage.rpmWindowStartMs,
+                        0
+                    )
+                );
+
+            let rpmWindowCount =
+                Math.max(
+                    0,
+                    enteroSeguro(
+                        usage.rpmWindowCount,
+                        0
+                    )
+                );
+
+            if (
+                !rpmWindowStartMs ||
+                nowMs -
+                    rpmWindowStartMs >=
+                    AI_GLOBAL_RPM_WINDOW_MS
+            ) {
+                rpmWindowStartMs =
+                    nowMs;
+                rpmWindowCount = 0;
+            }
+
+            if (
+                rpmWindowCount >=
+                config.internalRpmLimit
+            ) {
+                throw new HttpsError(
+                    "resource-exhausted",
+                    "El asistente está recibiendo muchas consultas al mismo tiempo. Esperá unos segundos y volvé a intentar.",
+                    {
+                        motivo:
+                            "ai-global-rpm-limit",
+                    }
+                );
+            }
+
+            const nextRequests =
+                currentRequests + 1;
+
+            const nextRpmWindowCount =
+                rpmWindowCount + 1;
+
+            const rawByModel =
+                esObjetoPlano(
+                    usage.byModel
+                )
+                    ? usage.byModel
+                    : {};
+
+            const byModel = {
+                ...rawByModel,
+                [model]:
+                    Math.max(
+                        0,
+                        enteroSeguro(
+                            rawByModel[
+                                model
+                            ],
+                            0
+                        )
+                    ) + 1,
+            };
+
+            transaction.set(
+                usageRef,
+                {
+                    day,
+                    timeZone:
+                        AI_GEMINI_DAY_TIMEZONE,
+                    requests:
+                        nextRequests,
+                    rpmWindowStartMs,
+                    rpmWindowCount:
+                        nextRpmWindowCount,
+                    byModel,
+                    lastClientId:
+                        textoSeguro(
+                            clienteId,
+                            180
+                        ),
+                    lastModel:
+                        textoSeguro(
+                            model,
+                            100
+                        ),
+                    lastRequestAt:
+                        admin.firestore.FieldValue.serverTimestamp(),
+                    updatedAt:
+                        admin.firestore.FieldValue.serverTimestamp(),
+                },
+                {
+                    merge: true,
+                }
+            );
+
+            result = {
+                day,
+                usageRef,
+                config,
+                rpm: {
+                    used:
+                        nextRpmWindowCount,
+                    limit:
+                        config.internalRpmLimit,
+                    technicalLimit:
+                        config.technicalRpmLimit,
+                },
+                status:
+                    calcularEstadoConsumoGlobalIa({
+                        requests:
+                            nextRequests,
+                        config,
+                    }),
+            };
+        }
+    );
+
+    return result;
+}
+
+async function registrarConsultaGlobalExitosaIa({
+    clienteId,
+    model,
+    promptTokens = 0,
+    outputTokens = 0,
+    totalTokens = 0,
+    dailyUsageRef,
+}) {
+    const periodo =
+        obtenerPeriodoIa();
+
+    const monthlyRef =
+        getAiGlobalMonthlyUsageRef(
+            periodo
+        );
+
+    try {
+        await db.runTransaction(
+            async (
+                transaction
+            ) => {
+                const snap =
+                    await transaction.get(
+                        monthlyRef
+                    );
+
+                const data =
+                    snap.data() || {};
+
+                const rawClients =
+                    esObjetoPlano(
+                        data.clients
+                    )
+                        ? data.clients
+                        : {};
+
+                const previousClient =
+                    esObjetoPlano(
+                        rawClients[
+                            clienteId
+                        ]
+                    )
+                        ? rawClients[
+                            clienteId
+                        ]
+                        : {};
+
+                const safePromptTokens =
+                    Math.max(
+                        0,
+                        enteroSeguro(
+                            promptTokens,
+                            0
+                        )
+                    );
+
+                const safeOutputTokens =
+                    Math.max(
+                        0,
+                        enteroSeguro(
+                            outputTokens,
+                            0
+                        )
+                    );
+
+                const safeTotalTokens =
+                    Math.max(
+                        0,
+                        enteroSeguro(
+                            totalTokens,
+                            safePromptTokens +
+                                safeOutputTokens
+                        )
+                    );
+
+                const clients = {
+                    ...rawClients,
+                    [clienteId]: {
+                        consultas:
+                            Math.max(
+                                0,
+                                enteroSeguro(
+                                    previousClient.consultas,
+                                    0
+                                )
+                            ) + 1,
+                        promptTokens:
+                            Math.max(
+                                0,
+                                enteroSeguro(
+                                    previousClient.promptTokens,
+                                    0
+                                )
+                            ) + safePromptTokens,
+                        outputTokens:
+                            Math.max(
+                                0,
+                                enteroSeguro(
+                                    previousClient.outputTokens,
+                                    0
+                                )
+                            ) + safeOutputTokens,
+                        lastModel:
+                            model,
+                    },
+                };
+
+                transaction.set(
+                    monthlyRef,
+                    {
+                        periodo,
+                        consultations:
+                            Math.max(
+                                0,
+                                enteroSeguro(
+                                    data.consultations,
+                                    0
+                                )
+                            ) + 1,
+                        promptTokens:
+                            Math.max(
+                                0,
+                                enteroSeguro(
+                                    data.promptTokens,
+                                    0
+                                )
+                            ) + safePromptTokens,
+                        outputTokens:
+                            Math.max(
+                                0,
+                                enteroSeguro(
+                                    data.outputTokens,
+                                    0
+                                )
+                            ) + safeOutputTokens,
+                        totalTokens:
+                            Math.max(
+                                0,
+                                enteroSeguro(
+                                    data.totalTokens,
+                                    0
+                                )
+                            ) + safeTotalTokens,
+                        clients,
+                        lastSuccessAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                        updatedAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                    },
+                    {
+                        merge: true,
+                    }
+                );
+            }
+        );
+
+        if (dailyUsageRef) {
+            await dailyUsageRef.set(
+                {
+                    successfulConsultations:
+                        admin.firestore.FieldValue.increment(
+                            1
+                        ),
+                    updatedAt:
+                        admin.firestore.FieldValue.serverTimestamp(),
+                },
+                {
+                    merge: true,
+                }
+            );
+        }
+    } catch (error) {
+        /*
+         * La telemetría global nunca debe impedir que el usuario
+         * reciba una respuesta que Gemini ya generó correctamente.
+         */
+        console.error(
+            "No se pudo registrar el uso global de IA:",
+            error
+        );
+    }
+}
+
+async function registrarConsultaGlobalFallidaIa({
+    dailyUsageRef,
+}) {
+    if (!dailyUsageRef) {
+        return;
+    }
+
+    try {
+        await dailyUsageRef.set(
+            {
+                failedConsultations:
+                    admin.firestore.FieldValue.increment(
+                        1
+                    ),
+                updatedAt:
+                    admin.firestore.FieldValue.serverTimestamp(),
+            },
+            {
+                merge: true,
+            }
+        );
+    } catch (error) {
+        console.error(
+            "No se pudo registrar el fallo global de IA:",
+            error
+        );
+    }
+}
+
+function esCuotaDiariaGemini(
+    message
+) {
+    return /(?:per[ _-]?day|daily|rpd|requestsperday|requests per day)/i.test(
+        String(
+            message || ""
+        )
+    );
+}
+
+function esperar(
+    ms
+) {
+    return new Promise(
+        (resolve) =>
+            setTimeout(
+                resolve,
+                ms
+            )
+    );
+}
+
+function modelosIaSegunEstadoGlobal({
+    plan,
+    globalState,
+}) {
+    const config =
+        globalState?.config ||
+        obtenerConfigGlobalIa();
+
+    const status =
+        globalState?.status ||
+        calcularEstadoConsumoGlobalIa({
+            requests: 0,
+            config,
+        });
+
+    if (status.savingsMode) {
+        /*
+         * Cerca del límite diario priorizamos una sola petición
+         * sobre el modelo más económico/estable para evitar que
+         * un fallback consuma varias solicitudes del RPD.
+         */
+        return [
+            "gemini-3.5-flash-lite",
+        ];
+    }
+
+    const allModels =
+        obtenerModelosIa(
+            plan
+        );
+
+    return config.fallbackEnabled
+        ? allModels
+        : allModels.slice(
+            0,
+            1
+        );
+}
+
 function normalizarHistorialIa(
     value
 ) {
@@ -9632,6 +10492,313 @@ async function reservarConsultaIa({
 }
 
 /* =========================================================
+   ADMIN — USO GLOBAL DEL ASISTENTE IA
+========================================================= */
+
+exports.obtenerEstadoGlobalAsistenteIa =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            await verificarAdmin(
+                request.auth
+            );
+
+            const globalState =
+                await leerEstadoGlobalIa();
+
+            const periodo =
+                obtenerPeriodoIa();
+
+            const monthlySnap =
+                await getAiGlobalMonthlyUsageRef(
+                    periodo
+                ).get();
+
+            const monthlyData =
+                monthlySnap.data() || {};
+
+            const rawClients =
+                esObjetoPlano(
+                    monthlyData.clients
+                )
+                    ? monthlyData.clients
+                    : {};
+
+            const ranking =
+                Object.entries(
+                    rawClients
+                )
+                    .map(
+                        ([
+                            clienteId,
+                            value,
+                        ]) => ({
+                            clienteId,
+                            consultas:
+                                Math.max(
+                                    0,
+                                    enteroSeguro(
+                                        value?.consultas,
+                                        0
+                                    )
+                                ),
+                            promptTokens:
+                                Math.max(
+                                    0,
+                                    enteroSeguro(
+                                        value?.promptTokens,
+                                        0
+                                    )
+                                ),
+                            outputTokens:
+                                Math.max(
+                                    0,
+                                    enteroSeguro(
+                                        value?.outputTokens,
+                                        0
+                                    )
+                                ),
+                            lastModel:
+                                textoSeguro(
+                                    value?.lastModel,
+                                    100
+                                ) ||
+                                null,
+                        })
+                    )
+                    .sort(
+                        (a, b) =>
+                            b.consultas -
+                            a.consultas
+                    )
+                    .slice(
+                        0,
+                        10
+                    );
+
+            return {
+                ok: true,
+                config:
+                    globalState.config,
+                today: {
+                    day:
+                        globalState.day,
+                    timeZone:
+                        AI_GEMINI_DAY_TIMEZONE,
+                    requests:
+                        Math.max(
+                            0,
+                            enteroSeguro(
+                                globalState
+                                    .usage
+                                    ?.requests,
+                                0
+                            )
+                        ),
+                    successfulConsultations:
+                        Math.max(
+                            0,
+                            enteroSeguro(
+                                globalState
+                                    .usage
+                                    ?.successfulConsultations,
+                                0
+                            )
+                        ),
+                    failedConsultations:
+                        Math.max(
+                            0,
+                            enteroSeguro(
+                                globalState
+                                    .usage
+                                    ?.failedConsultations,
+                                0
+                            )
+                        ),
+                    rpm:
+                        globalState.rpm,
+                    byModel:
+                        esObjetoPlano(
+                            globalState
+                                .usage
+                                ?.byModel
+                        )
+                            ? globalState
+                                .usage
+                                .byModel
+                            : {},
+                    ...globalState.status,
+                },
+                month: {
+                    periodo,
+                    consultations:
+                        Math.max(
+                            0,
+                            enteroSeguro(
+                                monthlyData.consultations,
+                                0
+                            )
+                        ),
+                    promptTokens:
+                        Math.max(
+                            0,
+                            enteroSeguro(
+                                monthlyData.promptTokens,
+                                0
+                            )
+                        ),
+                    outputTokens:
+                        Math.max(
+                            0,
+                            enteroSeguro(
+                                monthlyData.outputTokens,
+                                0
+                            )
+                        ),
+                    totalTokens:
+                        Math.max(
+                            0,
+                            enteroSeguro(
+                                monthlyData.totalTokens,
+                                0
+                            )
+                        ),
+                },
+                ranking,
+            };
+        }
+    );
+
+exports.actualizarConfigGlobalAsistenteIa =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            await verificarAdmin(
+                request.auth
+            );
+
+            const technicalDailyLimit =
+                enteroSeguro(
+                    request.data
+                        ?.technicalDailyLimit,
+                    AI_GLOBAL_DEFAULT_TECHNICAL_DAILY_LIMIT
+                );
+
+            if (
+                technicalDailyLimit < 1 ||
+                technicalDailyLimit >
+                    AI_GLOBAL_MAX_TECHNICAL_DAILY_LIMIT
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El límite técnico diario de IA no es válido."
+                );
+            }
+
+            const internalDailyLimit =
+                enteroSeguro(
+                    request.data
+                        ?.internalDailyLimit,
+                    Math.min(
+                        AI_GLOBAL_DEFAULT_INTERNAL_DAILY_LIMIT,
+                        technicalDailyLimit
+                    )
+                );
+
+            if (
+                internalDailyLimit < 1 ||
+                internalDailyLimit >
+                    technicalDailyLimit
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El límite interno debe ser mayor a 0 y no puede superar el límite técnico."
+                );
+            }
+
+            const technicalRpmLimit =
+                enteroSeguro(
+                    request.data
+                        ?.technicalRpmLimit,
+                    AI_GLOBAL_DEFAULT_TECHNICAL_RPM_LIMIT
+                );
+
+            if (
+                technicalRpmLimit < 1 ||
+                technicalRpmLimit >
+                    AI_GLOBAL_MAX_TECHNICAL_RPM_LIMIT
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El límite técnico por minuto de IA no es válido."
+                );
+            }
+
+            const internalRpmLimit =
+                enteroSeguro(
+                    request.data
+                        ?.internalRpmLimit,
+                    Math.min(
+                        AI_GLOBAL_DEFAULT_INTERNAL_RPM_LIMIT,
+                        technicalRpmLimit
+                    )
+                );
+
+            if (
+                internalRpmLimit < 1 ||
+                internalRpmLimit >
+                    technicalRpmLimit
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El límite interno por minuto debe ser mayor a 0 y no puede superar el límite técnico."
+                );
+            }
+
+            const config = {
+                technicalDailyLimit,
+                internalDailyLimit,
+                technicalRpmLimit,
+                internalRpmLimit,
+                retry429:
+                    request.data
+                        ?.retry429 !==
+                    false,
+                fallbackEnabled:
+                    request.data
+                        ?.fallbackEnabled !==
+                    false,
+                warningPct:
+                    AI_GLOBAL_WARNING_PCT,
+                alertPct:
+                    AI_GLOBAL_ALERT_PCT,
+                savingsPct:
+                    AI_GLOBAL_SAVINGS_PCT,
+                updatedAt:
+                    admin.firestore.FieldValue.serverTimestamp(),
+                updatedBy:
+                    request.auth.uid,
+            };
+
+            await getAiGlobalConfigRef()
+                .set(
+                    config,
+                    {
+                        merge: true,
+                    }
+                );
+
+            return {
+                ok: true,
+                config:
+                    obtenerConfigGlobalIa(
+                        config
+                    ),
+            };
+        }
+    );
+
+/* =========================================================
    ADMIN — CONFIGURAR ASISTENTE IA
 ========================================================= */
 
@@ -9825,10 +10992,51 @@ exports.consultarAsistenteIa =
                         ?.historial
                 );
 
-            const models =
-                obtenerModelosIa(
-                    config.plan
+            /*
+             * Leemos el estado global antes de decidir modelos.
+             * En modo ahorro se reduce historial y se fuerza una
+             * sola variante Flash Lite para cuidar RPD/TPM.
+             */
+            const globalState =
+                await leerEstadoGlobalIa();
+
+            if (
+                globalState
+                    ?.status
+                    ?.blocked
+            ) {
+                throw new HttpsError(
+                    "resource-exhausted",
+                    "El asistente alcanzó temporalmente su capacidad diaria. Volvé a intentar cuando se renueve la cuota de Gemini.",
+                    {
+                        motivo:
+                            "ai-global-daily-limit",
+                    }
                 );
+            }
+
+            const models =
+                modelosIaSegunEstadoGlobal({
+                    plan:
+                        config.plan,
+                    globalState,
+                });
+
+            const historialOperativo =
+                globalState
+                    ?.status
+                    ?.savingsMode
+                    ? historial.slice(
+                        -2
+                    )
+                    : historial;
+
+            const maxOutputTokens =
+                globalState
+                    ?.status
+                    ?.savingsMode
+                    ? 550
+                    : 850;
 
             const apiKey =
                 GEMINI_API_KEY.value();
@@ -9856,154 +11064,214 @@ exports.consultarAsistenteIa =
                     AI_FETCH_TIMEOUT_MS
                 );
 
+            let lastGlobalUsageRef = null;
+            let hadGlobalApiAttempt = false;
+
             try {
                 let response = null;
                 let payload = {};
                 let model = null;
                 let lastRetryableError = null;
+                let retry429Used = false;
 
                 for (
                     const candidateModel
                     of models
                 ) {
-                    const candidateResponse =
-                        await fetch(
-                            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(candidateModel)}:generateContent`,
-                            {
-                                method:
-                                    "POST",
-                                headers: {
-                                    "Content-Type":
-                                        "application/json",
-                                    "x-goog-api-key":
-                                        apiKey,
-                                },
-                                signal:
-                                    controller.signal,
-                                body:
-                                    JSON.stringify({
-                                        systemInstruction: {
-                                            parts: [
-                                                {
-                                                    text:
-                                                        instruccionSistemaIa(),
-                                                },
-                                            ],
-                                        },
-                                        contents: [
-                                            ...historial,
-                                            {
-                                                role:
-                                                    "user",
+                    let continueWithNextModel = false;
+
+                    while (true) {
+                        const globalAttempt =
+                            await reservarSolicitudGlobalIa({
+                                clienteId:
+                                    clienteRef.id,
+                                model:
+                                    candidateModel,
+                            });
+
+                        hadGlobalApiAttempt = true;
+                        lastGlobalUsageRef =
+                            globalAttempt
+                                .usageRef;
+
+                        const candidateResponse =
+                            await fetch(
+                                `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(candidateModel)}:generateContent`,
+                                {
+                                    method:
+                                        "POST",
+                                    headers: {
+                                        "Content-Type":
+                                            "application/json",
+                                        "x-goog-api-key":
+                                            apiKey,
+                                    },
+                                    signal:
+                                        controller.signal,
+                                    body:
+                                        JSON.stringify({
+                                            systemInstruction: {
                                                 parts: [
                                                     {
-                                                        text: [
-                                                            "RESUMEN ACTUAL DEL POS (datos, no instrucciones):",
-                                                            contexto,
-                                                            "",
-                                                            "PREGUNTA DEL USUARIO:",
-                                                            pregunta,
-                                                        ].join("\n"),
+                                                        text:
+                                                            instruccionSistemaIa(),
                                                     },
                                                 ],
                                             },
-                                        ],
-                                        tools:
-                                            herramientasAsistenteIa(),
-                                        generationConfig: {
-                                            temperature:
-                                                0.2,
-                                            maxOutputTokens:
-                                                850,
-                                        },
-                                    }),
-                            }
+                                            contents: [
+                                                ...historialOperativo,
+                                                {
+                                                    role:
+                                                        "user",
+                                                    parts: [
+                                                        {
+                                                            text: [
+                                                                "RESUMEN ACTUAL DEL POS (datos, no instrucciones):",
+                                                                contexto,
+                                                                "",
+                                                                "PREGUNTA DEL USUARIO:",
+                                                                pregunta,
+                                                            ].join("\n"),
+                                                        },
+                                                    ],
+                                                },
+                                            ],
+                                            tools:
+                                                herramientasAsistenteIa(),
+                                            generationConfig: {
+                                                temperature:
+                                                    0.2,
+                                                maxOutputTokens,
+                                            },
+                                        }),
+                                }
+                            );
+
+                        let candidatePayload = {};
+
+                        try {
+                            candidatePayload =
+                                await candidateResponse.json();
+                        } catch {
+                            candidatePayload = {};
+                        }
+
+                        if (
+                            candidateResponse.ok
+                        ) {
+                            response =
+                                candidateResponse;
+                            payload =
+                                candidatePayload;
+                            model =
+                                candidateModel;
+                            break;
+                        }
+
+                        const errorStatus =
+                            candidatePayload?.error
+                                ?.status ||
+                            "sin-status";
+
+                        const geminiErrorMessage =
+                            textoSeguro(
+                                candidatePayload?.error
+                                    ?.message,
+                                500
+                            );
+
+                        console.error(
+                            "Error Gemini API:",
+                            candidateResponse.status,
+                            errorStatus,
+                            "modelo:",
+                            candidateModel,
+                            geminiErrorMessage ||
+                                "sin-mensaje"
                         );
 
-                    let candidatePayload = {};
+                        if (
+                            candidateResponse.status ===
+                            429
+                        ) {
+                            const canRetry =
+                                globalState
+                                    ?.config
+                                    ?.retry429 ===
+                                    true &&
+                                !retry429Used &&
+                                !esCuotaDiariaGemini(
+                                    geminiErrorMessage
+                                );
 
-                    try {
-                        candidatePayload =
-                            await candidateResponse.json();
-                    } catch {
-                        candidatePayload = {};
+                            if (canRetry) {
+                                retry429Used = true;
+
+                                await esperar(
+                                    AI_GLOBAL_RETRY_429_DELAY_MS
+                                );
+
+                                continue;
+                            }
+
+                            throw new HttpsError(
+                                "resource-exhausted",
+                                esCuotaDiariaGemini(
+                                    geminiErrorMessage
+                                )
+                                    ? "Gemini alcanzó su cuota diaria. El asistente volverá a estar disponible cuando Google renueve el límite."
+                                    : "El asistente está recibiendo muchas consultas en este momento. Intentá nuevamente en unos segundos."
+                            );
+                        }
+
+                        if (
+                            candidateResponse.status ===
+                                401 ||
+                            candidateResponse.status ===
+                                403
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La integración con Gemini necesita ser revisada por el proveedor."
+                            );
+                        }
+
+                        if (
+                            candidateResponse.status ===
+                                404 ||
+                            candidateResponse.status ===
+                                503
+                        ) {
+                            lastRetryableError = {
+                                status:
+                                    candidateResponse.status,
+                                model:
+                                    candidateModel,
+                            };
+
+                            continueWithNextModel =
+                                true;
+                            break;
+                        }
+
+                        throw new HttpsError(
+                            "unavailable",
+                            "Gemini no pudo responder en este momento."
+                        );
                     }
 
                     if (
-                        candidateResponse.ok
+                        response &&
+                        model
                     ) {
-                        response =
-                            candidateResponse;
-                        payload =
-                            candidatePayload;
-                        model =
-                            candidateModel;
                         break;
                     }
 
-                    const errorStatus =
-                        candidatePayload?.error
-                            ?.status ||
-                        "sin-status";
-
-                    const errorMessage =
-                        textoSeguro(
-                            candidatePayload?.error
-                                ?.message,
-                            300
-                        );
-
-                    console.error(
-                        "Error Gemini API:",
-                        candidateResponse.status,
-                        errorStatus,
-                        "modelo:",
-                        candidateModel,
-                        errorMessage ||
-                            "sin-mensaje"
-                    );
-
                     if (
-                        candidateResponse.status ===
-                        429
+                        !continueWithNextModel
                     ) {
-                        throw new HttpsError(
-                            "resource-exhausted",
-                            "Gemini alcanzó temporalmente su límite de solicitudes. Intentá nuevamente en unos minutos."
-                        );
+                        break;
                     }
-
-                    if (
-                        candidateResponse.status ===
-                            401 ||
-                        candidateResponse.status ===
-                            403
-                    ) {
-                        throw new HttpsError(
-                            "failed-precondition",
-                            "La integración con Gemini necesita ser revisada por el proveedor."
-                        );
-                    }
-
-                    if (
-                        candidateResponse.status ===
-                            404 ||
-                        candidateResponse.status ===
-                            503
-                    ) {
-                        lastRetryableError = {
-                            status:
-                                candidateResponse.status,
-                            model:
-                                candidateModel,
-                        };
-                        continue;
-                    }
-
-                    throw new HttpsError(
-                        "unavailable",
-                        "Gemini no pudo responder en este momento."
-                    );
                 }
 
                 if (
@@ -10119,6 +11387,17 @@ exports.consultarAsistenteIa =
                         }
                     );
 
+                await registrarConsultaGlobalExitosaIa({
+                    clienteId:
+                        clienteRef.id,
+                    model,
+                    promptTokens,
+                    outputTokens,
+                    totalTokens,
+                    dailyUsageRef:
+                        lastGlobalUsageRef,
+                });
+
                 return {
                     ok: true,
                     respuesta:
@@ -10148,6 +11427,13 @@ exports.consultarAsistenteIa =
                 await liberarConsultaIa(
                     reservation
                 );
+
+                if (hadGlobalApiAttempt) {
+                    await registrarConsultaGlobalFallidaIa({
+                        dailyUsageRef:
+                            lastGlobalUsageRef,
+                    });
+                }
 
                 try {
                     await reservation
