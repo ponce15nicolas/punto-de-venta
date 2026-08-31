@@ -1089,36 +1089,118 @@ export default function AiAssistant({
                 setOpen(true)
               }
               className="
+                group
                 fixed
                 bottom-[calc(102px+env(safe-area-inset-bottom))]
                 right-4
                 z-30
                 inline-flex
-                h-12
+                h-[54px]
                 items-center
-                gap-2
-                rounded-2xl
+                gap-2.5
+                overflow-hidden
+                rounded-[20px]
                 border
-                border-[#FFC61A]/25
-                bg-[#121720]/95
-                px-4
-                text-xs
-                font-black
+                border-white/10
+                bg-[linear-gradient(135deg,rgba(23,28,39,0.96),rgba(11,13,18,0.94))]
+                px-2.5
+                pr-3.5
+                text-left
                 text-white
-                shadow-[0_18px_45px_rgba(0,0,0,0.34)]
-                backdrop-blur-xl
-                transition
-                hover:border-[#FFC61A]/55
+                shadow-[0_18px_46px_rgba(0,0,0,0.36),0_0_0_1px_rgba(255,198,26,0.04)]
+                backdrop-blur-2xl
+                transition-[transform,border-color,box-shadow]
+                duration-200
+                hover:border-[#FFC61A]/30
+                hover:shadow-[0_20px_52px_rgba(0,0,0,0.42),0_0_24px_rgba(255,198,26,0.10)]
                 active:scale-[0.97]
                 lg:bottom-6
                 lg:right-6
               "
               aria-label="Abrir asistente IA"
             >
-              <SparklesIcon className="h-4 w-4 text-[#FFC61A]" />
-              Asistente IA
+              <span
+                className="
+                  relative
+                  grid
+                  h-9
+                  w-9
+                  shrink-0
+                  place-items-center
+                  rounded-[14px]
+                  border
+                  border-[#FFC61A]/20
+                  bg-[#FFC61A]/10
+                  shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]
+                  transition
+                  duration-200
+                  group-hover:bg-[#FFC61A]/15
+                "
+              >
+                <SparklesIcon className="h-[17px] w-[17px] text-[#FFC61A]" />
+                <span
+                  className="
+                    absolute
+                    -right-0.5
+                    -top-0.5
+                    h-2
+                    w-2
+                    rounded-full
+                    bg-[#FFC61A]
+                    shadow-[0_0_10px_rgba(255,198,26,0.7)]
+                  "
+                />
+              </span>
+
+              <span className="min-w-0 leading-none">
+                <span
+                  className="
+                    block
+                    text-[8px]
+                    font-extrabold
+                    uppercase
+                    tracking-[0.18em]
+                    text-white/35
+                  "
+                >
+                  Copiloto
+                </span>
+                <span
+                  className="
+                    mt-1
+                    block
+                    whitespace-nowrap
+                    text-[12px]
+                    font-black
+                    tracking-[-0.01em]
+                    text-white
+                  "
+                >
+                  Asistente IA
+                </span>
+              </span>
+
               {attentionAlertCount > 0 && (
-                <span className="grid min-w-5 place-items-center rounded-full bg-[#FFC61A] px-1.5 py-0.5 text-[9px] font-black leading-none text-black">
+                <span
+                  className="
+                    ml-0.5
+                    grid
+                    min-w-[22px]
+                    place-items-center
+                    rounded-full
+                    border
+                    border-[#FFC61A]/20
+                    bg-[#FFC61A]
+                    px-1.5
+                    py-1
+                    text-[9px]
+                    font-black
+                    leading-none
+                    text-black
+                    shadow-[0_0_16px_rgba(255,198,26,0.18)]
+                  "
+                  aria-label={`${attentionAlertCount} alertas del asistente`}
+                >
                   {Math.min(
                     attentionAlertCount,
                     9
