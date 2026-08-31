@@ -1,6 +1,6 @@
 // src/components/AiAssistant.jsx
 // Asistente personal del POS.
-// Solo consulta y analiza información; no modifica datos del negocio.
+// Consulta, analiza y puede proponer acciones que siempre requieren confirmación explícita.
 
 import {
   useEffect,
@@ -28,6 +28,10 @@ const QUICK_PROMPTS = [
   "¿Qué debería reponer primero y cuánto?",
   "Explicame el estado de caja y las últimas diferencias",
   "¿Qué alertas requieren atención ahora?",
+  "Armame una lista de compras con lo que debería reponer",
+  "¿Qué compras pendientes puedo confirmar?",
+  "¿Qué cuentas por pagar requieren atención?",
+  "¿Qué cuentas por cobrar están vencidas?",
 ];
 
 const MONEY_FORMATTER =
@@ -241,6 +245,12 @@ export default function AiAssistant({
   const [usage, setUsage] =
     useState(null);
 
+  const [executingActionId, setExecutingActionId] =
+    useState(null);
+
+  const actionExecutingRef =
+    useRef(false);
+
   const inputRef =
     useRef(null);
 
@@ -443,6 +453,16 @@ export default function AiAssistant({
             role:
               "assistant",
             text: answer,
+            action:
+              result?.accionPropuesta &&
+              typeof result.accionPropuesta ===
+                "object"
+                ? result.accionPropuesta
+                : null,
+            actionStatus:
+              result?.accionPropuesta
+                ? "pending"
+                : null,
           },
         ]
       );
@@ -490,8 +510,550 @@ export default function AiAssistant({
     }
   }
 
+  function updateActionMessage(
+    messageId,
+    patch
+  ) {
+    setMessages(
+      (current) =>
+        current.map(
+          (message) =>
+            message.id ===
+            messageId
+              ? {
+                  ...message,
+                  ...patch,
+                }
+              : message
+        )
+    );
+  }
+
+  function cancelProposedAction(
+    message
+  ) {
+    if (
+      !message?.id ||
+      message?.actionStatus !==
+        "pending" ||
+      actionExecutingRef.current
+    ) {
+      return;
+    }
+
+    updateActionMessage(
+      message.id,
+      {
+        actionStatus:
+          "cancelled",
+        actionResult:
+          "Acción cancelada. No se modificó ningún dato.",
+      }
+    );
+  }
+
+  async function executeProposedAction(
+    message
+  ) {
+    const action =
+      message?.action;
+
+    if (
+      !message?.id ||
+      !action ||
+      message?.actionStatus !==
+        "pending" ||
+      actionExecutingRef.current
+    ) {
+      return;
+    }
+
+    if (
+      pos?.isOnline ===
+      false
+    ) {
+      updateActionMessage(
+        message.id,
+        {
+          actionStatus:
+            "error",
+          actionResult:
+            "Necesitás conexión a Internet para ejecutar esta acción.",
+        }
+      );
+      return;
+    }
+
+    if (
+      action?.destructiva ===
+        true ||
+      action?.riesgo ===
+        "alto"
+    ) {
+      const confirmed =
+        window.confirm(
+          `${action?.descripcion || "Esta acción modifica información sensible."}\n\n${action?.destructiva === true ? "Esta acción puede ser irreversible. " : "Esta operación afecta movimientos financieros o datos sensibles. "}¿Confirmás que querés continuar?`
+        );
+
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    actionExecutingRef.current =
+      true;
+    setExecutingActionId(
+      message.id
+    );
+
+    try {
+      if (
+        action.tipo ===
+        "sumar_stock"
+      ) {
+        if (
+          typeof pos?.restock !==
+          "function"
+        ) {
+          throw new Error(
+            "La función de reposición no está disponible."
+          );
+        }
+
+        const ok =
+          await Promise.resolve(
+            pos.restock(
+              action?.payload
+                ?.barcode,
+              action?.payload
+                ?.cantidad
+            )
+          );
+
+        if (!ok) {
+          throw new Error(
+            "No se pudo actualizar el stock."
+          );
+        }
+
+        updateActionMessage(
+          message.id,
+          {
+            actionStatus:
+              "success",
+            actionResult:
+              `Stock actualizado: ${action?.payload?.productoNombre || "producto"} quedó con aproximadamente ${action?.payload?.stockResultante ?? "el nuevo stock"} ${action?.payload?.unidad || "unidades"}.`,
+          }
+        );
+        return;
+      }
+
+      if (
+        action.tipo ===
+        "crear_lista_compras"
+      ) {
+        if (
+          typeof pos?.createShoppingItem !==
+          "function"
+        ) {
+          throw new Error(
+            "La lista de compras no está disponible."
+          );
+        }
+
+        const items =
+          Array.isArray(
+            action?.payload
+              ?.items
+          )
+            ? action.payload.items
+            : [];
+
+        if (items.length === 0) {
+          throw new Error(
+            "La acción no contiene ítems válidos."
+          );
+        }
+
+        let completed = 0;
+
+        for (const item of items) {
+          const ok =
+            await Promise.resolve(
+              pos.createShoppingItem(
+                item
+              )
+            );
+
+          if (!ok) {
+            break;
+          }
+
+          completed += 1;
+        }
+
+        if (
+          completed ===
+          items.length
+        ) {
+          updateActionMessage(
+            message.id,
+            {
+              actionStatus:
+                "success",
+              actionResult:
+                completed === 1
+                  ? "Ítem agregado a la lista de compras."
+                  : `${completed} ítems agregados a la lista de compras.`,
+            }
+          );
+          return;
+        }
+
+        if (completed > 0) {
+          updateActionMessage(
+            message.id,
+            {
+              actionStatus:
+                "partial",
+              actionResult:
+                `Se agregaron ${completed} de ${items.length} ítems. La acción quedó detenida para evitar duplicados; revisá la lista antes de volver a intentarlo.`,
+            }
+          );
+          return;
+        }
+
+        throw new Error(
+          "No se pudo crear la lista de compras."
+        );
+      }
+
+      if (
+        action.tipo ===
+        "confirmar_compra"
+      ) {
+        if (
+          typeof pos?.completeShoppingItem !==
+          "function"
+        ) {
+          throw new Error(
+            "La confirmación de compras no está disponible."
+          );
+        }
+
+        const payload =
+          action?.payload || {};
+
+        const ok =
+          await Promise.resolve(
+            pos.completeShoppingItem(
+              payload.compraId,
+              {
+                costoReal:
+                  payload.costoReal,
+                conceptoCosto:
+                  payload.conceptoCosto,
+                sumarStock:
+                  payload.sumarStock ===
+                  true,
+                productoBarcode:
+                  payload.sumarStock
+                    ? payload.productoBarcode
+                    : "",
+                cantidadStock:
+                  payload.sumarStock
+                    ? payload.cantidadStock
+                    : 0,
+                generarCuentaPorPagar:
+                  payload.generarCuentaPorPagar ===
+                  true,
+                vencimiento:
+                  payload.vencimiento ||
+                  "",
+              }
+            )
+          );
+
+        if (!ok) {
+          throw new Error(
+            "No se pudo confirmar la compra."
+          );
+        }
+
+        updateActionMessage(
+          message.id,
+          {
+            actionStatus:
+              "success",
+            actionResult:
+              payload.generarCuentaPorPagar
+                ? "Compra confirmada. Se actualizó la información correspondiente y se creó la cuenta por pagar."
+                : payload.sumarStock
+                  ? "Compra confirmada y stock actualizado."
+                  : "Compra confirmada correctamente.",
+          }
+        );
+        return;
+      }
+
+      if (
+        action.tipo ===
+        "crear_cuenta_por_pagar"
+      ) {
+        if (
+          typeof pos?.createManualPayable !==
+          "function"
+        ) {
+          throw new Error(
+            "La gestión de cuentas por pagar no está disponible."
+          );
+        }
+
+        const ok =
+          await Promise.resolve(
+            pos.createManualPayable(
+              action?.payload?.cuenta
+            )
+          );
+
+        if (!ok) {
+          throw new Error(
+            "No se pudo crear la cuenta por pagar."
+          );
+        }
+
+        updateActionMessage(
+          message.id,
+          {
+            actionStatus:
+              "success",
+            actionResult:
+              "Cuenta por pagar registrada correctamente.",
+          }
+        );
+        return;
+      }
+
+      if (
+        action.tipo ===
+        "registrar_pago_cuenta_por_pagar"
+      ) {
+        if (
+          typeof pos?.registerPayablePayment !==
+          "function"
+        ) {
+          throw new Error(
+            "El registro de pagos a proveedores no está disponible."
+          );
+        }
+
+        const payload =
+          action?.payload || {};
+
+        const ok =
+          await Promise.resolve(
+            pos.registerPayablePayment(
+              payload.cuentaId,
+              {
+                importe:
+                  payload.importe,
+                metodoPago:
+                  payload.metodoPago,
+              }
+            )
+          );
+
+        if (!ok) {
+          throw new Error(
+            "No se pudo registrar el pago de la cuenta por pagar."
+          );
+        }
+
+        updateActionMessage(
+          message.id,
+          {
+            actionStatus:
+              "success",
+            actionResult:
+              payload.saldoResultante === 0
+                ? "Pago registrado. La cuenta por pagar quedó saldada."
+                : `Pago registrado. Saldo restante estimado: ${formatMoney(payload.saldoResultante)}.`,
+          }
+        );
+        return;
+      }
+
+      if (
+        action.tipo ===
+        "crear_cuenta_por_cobrar"
+      ) {
+        if (
+          typeof pos?.createManualReceivable !==
+          "function"
+        ) {
+          throw new Error(
+            "La gestión de cuentas por cobrar no está disponible."
+          );
+        }
+
+        const ok =
+          await Promise.resolve(
+            pos.createManualReceivable(
+              action?.payload?.cuenta
+            )
+          );
+
+        if (!ok) {
+          throw new Error(
+            "No se pudo crear la cuenta por cobrar."
+          );
+        }
+
+        updateActionMessage(
+          message.id,
+          {
+            actionStatus:
+              "success",
+            actionResult:
+              "Cuenta por cobrar registrada correctamente.",
+          }
+        );
+        return;
+      }
+
+      if (
+        action.tipo ===
+        "registrar_pago_cuenta_por_cobrar"
+      ) {
+        if (
+          typeof pos?.registerReceivablePayment !==
+          "function"
+        ) {
+          throw new Error(
+            "El registro de cobros no está disponible."
+          );
+        }
+
+        const payload =
+          action?.payload || {};
+
+        const ok =
+          await Promise.resolve(
+            pos.registerReceivablePayment(
+              payload.cuenta,
+              {
+                importe:
+                  payload.importe,
+                metodoPago:
+                  payload.metodoPago,
+                efectivoRecibido:
+                  payload.metodoPago ===
+                  "efectivo"
+                    ? payload.efectivoRecibido
+                    : null,
+                vuelto:
+                  payload.metodoPago ===
+                  "efectivo"
+                    ? payload.vuelto
+                    : 0,
+              }
+            )
+          );
+
+        if (!ok) {
+          throw new Error(
+            "No se pudo registrar el cobro."
+          );
+        }
+
+        updateActionMessage(
+          message.id,
+          {
+            actionStatus:
+              "success",
+            actionResult:
+              payload.saldoResultante === 0
+                ? "Cobro registrado. La cuenta por cobrar quedó saldada."
+                : `Cobro registrado. Saldo restante estimado: ${formatMoney(payload.saldoResultante)}.`,
+          }
+        );
+        return;
+      }
+
+      if (
+        action.tipo ===
+        "eliminar_cierre_historial"
+      ) {
+        if (
+          typeof pos?.deleteCashSession !==
+          "function"
+        ) {
+          throw new Error(
+            "La eliminación de cierres no está disponible."
+          );
+        }
+
+        const ok =
+          await Promise.resolve(
+            pos.deleteCashSession(
+              action?.payload
+                ?.cajaId
+            )
+          );
+
+        if (!ok) {
+          throw new Error(
+            "No se pudo eliminar el cierre. Esta acción requiere permisos de Administrador."
+          );
+        }
+
+        updateActionMessage(
+          message.id,
+          {
+            actionStatus:
+              "success",
+            actionResult:
+              "Cierre histórico eliminado. La auditoría de la eliminación se conserva.",
+          }
+        );
+        return;
+      }
+
+      throw new Error(
+        "El asistente propuso una acción no compatible."
+      );
+    } catch (error) {
+      console.error(
+        "Error ejecutando acción del asistente IA:",
+        error
+      );
+
+      updateActionMessage(
+        message.id,
+        {
+          actionStatus:
+            "error",
+          actionResult:
+            String(
+              error?.message ||
+                "No se pudo ejecutar la acción."
+            ),
+        }
+      );
+    } finally {
+      actionExecutingRef.current =
+        false;
+      setExecutingActionId(
+        null
+      );
+    }
+  }
+
   function clearConversation() {
-    if (sending) {
+    if (
+      sending ||
+      actionExecutingRef.current
+    ) {
       return;
     }
 
@@ -649,7 +1211,7 @@ export default function AiAssistant({
                       Asistente IA
                     </h2>
                     <p className="mt-0.5 text-[11px] text-white/40">
-                      Solo lectura · no modifica caja ni stock
+                      Acciones con confirmación · auditoría protegida
                     </p>
                   </div>
 
@@ -832,6 +1394,30 @@ export default function AiAssistant({
                           <div className="whitespace-pre-wrap break-words">
                             {message.text}
                           </div>
+
+                          {message.role ===
+                            "assistant" &&
+                            message.action && (
+                              <AiActionCard
+                                action={message.action}
+                                status={message.actionStatus}
+                                result={message.actionResult}
+                                executing={
+                                  executingActionId ===
+                                  message.id
+                                }
+                                onConfirm={() =>
+                                  executeProposedAction(
+                                    message
+                                  )
+                                }
+                                onCancel={() =>
+                                  cancelProposedAction(
+                                    message
+                                  )
+                                }
+                              />
+                            )}
                         </div>
                       )
                     )}
@@ -854,7 +1440,12 @@ export default function AiAssistant({
                     <button
                       type="button"
                       onClick={clearConversation}
-                      disabled={sending}
+                      disabled={
+                        sending ||
+                        Boolean(
+                          executingActionId
+                        )
+                      }
                       className="text-[10px] font-bold text-white/30 transition hover:text-white/60 disabled:opacity-30"
                     >
                       Limpiar conversación
@@ -893,7 +1484,7 @@ export default function AiAssistant({
                     }}
                     disabled={sending}
                     rows={1}
-                    placeholder="Preguntale algo sobre tu negocio…"
+                    placeholder="Preguntá o pedí una tarea sobre tu negocio…"
                     className="max-h-28 min-h-11 flex-1 resize-none rounded-2xl border border-white/10 bg-white/[0.045] px-3.5 py-3 text-sm text-white outline-none transition placeholder:text-white/25 focus:border-[#FFC61A]/45 disabled:opacity-55"
                   />
 
@@ -919,6 +1510,257 @@ export default function AiAssistant({
         )}
       </AnimatePresence>
     </>
+  );
+}
+
+function AiActionCard({
+  action,
+  status,
+  result,
+  executing,
+  onConfirm,
+  onCancel,
+}) {
+  const destructive =
+    action?.destructiva ===
+    true;
+
+  const items =
+    Array.isArray(
+      action?.payload?.items
+    )
+      ? action.payload.items
+      : [];
+
+  const done =
+    status === "success" ||
+    status === "cancelled" ||
+    status === "partial";
+
+  const highImpact =
+    action?.riesgo ===
+    "alto";
+
+  const financialDetails =
+    (() => {
+      const payload =
+        action?.payload || {};
+
+      if (
+        action?.tipo ===
+        "confirmar_compra"
+      ) {
+        return [
+          payload.concepto
+            ? `Compra: ${payload.concepto}`
+            : null,
+          Number.isFinite(Number(payload.costoReal))
+            ? `Costo real: ${formatMoney(payload.costoReal)}`
+            : null,
+          payload.sumarStock
+            ? `Stock: +${payload.cantidadStock} · ${payload.productoNombre || payload.productoBarcode || "producto"}`
+            : "Sin ingreso automático a stock",
+          payload.generarCuentaPorPagar
+            ? "Generará cuenta por pagar"
+            : "Sin cuenta por pagar",
+        ].filter(Boolean);
+      }
+
+      if (
+        action?.tipo ===
+        "crear_cuenta_por_pagar"
+      ) {
+        const cuenta =
+          payload.cuenta || {};
+        return [
+          cuenta.proveedorNombre
+            ? `Proveedor: ${cuenta.proveedorNombre}`
+            : null,
+          cuenta.concepto
+            ? `Concepto: ${cuenta.concepto}`
+            : null,
+          Number.isFinite(Number(cuenta.importeOriginal))
+            ? `Importe: ${formatMoney(cuenta.importeOriginal)}`
+            : null,
+          cuenta.vencimiento
+            ? `Vence: ${cuenta.vencimiento}`
+            : null,
+        ].filter(Boolean);
+      }
+
+      if (
+        action?.tipo ===
+        "crear_cuenta_por_cobrar"
+      ) {
+        const cuenta =
+          payload.cuenta || {};
+        return [
+          cuenta.clienteNombre
+            ? `Cliente: ${cuenta.clienteNombre}`
+            : null,
+          cuenta.concepto
+            ? `Concepto: ${cuenta.concepto}`
+            : null,
+          Number.isFinite(Number(cuenta.importeOriginal))
+            ? `Importe: ${formatMoney(cuenta.importeOriginal)}`
+            : null,
+          cuenta.vencimiento
+            ? `Vence: ${cuenta.vencimiento}`
+            : null,
+        ].filter(Boolean);
+      }
+
+      if (
+        action?.tipo ===
+          "registrar_pago_cuenta_por_pagar" ||
+        action?.tipo ===
+          "registrar_pago_cuenta_por_cobrar"
+      ) {
+        return [
+          payload.proveedorNombre
+            ? `Proveedor: ${payload.proveedorNombre}`
+            : payload.clienteNombre
+              ? `Cliente: ${payload.clienteNombre}`
+              : null,
+          Number.isFinite(Number(payload.importe))
+            ? `Movimiento: ${formatMoney(payload.importe)}`
+            : null,
+          payload.metodoPago
+            ? `Medio: ${payload.metodoPago}`
+            : null,
+          Number.isFinite(Number(payload.saldoResultante))
+            ? `Saldo después: ${formatMoney(payload.saldoResultante)}`
+            : null,
+          Number(payload.vuelto) > 0
+            ? `Vuelto: ${formatMoney(payload.vuelto)}`
+            : null,
+        ].filter(Boolean);
+      }
+
+      return [];
+    })();
+
+  return (
+    <div
+      className={
+        destructive
+          ? "mt-3 rounded-2xl border border-red-400/25 bg-red-500/[0.07] p-3"
+          : "mt-3 rounded-2xl border border-[#FFC61A]/20 bg-[#FFC61A]/[0.045] p-3"
+      }
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-[0.14em] text-white/35">
+            Acción propuesta
+          </p>
+          <p className="mt-1 text-xs font-black text-white/90">
+            {action?.titulo ||
+              "Acción"}
+          </p>
+        </div>
+        <span
+          className={
+            destructive
+              ? "rounded-full bg-red-400/10 px-2 py-1 text-[9px] font-black uppercase tracking-[0.1em] text-red-200"
+              : "rounded-full bg-[#FFC61A]/10 px-2 py-1 text-[9px] font-black uppercase tracking-[0.1em] text-[#FFD65B]"
+          }
+        >
+          {destructive
+            ? "Alto riesgo"
+            : highImpact
+              ? "Alto impacto"
+              : "Requiere confirmar"}
+        </span>
+      </div>
+
+      <p className="mt-2 text-[11px] leading-relaxed text-white/55">
+        {action?.descripcion}
+      </p>
+
+      {action?.tipo ===
+        "sumar_stock" && (
+          <div className="mt-2 rounded-xl bg-black/20 px-3 py-2 text-[11px] text-white/55">
+            Stock: {action?.payload?.stockActual ?? "—"} → {action?.payload?.stockResultante ?? "—"} {action?.payload?.unidad || ""}
+          </div>
+        )}
+
+      {financialDetails.length > 0 && (
+        <div className="mt-2 space-y-1 rounded-xl bg-black/20 px-3 py-2">
+          {financialDetails.map(
+            (detail) => (
+              <p
+                key={detail}
+                className="text-[11px] text-white/55"
+              >
+                {detail}
+              </p>
+            )
+          )}
+        </div>
+      )}
+
+      {items.length > 0 && (
+        <div className="mt-2 space-y-1 rounded-xl bg-black/20 px-3 py-2">
+          {items.map(
+            (item, index) => (
+              <p
+                key={`${item?.concepto || "item"}-${index}`}
+                className="text-[11px] text-white/55"
+              >
+                {item?.cantidad || 1} × {item?.concepto || "Ítem"}
+                {item?.proveedor
+                  ? ` · ${item.proveedor}`
+                  : ""}
+              </p>
+            )
+          )}
+        </div>
+      )}
+
+      {result && (
+        <div
+          className={
+            status === "success"
+              ? "mt-2 rounded-xl border border-emerald-400/15 bg-emerald-400/[0.07] px-3 py-2 text-[11px] font-semibold text-emerald-100"
+              : status === "cancelled"
+                ? "mt-2 rounded-xl border border-white/8 bg-white/[0.035] px-3 py-2 text-[11px] font-semibold text-white/45"
+                : "mt-2 rounded-xl border border-red-400/15 bg-red-400/[0.06] px-3 py-2 text-[11px] font-semibold text-red-100"
+          }
+        >
+          {result}
+        </div>
+      )}
+
+      {!done &&
+        status !== "error" && (
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={executing}
+              className="flex-1 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2 text-[11px] font-black text-white/55 transition hover:bg-white/[0.06] disabled:opacity-40"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={executing}
+              className={
+                destructive
+                  ? "flex-1 rounded-xl bg-red-500 px-3 py-2 text-[11px] font-black text-white transition hover:bg-red-400 active:scale-[0.98] disabled:opacity-45"
+                  : "flex-1 rounded-xl bg-[#FFC61A] px-3 py-2 text-[11px] font-black text-black transition hover:bg-[#FFD248] active:scale-[0.98] disabled:opacity-45"
+              }
+            >
+              {executing
+                ? "Aplicando…"
+                : destructive
+                  ? "Eliminar definitivamente"
+                  : "Confirmar"}
+            </button>
+          </div>
+        )}
+    </div>
   );
 }
 

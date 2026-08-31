@@ -1146,6 +1146,418 @@ function summarizeStockMatches(
   };
 }
 
+
+const OPERATION_QUERY_STOP_WORDS =
+  new Set([
+    "a",
+    "al",
+    "agrega",
+    "agregar",
+    "agregame",
+    "anota",
+    "anotar",
+    "como",
+    "compra",
+    "comprado",
+    "comprar",
+    "compras",
+    "confirma",
+    "confirmar",
+    "cuenta",
+    "cuentas",
+    "de",
+    "del",
+    "deuda",
+    "deudas",
+    "el",
+    "en",
+    "esa",
+    "ese",
+    "esta",
+    "este",
+    "hacer",
+    "la",
+    "las",
+    "lista",
+    "los",
+    "me",
+    "mi",
+    "paga",
+    "pagado",
+    "pagar",
+    "pago",
+    "por",
+    "registrar",
+    "registra",
+    "saldar",
+    "saldo",
+    "una",
+    "un",
+    "y",
+  ]);
+
+function operationQueryTerms(
+  question
+) {
+  return normalizeSearchText(
+    question
+  )
+    .split(/\s+/)
+    .filter(
+      (term) =>
+        term.length >= 2 &&
+        !OPERATION_QUERY_STOP_WORDS.has(
+          term
+        ) &&
+        !STOCK_QUERY_STOP_WORDS.has(
+          term
+        )
+    );
+}
+
+function scoreOperationalMatch(
+  cleanQuestion,
+  terms,
+  fields
+) {
+  const normalizedFields =
+    fields
+      .map(normalizeSearchText)
+      .filter(Boolean);
+
+  let score = 0;
+  let matchedTerms = 0;
+
+  for (const field of normalizedFields) {
+    if (
+      field.length >= 3 &&
+      cleanQuestion.includes(field)
+    ) {
+      score += 420;
+    }
+  }
+
+  for (const term of terms) {
+    if (
+      normalizedFields.some(
+        (field) =>
+          field.includes(term) ||
+          term.includes(field)
+      )
+    ) {
+      matchedTerms += 1;
+      score += 55;
+    }
+  }
+
+  if (
+    terms.length > 1 &&
+    matchedTerms === terms.length
+  ) {
+    score += 160;
+  }
+
+  return score;
+}
+
+function summarizeOperationalMatches(
+  pos,
+  question
+) {
+  const cleanQuestion =
+    normalizeSearchText(
+      question
+    );
+
+  if (!cleanQuestion) {
+    return null;
+  }
+
+  const terms =
+    operationQueryTerms(
+      question
+    );
+
+  if (terms.length === 0) {
+    return null;
+  }
+
+  const shoppingList =
+    Array.isArray(
+      pos?.shoppingList
+    )
+      ? pos.shoppingList
+      : [];
+
+  const accountsPayable =
+    Array.isArray(
+      pos?.accountsPayable
+    )
+      ? pos.accountsPayable
+      : [];
+
+  const accountsReceivable =
+    Array.isArray(
+      pos?.accountsReceivable
+    )
+      ? pos.accountsReceivable
+      : [];
+
+  const comprasPendientes =
+    shoppingList
+      .filter(
+        (item) =>
+          item?.estado !==
+            "comprado" &&
+          item?.completado !== true
+      )
+      .map((item) => {
+        const score =
+          scoreOperationalMatch(
+            cleanQuestion,
+            terms,
+            [
+              item?.id,
+              item?.concepto,
+              item?.proveedor,
+              item?.notas,
+            ]
+          );
+
+        if (score <= 0) {
+          return null;
+        }
+
+        return {
+          id:
+            String(
+              item?.id || ""
+            ).slice(0, 180),
+          concepto:
+            String(
+              item?.concepto ||
+                "Compra"
+            ).slice(0, 180),
+          proveedor:
+            String(
+              item?.proveedor || ""
+            ).slice(0, 120),
+          cantidad:
+            roundQuantity(
+              Math.max(
+                0,
+                toNumber(
+                  item?.cantidad,
+                  1
+                )
+              )
+            ),
+          costoEstimado:
+            roundMoney(
+              item?.costoEstimado
+            ),
+          conceptoCosto:
+            String(
+              item?.conceptoCosto ||
+                "Mercadería"
+            ).slice(0, 180),
+          _score: score,
+        };
+      })
+      .filter(Boolean)
+      .sort(
+        (a, b) =>
+          b._score - a._score
+      )
+      .slice(0, 8)
+      .map(
+        ({ _score, ...item }) =>
+          item
+      );
+
+  const cuentasPorPagar =
+    accountsPayable
+      .filter(
+        (account) =>
+          account?.estado !==
+            "pagado" &&
+          toNumber(
+            account?.saldoPendiente
+          ) > 0
+      )
+      .map((account) => {
+        const score =
+          scoreOperationalMatch(
+            cleanQuestion,
+            terms,
+            [
+              account?.id,
+              account?.proveedorNombre,
+              account?.concepto,
+              account?.notas,
+            ]
+          );
+
+        if (score <= 0) {
+          return null;
+        }
+
+        return {
+          id:
+            String(
+              account?.id || ""
+            ).slice(0, 180),
+          proveedorNombre:
+            String(
+              account?.proveedorNombre ||
+                "Proveedor"
+            ).slice(0, 120),
+          concepto:
+            String(
+              account?.concepto ||
+                "Cuenta por pagar"
+            ).slice(0, 180),
+          importeOriginal:
+            roundMoney(
+              account?.importeOriginal
+            ),
+          saldoPendiente:
+            roundMoney(
+              account?.saldoPendiente
+            ),
+          vencimiento:
+            normalizeDayKey(
+              account?.vencimiento
+            ),
+          _score: score,
+        };
+      })
+      .filter(Boolean)
+      .sort(
+        (a, b) =>
+          b._score - a._score
+      )
+      .slice(0, 8)
+      .map(
+        ({ _score, ...item }) =>
+          item
+      );
+
+  const cuentasPorCobrar =
+    accountsReceivable
+      .filter(
+        (account) =>
+          account?.estado !==
+            "pagado" &&
+          toNumber(
+            account?.saldoPendiente ??
+              account?.importePendiente
+          ) > 0
+      )
+      .map((account) => {
+        const score =
+          scoreOperationalMatch(
+            cleanQuestion,
+            terms,
+            [
+              account?.id,
+              account?.clienteNombre,
+              account?.clienteTelefono,
+              account?.concepto,
+              account?.notas,
+            ]
+          );
+
+        if (score <= 0) {
+          return null;
+        }
+
+        const cuentaIds =
+          Array.isArray(
+            account?.cuentaIds
+          )
+            ? account.cuentaIds
+                .map(
+                  (id) =>
+                    String(
+                      id || ""
+                    ).slice(0, 180)
+                )
+                .filter(Boolean)
+                .slice(0, 20)
+            : [];
+
+        return {
+          id:
+            String(
+              account?.id || ""
+            ).slice(0, 180),
+          cuentaIds,
+          clienteNombre:
+            String(
+              account?.clienteNombre ||
+                "Cliente"
+            ).slice(0, 120),
+          clienteTelefono:
+            String(
+              account?.clienteTelefono ||
+                ""
+            ).slice(0, 50),
+          concepto:
+            String(
+              account?.concepto ||
+                "Cuenta por cobrar"
+            ).slice(0, 180),
+          importeOriginal:
+            roundMoney(
+              account?.importeOriginal
+            ),
+          saldoPendiente:
+            roundMoney(
+              account?.saldoPendiente ??
+                account?.importePendiente
+            ),
+          vencimiento:
+            normalizeDayKey(
+              account?.vencimiento
+            ),
+          _score: score,
+        };
+      })
+      .filter(Boolean)
+      .sort(
+        (a, b) =>
+          b._score - a._score
+      )
+      .slice(0, 8)
+      .map(
+        ({ _score, ...item }) =>
+          item
+      );
+
+  if (
+    comprasPendientes.length === 0 &&
+    cuentasPorPagar.length === 0 &&
+    cuentasPorCobrar.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    consulta:
+      String(
+        question || ""
+      )
+        .trim()
+        .slice(0, 180),
+    comprasPendientes,
+    cuentasPorPagar,
+    cuentasPorCobrar,
+    nota:
+      "Los IDs y saldos de esta sección provienen del estado actual del POS. Para acciones sobre compras o cuentas, usá exclusivamente coincidencias inequívocas de esta sección.",
+  };
+}
+
 function summarizeInventory(
   catalog,
   weekSales,
@@ -1777,6 +2189,14 @@ function summarizeCashHistory(
                 : null;
 
           return {
+            id:
+              String(
+                session?.id ||
+                  ""
+              )
+                .trim()
+                .slice(0, 180) ||
+              null,
             cierre:
               session?.closeTime ||
               null,
@@ -2275,6 +2695,12 @@ export function buildAssistantBusinessContext(
       stockQuery;
   }
 
+  const operationalQuery =
+    summarizeOperationalMatches(
+      pos,
+      options?.question
+    );
+
   const currentCash =
     summarizeCurrentCash(
       pos
@@ -2359,9 +2785,11 @@ export function buildAssistantBusinessContext(
     });
 
   return {
-    version: 3,
+    version: 4,
     generadoEn:
       now.toISOString(),
+    fechaLocal:
+      dayKeyFromDate(now),
     zonaHoraria:
       Intl.DateTimeFormat()
         .resolvedOptions()
@@ -2491,6 +2919,8 @@ export function buildAssistantBusinessContext(
               true
         ).length,
     },
+    operaciones:
+      operationalQuery,
     promociones: {
       activas:
         promotions.filter(
