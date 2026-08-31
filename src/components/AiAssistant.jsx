@@ -1560,7 +1560,8 @@ export default function AiAssistant({
                     }}
                     disabled={sending}
                     rows={1}
-                    placeholder="Preguntá o pedí una tarea sobre tu negocio…"
+                    placeholder="Escribí tu consulta…"
+                    aria-label="Preguntá o pedí una tarea sobre tu negocio"
                     className={cn("max-h-28 min-h-11 flex-1 resize-none rounded-2xl border px-3.5 py-3 text-sm outline-none transition focus:border-[#FFC61A]/45 disabled:opacity-55", isLightTheme ? "border-black/10 bg-white text-black placeholder:text-black/35" : "border-white/10 bg-white/[0.045] text-white placeholder:text-white/25")}
                   />
 
