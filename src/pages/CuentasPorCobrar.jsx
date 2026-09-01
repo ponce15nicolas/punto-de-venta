@@ -326,6 +326,132 @@ export default function CuentasPorCobrar({
   const ticketEnabled =
     ticketConfig.enabled === true;
 
+  function buildStoredPaymentReceipt(account, payment) {
+    if (!account || !payment) {
+      return null;
+    }
+
+    const chronologicalPayments =
+      Array.isArray(account?.pagos)
+        ? account.pagos
+            .filter(Boolean)
+            .slice()
+            .sort((a, b) =>
+              String(a?.fecha || "").localeCompare(
+                String(b?.fecha || "")
+              )
+            )
+        : [];
+
+    let runningBalance = roundMoney(
+      account?.importeOriginal
+    );
+    let totalPaid = 0;
+
+    for (const current of chronologicalPayments) {
+      const amount = roundMoney(current?.importe);
+      const previousBalance = runningBalance;
+      const remainingBalance = roundMoney(
+        Math.max(0, previousBalance - amount)
+      );
+
+      totalPaid = roundMoney(totalPaid + amount);
+      runningBalance = remainingBalance;
+
+      const samePayment =
+        String(current?.id || "") ===
+        String(payment?.id || "");
+
+      if (samePayment) {
+        return {
+          pagoId:
+            current?.grupoPagoId ||
+            current?.id,
+          clienteNombre: account?.clienteNombre,
+          clienteTelefono: account?.clienteTelefono,
+          metodoPago: current?.metodoPago,
+          importe: amount,
+          efectivoRecibido: current?.efectivoRecibido,
+          vuelto: current?.vuelto,
+          saldoAnterior: previousBalance,
+          saldoRestante: remainingBalance,
+          importeOriginal: account?.importeOriginal,
+          totalPagado: totalPaid,
+          concepto: account?.concepto,
+          fecha: current?.fecha,
+          estado:
+            remainingBalance <= 0
+              ? "pagado"
+              : "parcial",
+          operadorNombre:
+            current?.operador?.operadorNombre ||
+            account?.actualizadoPor?.operadorNombre ||
+            "",
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function openPaymentTicket(account, payment) {
+    if (!ticketEnabled || !account || !payment) {
+      return;
+    }
+
+    const receipt =
+      buildStoredPaymentReceipt(
+        account,
+        payment
+      );
+
+    if (!receipt) {
+      pos?.showToast?.(
+        "No se encontraron los datos de este cobro para generar el ticket",
+        true
+      );
+      return;
+    }
+
+    setSettlementTicket(
+      createReceivablePaymentTicketPayload({
+        receipt,
+        shopName: pos?.shopName || "Mi Negocio",
+        config: ticketConfig,
+      })
+    );
+  }
+
+  function openSettledAccountTicket(account) {
+    if (
+      !ticketEnabled ||
+      !account ||
+      !isSettled(account)
+    ) {
+      return;
+    }
+
+    const payments =
+      Array.isArray(account?.pagos)
+        ? account.pagos.filter(Boolean)
+        : [];
+
+    const lastPayment =
+      payments.length > 0
+        ? payments[payments.length - 1]
+        : null;
+
+    if (!lastPayment) {
+      pos?.showToast?.(
+        "Esta cuenta pagada no tiene un cobro guardado para generar el ticket",
+        true
+      );
+      return;
+    }
+
+    openPaymentTicket(account, lastPayment);
+  }
+
   const selectedAccount =
     useMemo(() => {
       if (
@@ -859,6 +985,20 @@ export default function CuentasPorCobrar({
                 pos?.openSession
               )
             }
+            ticketEnabled={
+              ticketEnabled
+            }
+            onOpenTicket={() =>
+              openSettledAccountTicket(
+                selectedAccount
+              )
+            }
+            onOpenPaymentTicket={(payment) =>
+              openPaymentTicket(
+                selectedAccount,
+                payment
+              )
+            }
             onPay={() =>
               setDetailMode(
                 "payment"
@@ -881,16 +1021,7 @@ export default function CuentasPorCobrar({
               )
             }
             onPaid={(result) => {
-              const settled =
-                result?.cuenta?.estado ===
-                  "pagado" ||
-                Number(
-                  result?.cuenta
-                    ?.saldoPendiente
-                ) <= 0;
-
               if (
-                settled &&
                 ticketEnabled &&
                 result?.comprobante
               ) {
@@ -1549,6 +1680,9 @@ function AccountCard({
 function AccountDetail({
   account,
   hasOpenCash,
+  ticketEnabled = false,
+  onOpenTicket,
+  onOpenPaymentTicket,
   onPay,
 }) {
   const status =
@@ -1762,6 +1896,71 @@ function AccountDetail({
         </div>
       )}
 
+      {isSettled(account) && (
+        <div
+          className="
+            mt-4
+            rounded-[20px]
+            border
+            border-emerald-400/20
+            bg-emerald-500/[0.07]
+            p-3.5
+          "
+        >
+          <div className="flex items-start gap-3">
+            <div
+              className="
+                grid h-10 w-10 shrink-0
+                place-items-center rounded-2xl
+                border border-emerald-400/20
+                bg-emerald-500/10
+                text-emerald-300
+              "
+            >
+              <CheckIcon className="h-[18px] w-[18px]" />
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-extrabold text-white">
+                Cuenta pagada
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-white/40">
+                El saldo quedó cancelado. Podés volver a abrir el comprobante para imprimirlo, descargarlo en PDF o compartirlo.
+              </p>
+            </div>
+          </div>
+
+          {ticketEnabled ? (
+            <button
+              type="button"
+              onClick={onOpenTicket}
+              className="
+                mt-3 inline-flex w-full items-center
+                justify-center gap-2 rounded-2xl
+                bg-[#FFC61A] px-4 py-3.5
+                text-sm font-extrabold text-black
+                transition hover:bg-[#FFD248]
+                active:scale-[0.99]
+              "
+            >
+              <HistoryIcon className="h-4 w-4" />
+              Ver / imprimir ticket
+            </button>
+          ) : (
+            <p
+              className="
+                mt-3 rounded-xl border border-white/10
+                bg-white/5 px-3 py-2.5
+                text-[11px] font-semibold
+                leading-relaxed text-white/35
+              "
+            >
+              El módulo Tickets no está habilitado para este negocio.
+            </p>
+          )}
+        </div>
+      )}
+
       {!isSettled(account) && (
         <div
           className="
@@ -1908,6 +2107,10 @@ function AccountDetail({
                 <PaymentHistoryRow
                   key={payment.id}
                   payment={payment}
+                  ticketEnabled={ticketEnabled}
+                  onOpenTicket={() =>
+                    onOpenPaymentTicket?.(payment)
+                  }
                 />
               )
             )}
@@ -1959,6 +2162,8 @@ function AccountDetail({
 
 function PaymentHistoryRow({
   payment,
+  ticketEnabled = false,
+  onOpenTicket,
 }) {
   const method =
     PAYMENT_METHODS.find(
@@ -2084,6 +2289,26 @@ function PaymentHistoryRow({
             )}
           </span>
         </div>
+      )}
+
+      {ticketEnabled && (
+        <button
+          type="button"
+          onClick={onOpenTicket}
+          className="
+            mt-3 inline-flex w-full items-center
+            justify-center gap-2 rounded-xl
+            border border-[#FFC61A]/25
+            bg-[#FFC61A]/10 px-3 py-2.5
+            text-[11px] font-extrabold
+            text-[#FFC61A] transition
+            hover:bg-[#FFC61A]/15
+            active:scale-[0.99]
+          "
+        >
+          <HistoryIcon className="h-3.5 w-3.5" />
+          Ver / imprimir ticket
+        </button>
       )}
     </div>
   );
