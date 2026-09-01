@@ -11371,6 +11371,132 @@ exports.actualizarModuloTicket =
         }
     );
 
+
+/* =========================================================
+   CLIENTE — CONFIGURAR TICKETS
+   Sólo administradores del negocio. No modifica la habilitación
+   comercial del módulo; eso sigue controlado por el panel proveedor.
+========================================================= */
+
+exports.guardarConfiguracionTicket =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const context =
+                await resolverContextoEscrituraPos(
+                    request,
+                    {
+                        requireRole:
+                            "admin",
+                    }
+                );
+
+            if (
+                context.clienteData
+                    ?.ticket
+                    ?.enabled !==
+                true
+            ) {
+                throw new HttpsError(
+                    "permission-denied",
+                    "El módulo de tickets no está habilitado para esta licencia."
+                );
+            }
+
+            const currentTicket =
+                esObjetoPlano(
+                    context.clienteData
+                        ?.ticket
+                )
+                    ? context.clienteData.ticket
+                    : {};
+
+            const defaultWidth =
+                Number(
+                    request.data
+                        ?.defaultWidth
+                ) === 80
+                    ? 80
+                    : 58;
+
+            const autoOpen =
+                request.data
+                    ?.autoOpen !==
+                false;
+
+            const businessName =
+                textoSeguro(
+                    request.data
+                        ?.businessName,
+                    120
+                );
+
+            const address =
+                textoSeguro(
+                    request.data
+                        ?.address,
+                    180
+                );
+
+            const phone =
+                textoSeguro(
+                    request.data
+                        ?.phone,
+                    60
+                );
+
+            const footerText =
+                textoSeguro(
+                    request.data
+                        ?.footerText,
+                    240
+                );
+
+            const nextTicket = {
+                ...currentTicket,
+                enabled: true,
+                thermal58Enabled: true,
+                thermal80Enabled: true,
+                pdfEnabled: true,
+                shareEnabled: true,
+                historyEnabled: true,
+                defaultWidth,
+                autoOpen,
+                businessName,
+                address,
+                phone,
+                footerText,
+            };
+
+            await context.clienteRef.set(
+                {
+                    ticket: {
+                        ...nextTicket,
+                        updatedAt:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                        updatedByOperatorId:
+                            context.operador.id,
+                    },
+                },
+                {
+                    merge: true,
+                }
+            );
+
+            return {
+                ok: true,
+                ticket: {
+                    defaultWidth,
+                    autoOpen,
+                    businessName,
+                    address,
+                    phone,
+                    footerText,
+                },
+            };
+        }
+    );
+
 /* =========================================================
    ADMIN — HABILITAR MÓDULO ARCA POR CLIENTE
 ========================================================= */

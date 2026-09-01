@@ -16,6 +16,7 @@ import {
 import { useOperator } from "./OperatorGate";
 import UserManagementModal from "./UserManagementModal";
 import Modal from "./Modal";
+import TicketSettingsModal from "./TicketSettingsModal";
 
 const FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
@@ -49,6 +50,12 @@ export default function MoreDrawer({
   offlineSyncState = "idle",
   isOnline = true,
   onOpenSync,
+  arcaEnabled = false,
+  ticketEnabled = false,
+  ticketConfig = null,
+  clienteId = null,
+  sessionId = null,
+  operadorSesion = null,
   deviceId = null,
   theme = "dark",
   onToggleTheme,
@@ -69,6 +76,7 @@ export default function MoreDrawer({
 
   const [showUsers, setShowUsers] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showTicketSettings, setShowTicketSettings] = useState(false);
   const [changingUser, setChangingUser] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [isDesktop, setIsDesktop] = useState(getDesktopLayout);
@@ -178,6 +186,18 @@ export default function MoreDrawer({
 
   function openSettings() {
     setShowSettings(true);
+
+    if (!isDesktop) {
+      onClose?.();
+    }
+  }
+
+  function openTicketSettings() {
+    if (!esAdministrador || !ticketEnabled) {
+      return;
+    }
+
+    setShowTicketSettings(true);
 
     if (!isDesktop) {
       onClose?.();
@@ -398,6 +418,27 @@ export default function MoreDrawer({
                   onClick={() => navigate("actividad")}
                 />
 
+                {esAdministrador && ticketEnabled && (
+                  <DrawerRow
+                    icon={ReceiptIcon}
+                    label="Configuración de ticket"
+                    badge={`${Number(ticketConfig?.defaultWidth) === 80 ? 80 : 58} mm`}
+                    badgeTone="amber"
+                    onClick={openTicketSettings}
+                  />
+                )}
+
+                {esAdministrador && arcaEnabled && (
+                  <DrawerRow
+                    icon={ReceiptIcon}
+                    label="Facturación ARCA"
+                    badge="Sandbox"
+                    badgeTone="amber"
+                    active={currentTab === "arca"}
+                    onClick={() => navigate("arca")}
+                  />
+                )}
+
                 <DrawerRow
                   icon={SyncIcon}
                   label="Sincronización"
@@ -485,6 +526,17 @@ export default function MoreDrawer({
         open={showUsers}
         deviceId={deviceId}
         onClose={() => setShowUsers(false)}
+      />
+
+      <TicketSettingsModal
+        open={showTicketSettings}
+        onClose={() => setShowTicketSettings(false)}
+        ticketConfig={ticketConfig}
+        shopName={shopName}
+        clienteId={clienteId}
+        deviceId={deviceId}
+        sessionId={sessionId}
+        operadorSesion={operadorSesion}
       />
 
       <SettingsModal

@@ -808,6 +808,11 @@ function PosApp({ license }) {
         isOnline={pos.isOnline}
         onOpenSync={() => setSyncCenterOpen(true)}
         arcaEnabled={arcaEnabled}
+        ticketEnabled={ticketEnabled}
+        ticketConfig={ticketConfig}
+        clienteId={license.clienteId}
+        sessionId={license.sessionId}
+        operadorSesion={operadorSesion}
         deviceId={license.deviceId}
         theme={theme}
         onToggleTheme={handleToggleTheme}

@@ -176,6 +176,12 @@ function getTicketId(ticket) {
   return id || `local-${Date.now()}`;
 }
 
+export function getDisplayTicketId(ticket) {
+  const raw = getTicketId(ticket).replace(/[^a-zA-Z0-9]/g, "");
+  const tail = raw.slice(-8).toUpperCase();
+  return `T-${tail || String(Date.now()).slice(-8)}`;
+}
+
 export function ticketFileName(ticket) {
   const id = getTicketId(ticket)
     .replace(/[^a-zA-Z0-9_-]/g, "")
@@ -241,8 +247,7 @@ export function buildTicketLines(ticket, width = 58) {
   const receivableDueDate = cleanText(payment?.receivable?.vencimiento || "");
   const total = toNumber(sale?.total);
   const discount = Math.max(0, toNumber(sale?.promotionDiscountTotal));
-  const saleId = getTicketId(ticket);
-  const shortId = saleId.length > 16 ? saleId.slice(-16) : saleId;
+  const shortId = getDisplayTicketId(ticket);
   const separator = repeat("-", columns);
   const lines = [];
 
@@ -258,16 +263,14 @@ export function buildTicketLines(ticket, width = 58) {
 
   lines.push(center("TICKET NO FISCAL", columns));
   lines.push(separator);
-  lines.push(pair("Venta", `#${shortId}`, columns));
-  lines.push(formatDate(sale?.timestamp));
+  lines.push(pair("Venta", shortId, columns));
+  lines.push(pair("Fecha", formatDate(sale?.timestamp), columns));
 
   if (operatorName) {
     lines.push(pair("Operador", operatorName, columns));
   }
 
-  if (customerName) {
-    lines.push(...wrapText(`Cliente: ${customerName}`, columns));
-  }
+  lines.push(...wrapText(`Cliente: ${customerName || "Consumidor final"}`, columns));
 
   if (customerPhone) {
     lines.push(...wrapText(`Tel. cliente: ${customerPhone}`, columns));
@@ -529,8 +532,7 @@ export function createTicketPdfBlob(ticket, width = 58) {
   const widthPt = (config.widthMm * 72) / 25.4;
   const contentHeight =
     config.marginPt * 2 + Math.max(1, lines.length) * config.lineHeight + 8;
-  const minimumHeight = (70 * 72) / 25.4;
-  const heightPt = Math.max(minimumHeight, contentHeight);
+  const heightPt = Math.max((34 * 72) / 25.4, contentHeight);
   const startY = heightPt - config.marginPt - config.fontSize;
 
   const textCommands = [
