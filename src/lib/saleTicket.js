@@ -184,6 +184,36 @@ export function ticketFileName(ticket) {
   return `ticket-${id || "venta"}.pdf`;
 }
 
+export function createSaleTicketPayload({
+  sale,
+  shopName = "Mi Negocio",
+  operatorName = "",
+  config = {},
+} = {}) {
+  const ticketConfig = config && typeof config === "object" ? config : {};
+  const saleData = sale && typeof sale === "object" ? sale : {};
+  const saleOperatorName = cleanText(
+    saleData?.operador?.nombre ||
+      saleData?.operador?.operadorNombre ||
+      saleData?.operatorName ||
+      saleData?.operadorNombre ||
+      operatorName
+  );
+
+  return {
+    sale: saleData,
+    shopName:
+      cleanText(ticketConfig.businessName) ||
+      cleanText(shopName) ||
+      "Mi Negocio",
+    address: cleanText(ticketConfig.address),
+    phone: cleanText(ticketConfig.phone),
+    footerText: cleanText(ticketConfig.footerText),
+    operatorName: saleOperatorName,
+    defaultWidth: Number(ticketConfig.defaultWidth) === 80 ? 80 : 58,
+  };
+}
+
 export function buildTicketLines(ticket, width = 58) {
   const normalizedWidth = normalizeWidth(width);
   const columns = TICKET_WIDTHS[normalizedWidth].columns;
@@ -191,10 +221,24 @@ export function buildTicketLines(ticket, width = 58) {
   const items = Array.isArray(sale?.items) ? sale.items : [];
   const payment = sale?.payment || ticket?.payment || {};
   const shopName = cleanText(ticket?.shopName || sale?.shopName || "Mi Negocio");
-  const operatorName = cleanText(ticket?.operatorName || sale?.operatorName || "");
+  const address = cleanText(ticket?.address || sale?.address || "");
+  const phone = cleanText(ticket?.phone || sale?.phone || "");
+  const footerText = cleanText(ticket?.footerText || sale?.footerText || "");
+  const operatorName = cleanText(
+    ticket?.operatorName ||
+      sale?.operatorName ||
+      sale?.operador?.nombre ||
+      sale?.operador?.operadorNombre ||
+      sale?.operadorNombre ||
+      ""
+  );
   const customerName = cleanText(
     payment?.receivable?.clienteNombre || ticket?.customerName || ""
   );
+  const customerPhone = cleanText(
+    payment?.receivable?.clienteTelefono || ticket?.customerPhone || ""
+  );
+  const receivableDueDate = cleanText(payment?.receivable?.vencimiento || "");
   const total = toNumber(sale?.total);
   const discount = Math.max(0, toNumber(sale?.promotionDiscountTotal));
   const saleId = getTicketId(ticket);
@@ -203,6 +247,15 @@ export function buildTicketLines(ticket, width = 58) {
   const lines = [];
 
   lines.push(center(shopName.toUpperCase(), columns));
+
+  if (address) {
+    lines.push(...wrapText(address, columns).map((line) => center(line, columns)));
+  }
+
+  if (phone) {
+    lines.push(center(`Tel: ${phone}`, columns));
+  }
+
   lines.push(center("TICKET NO FISCAL", columns));
   lines.push(separator);
   lines.push(pair("Venta", `#${shortId}`, columns));
@@ -216,6 +269,14 @@ export function buildTicketLines(ticket, width = 58) {
     lines.push(...wrapText(`Cliente: ${customerName}`, columns));
   }
 
+  if (customerPhone) {
+    lines.push(...wrapText(`Tel. cliente: ${customerPhone}`, columns));
+  }
+
+  if (receivableDueDate) {
+    lines.push(pair("Vencimiento", receivableDueDate, columns));
+  }
+
   lines.push(separator);
 
   for (const item of items) {
@@ -224,14 +285,19 @@ export function buildTicketLines(ticket, width = 58) {
 
     const tipoVenta = cleanText(item?.tipoVenta || "unidad");
     const qty = toNumber(item?.qty, 1);
-    const unitLabel =
-      tipoVenta === "peso"
-        ? `${formatQuantity(qty)} ${cleanText(item?.unidadMedida || "kg")}`
-        : `${formatQuantity(qty)} u`;
-
     const price = formatMoney(item?.price);
     const subtotal = formatMoney(getItemSubtotal(item));
-    lines.push(pair(`${unitLabel} x ${price}`, subtotal, columns));
+
+    if (tipoVenta === "precio-libre") {
+      lines.push(pair("Importe libre", subtotal, columns));
+    } else {
+      const unitLabel =
+        tipoVenta === "peso"
+          ? `${formatQuantity(qty)} ${cleanText(item?.unidadMedida || "kg")}`
+          : `${formatQuantity(qty)} u`;
+
+      lines.push(pair(`${unitLabel} x ${price}`, subtotal, columns));
+    }
 
     if (toNumber(item?.promotionDiscount) > 0) {
       lines.push(pair("  Promo", `-${formatMoney(item.promotionDiscount)}`, columns));
@@ -264,10 +330,17 @@ export function buildTicketLines(ticket, width = 58) {
     lines.push(pair("Vuelto", formatMoney(payment?.change), columns));
   } else if (payment?.method === "mixto" && toNumber(payment?.change) > 0) {
     lines.push(pair("Vuelto", formatMoney(payment?.change), columns));
+  } else if (payment?.method === "cuenta") {
+    lines.push(pair("Saldo pendiente", formatMoney(total), columns));
   }
 
   lines.push(separator);
   lines.push(center("Gracias por tu compra", columns));
+
+  if (footerText) {
+    lines.push(...wrapText(footerText, columns).map((line) => center(line, columns)));
+  }
+
   lines.push(center("Comprobante interno - no fiscal", columns));
 
   return lines;

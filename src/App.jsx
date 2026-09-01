@@ -270,10 +270,14 @@ function PosApp({ license }) {
       ?.arca
       ?.enabled === true;
 
-  const ticketEnabled =
+  const ticketConfig =
     license.datosCliente
-      ?.ticket
-      ?.enabled === true;
+      ?.ticket ||
+    {};
+
+  const ticketEnabled =
+    ticketConfig.enabled ===
+    true;
 
   const notebookShortcutTimerRef = useRef(null);
   const notebookScannerIdleTimerRef = useRef(null);
@@ -721,6 +725,7 @@ function PosApp({ license }) {
                 goInventario={goInventario}
                 effectsMode={effectsMode}
                 ticketEnabled={ticketEnabled}
+                ticketConfig={ticketConfig}
               />
             )}
 
@@ -750,7 +755,10 @@ function PosApp({ license }) {
             )}
 
             {tab === "historial" && (
-              <Historial pos={pos} />
+              <Historial
+                pos={pos}
+                ticketConfig={ticketConfig}
+              />
             )}
 
             {tab === "actividad" && (

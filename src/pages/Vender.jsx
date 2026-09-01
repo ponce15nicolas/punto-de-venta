@@ -22,6 +22,7 @@ import PaymentModal from "../components/PaymentModal";
 import Scanner from "../components/Scanner";
 import PromotionSaleModal from "../components/PromotionSaleModal";
 import SaleTicketModal from "../components/SaleTicketModal";
+import { createSaleTicketPayload } from "../lib/saleTicket";
 import { useOperator } from "../components/OperatorGate";
 
 /* =========================================================
@@ -129,6 +130,7 @@ export default function Vender({
   pos,
   goInventario,
   ticketEnabled = false,
+  ticketConfig = null,
 }) {
   const {
     operador,
@@ -1506,40 +1508,65 @@ export default function Vender({
         setPayOpen(false);
 
         if (ticketEnabled) {
-          setLastTicket({
-            sale: {
-              ...sale,
-              items:
-                Array.isArray(sale?.items) &&
-                sale.items.length > 0
-                  ? sale.items
-                  : cartSnapshot,
-              total:
-                Number.isFinite(Number(sale?.total))
-                  ? Number(sale.total)
-                  : totalSnapshot,
-              promotionDiscountTotal:
-                Number.isFinite(
-                  Number(
-                    sale?.promotionDiscountTotal
-                  )
-                )
-                  ? Number(
-                      sale.promotionDiscountTotal
+          const salePayment = {
+            ...(payment || {}),
+            ...(sale?.payment || {}),
+          };
+
+          if (
+            payment?.receivable &&
+            !salePayment.receivable
+          ) {
+            salePayment.receivable =
+              payment.receivable;
+          }
+
+          const ticketPayload =
+            createSaleTicketPayload({
+              sale: {
+                ...sale,
+                items:
+                  Array.isArray(sale?.items) &&
+                  sale.items.length > 0
+                    ? sale.items
+                    : cartSnapshot,
+                total:
+                  Number.isFinite(Number(sale?.total))
+                    ? Number(sale.total)
+                    : totalSnapshot,
+                promotionDiscountTotal:
+                  Number.isFinite(
+                    Number(
+                      sale?.promotionDiscountTotal
                     )
-                  : discountSnapshot,
-              payment:
-                sale?.payment ||
-                payment,
-            },
-            shopName:
-              pos?.shopName ||
-              "Mi Negocio",
-            operatorName:
-              operador?.nombre ||
-              "Operador",
-          });
-          setTicketOpen(true);
+                  )
+                    ? Number(
+                        sale.promotionDiscountTotal
+                      )
+                    : discountSnapshot,
+                payment: salePayment,
+              },
+              shopName:
+                pos?.shopName ||
+                "Mi Negocio",
+              operatorName:
+                operador?.nombre ||
+                "Operador",
+              config:
+                ticketConfig ||
+                {},
+            });
+
+          setLastTicket(
+            ticketPayload
+          );
+
+          if (
+            ticketConfig?.autoOpen !==
+            false
+          ) {
+            setTicketOpen(true);
+          }
         }
       }
     } catch (error) {
@@ -2641,6 +2668,21 @@ export default function Vender({
           total
         )}
       </button>
+
+      {ticketEnabled &&
+        lastTicket &&
+        !ticketOpen && (
+          <button
+            type="button"
+            onClick={() =>
+              setTicketOpen(true)
+            }
+            className="mt-2.5 inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-[#FFC61A]/25 bg-[#FFC61A]/[0.08] px-4 py-3.5 text-sm font-extrabold text-[#FFC61A] transition hover:border-[#FFC61A]/45 hover:bg-[#FFC61A]/[0.12] active:scale-[0.99]"
+          >
+            <ReceiptIcon className="h-4 w-4" />
+            Último ticket
+          </button>
+        )}
 
       {/* =====================================================
           VACIAR

@@ -11228,6 +11228,107 @@ exports.actualizarModuloTicket =
                 );
             }
 
+            const currentTicket =
+                esObjetoPlano(
+                    clienteSnap.data()
+                        ?.ticket
+                )
+                    ? clienteSnap.data()
+                        .ticket
+                    : {};
+
+            const input =
+                esObjetoPlano(
+                    request.data
+                )
+                    ? request.data
+                    : {};
+
+            const hasField =
+                (field) =>
+                    Object.prototype
+                        .hasOwnProperty
+                        .call(
+                            input,
+                            field
+                        );
+
+            const defaultWidth =
+                hasField(
+                    "defaultWidth"
+                )
+                    ? Number(
+                        input.defaultWidth
+                    ) === 80
+                        ? 80
+                        : 58
+                    : Number(
+                        currentTicket.defaultWidth
+                    ) === 80
+                        ? 80
+                        : 58;
+
+            const autoOpen =
+                hasField(
+                    "autoOpen"
+                )
+                    ? input.autoOpen !==
+                        false
+                    : currentTicket.autoOpen !==
+                        false;
+
+            const businessName =
+                hasField(
+                    "businessName"
+                )
+                    ? textoSeguro(
+                        input.businessName,
+                        120
+                    )
+                    : textoSeguro(
+                        currentTicket.businessName,
+                        120
+                    );
+
+            const address =
+                hasField(
+                    "address"
+                )
+                    ? textoSeguro(
+                        input.address,
+                        180
+                    )
+                    : textoSeguro(
+                        currentTicket.address,
+                        180
+                    );
+
+            const phone =
+                hasField(
+                    "phone"
+                )
+                    ? textoSeguro(
+                        input.phone,
+                        60
+                    )
+                    : textoSeguro(
+                        currentTicket.phone,
+                        60
+                    );
+
+            const footerText =
+                hasField(
+                    "footerText"
+                )
+                    ? textoSeguro(
+                        input.footerText,
+                        240
+                    )
+                    : textoSeguro(
+                        currentTicket.footerText,
+                        240
+                    );
+
             const ticket = {
                 enabled,
                 thermal58Enabled:
@@ -11238,6 +11339,14 @@ exports.actualizarModuloTicket =
                     true,
                 shareEnabled:
                     true,
+                historyEnabled:
+                    true,
+                defaultWidth,
+                autoOpen,
+                businessName,
+                address,
+                phone,
+                footerText,
             };
 
             await clienteRef.set(
@@ -22065,6 +22174,33 @@ exports.registrarVenta =
                                 ...(rawMethod === "mixto"
                                     ? { parts: paymentParts }
                                     : {}),
+
+                                ...(rawMethod === "cuenta" &&
+                                cuentaVenta
+                                    ? {
+                                        receivable: {
+                                            clienteNombre:
+                                                cuentaVenta.clienteNombre,
+                                            clienteTelefono:
+                                                cuentaVenta.clienteTelefono,
+                                            fechaOrigen:
+                                                cuentaVenta.fechaOrigen,
+                                            vencimiento:
+                                                cuentaVenta.vencimiento,
+                                            notas:
+                                                cuentaVenta.notas,
+                                        },
+                                    }
+                                    : {}),
+                            },
+
+                            operador: {
+                                id:
+                                    operadorAutorizado.id,
+                                nombre:
+                                    operadorNombre,
+                                rol:
+                                    operadorRol,
                             },
 
                             ...(cuentaRef

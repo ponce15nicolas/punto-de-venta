@@ -2372,7 +2372,7 @@ function ClienteCard({
               "
             >
               {ticketEnabled
-                ? "Impresión + PDF + compartir"
+                ? `${Number(ticketConfig.defaultWidth) === 80 ? "80" : "58"} mm · PDF · compartir`
                 : "Módulo opcional"}
             </div>
           </div>
@@ -3513,6 +3513,42 @@ function FormTicket({
       ticket.enabled === true
     );
 
+  const [businessName, setBusinessName] =
+    useState(
+      String(
+        ticket.businessName ||
+        cliente?.nombreNegocio ||
+        ""
+      )
+    );
+
+  const [address, setAddress] =
+    useState(
+      String(ticket.address || "")
+    );
+
+  const [phone, setPhone] =
+    useState(
+      String(ticket.phone || "")
+    );
+
+  const [footerText, setFooterText] =
+    useState(
+      String(ticket.footerText || "")
+    );
+
+  const [defaultWidth, setDefaultWidth] =
+    useState(
+      Number(ticket.defaultWidth) === 80
+        ? 80
+        : 58
+    );
+
+  const [autoOpen, setAutoOpen] =
+    useState(
+      ticket.autoOpen !== false
+    );
+
   const [saving, setSaving] =
     useState(false);
 
@@ -3532,6 +3568,16 @@ function FormTicket({
         clienteId:
           cliente.id,
         enabled,
+        businessName:
+          businessName.trim(),
+        address:
+          address.trim(),
+        phone:
+          phone.trim(),
+        footerText:
+          footerText.trim(),
+        defaultWidth,
+        autoOpen,
       });
 
       await onDone?.({
@@ -3611,8 +3657,113 @@ function FormTicket({
           />
         </label>
 
+        <div className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <p className="text-[10px] font-black uppercase tracking-[0.14em] text-[#9A7100]">
+            Datos del ticket
+          </p>
+
+          <div className="mt-3 grid gap-3">
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-black">Nombre comercial</span>
+              <input
+                type="text"
+                maxLength={120}
+                value={businessName}
+                onChange={(event) => setBusinessName(event.target.value)}
+                placeholder={cliente?.nombreNegocio || "Mi Negocio"}
+                className="w-full rounded-2xl border border-black/10 bg-white px-3.5 py-3 text-sm font-bold text-[#111318] outline-none transition focus:border-[#FFC61A]"
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-black">Dirección</span>
+              <input
+                type="text"
+                maxLength={180}
+                value={address}
+                onChange={(event) => setAddress(event.target.value)}
+                placeholder="Opcional"
+                className="w-full rounded-2xl border border-black/10 bg-white px-3.5 py-3 text-sm font-bold text-[#111318] outline-none transition focus:border-[#FFC61A]"
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-black">Teléfono</span>
+              <input
+                type="text"
+                maxLength={60}
+                value={phone}
+                onChange={(event) => setPhone(event.target.value)}
+                placeholder="Opcional"
+                className="w-full rounded-2xl border border-black/10 bg-white px-3.5 py-3 text-sm font-bold text-[#111318] outline-none transition focus:border-[#FFC61A]"
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-black">Texto al pie</span>
+              <textarea
+                rows={3}
+                maxLength={240}
+                value={footerText}
+                onChange={(event) => setFooterText(event.target.value)}
+                placeholder="Ej.: Gracias por elegirnos. Cambios dentro de las 48 hs."
+                className="w-full resize-none rounded-2xl border border-black/10 bg-white px-3.5 py-3 text-sm font-bold text-[#111318] outline-none transition focus:border-[#FFC61A]"
+              />
+              <span className="mt-1 block text-right text-[10px] font-bold text-black/30">
+                {footerText.length}/240
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div className="rounded-[20px] border border-black/[0.07] bg-[#F4F5F7] p-4 text-[#111318]">
+          <p className="text-[10px] font-black uppercase tracking-[0.14em] text-[#9A7100]">
+            Comportamiento
+          </p>
+
+          <div className="mt-3">
+            <span className="mb-2 block text-xs font-black">Tamaño predeterminado</span>
+            <div className="grid grid-cols-2 gap-2">
+              {[58, 80].map((width) => {
+                const active = defaultWidth === width;
+
+                return (
+                  <button
+                    key={width}
+                    type="button"
+                    onClick={() => setDefaultWidth(width)}
+                    className={
+                      `rounded-2xl border px-3 py-3 text-sm font-black transition ` +
+                      (active
+                        ? "border-[#FFC61A] bg-[#FFC61A] text-black"
+                        : "border-black/10 bg-white text-black/55 hover:border-[#FFC61A]/40")
+                    }
+                  >
+                    {width} mm
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <label className="mt-3 flex cursor-pointer items-center justify-between gap-4 rounded-2xl border border-black/10 bg-white p-3.5">
+            <div>
+              <p className="text-xs font-black">Abrir ticket al finalizar la venta</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-black/40">
+                Si se desactiva, el ticket seguirá disponible desde “Último ticket” y desde Historial.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={autoOpen}
+              onChange={(event) => setAutoOpen(event.target.checked)}
+              className="h-5 w-5 shrink-0 accent-[#FFC61A]"
+            />
+          </label>
+        </div>
+
         <div className="grid grid-cols-2 gap-2">
-          {["58 mm", "80 mm", "PDF", "Compartir"].map(
+          {["58 / 80 mm", "PDF", "Compartir", "Historial"].map(
             (feature) => (
               <div
                 key={feature}

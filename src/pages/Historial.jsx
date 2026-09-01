@@ -15,6 +15,7 @@
 // - detalle de cada transacción
 // - productos vendidos dentro de cada ticket
 // - descarga PDF del turno cerrado
+// - reimpresión, PDF y compartir ticket por venta
 //
 // No requiere dependencias nuevas.
 
@@ -39,6 +40,8 @@ import {
 } from "../lib/pdf";
 
 import Modal from "../components/Modal";
+import SaleTicketModal from "../components/SaleTicketModal";
+import { createSaleTicketPayload } from "../lib/saleTicket";
 import { useOperator } from "../components/OperatorGate";
 
 import {
@@ -130,18 +133,6 @@ const AUDIT_ACTION_META = {
   "eliminacion-cierre-historico": {
     title: "Eliminación de cierre",
     category: "Historial",
-  },
-  "alta-promocion": {
-    title: "Promoción creada",
-    category: "Promociones",
-  },
-  "edicion-promocion": {
-    title: "Promoción actualizada",
-    category: "Promociones",
-  },
-  "eliminacion-promocion": {
-    title: "Promoción eliminada",
-    category: "Promociones",
   },
   "cierre-caja": {
     title: "Cierre de caja",
@@ -658,55 +649,6 @@ function getAuditDetailRows(event) {
             detail.metodoPago
           ),
         ],
-        ...(Array.isArray(
-          detail.mediosPago
-        )
-          ? detail.mediosPago
-              .filter(
-                (part) =>
-                  part &&
-                  Number.isFinite(
-                    Number(
-                      part.importe
-                    )
-                  ) &&
-                  Number(
-                    part.importe
-                  ) > 0
-              )
-              .map(
-                (part) => [
-                  formatAuditPaymentMethod(
-                    part.metodo
-                  ),
-                  money(
-                    roundMoney(
-                      part.importe
-                    )
-                  ),
-                ]
-              )
-          : []),
-        ...(Number(
-          detail.descuentoPromociones
-        ) > 0
-          ? [[
-              "Ahorro promociones",
-              money(
-                detail.descuentoPromociones
-              ),
-            ]]
-          : []),
-        ...(Array.isArray(
-          detail.promocionesAplicadas
-        )
-          ? detail.promocionesAplicadas.map(
-              (promotion, index) => [
-                `Promoción ${index + 1}`,
-                `${promotion?.nombre || "Promoción"}${Number(promotion?.cantidad) > 1 ? ` ×${promotion.cantidad}` : ""} · -${money(promotion?.descuento)}`,
-              ]
-            )
-          : []),
         [
           "Productos",
           String(
@@ -806,47 +748,6 @@ function getAuditDetailRows(event) {
                   "—"
                 ),
         ],
-      ];
-
-    case "alta-promocion":
-    case "edicion-promocion":
-    case "eliminacion-promocion":
-      return [
-        [
-          "Promoción",
-          detail.promocionNombre ||
-            "Promoción",
-        ],
-        [
-          "Tipo",
-          detail.tipo === "combo"
-            ? "Combo"
-            : "Precio por cantidad",
-        ],
-        ...(Number.isFinite(
-          Number(
-            detail.precioPromocional
-          )
-        )
-          ? [[
-              "Precio promocional",
-              money(
-                detail.precioPromocional
-              ),
-            ]]
-          : []),
-        ...(Number.isFinite(
-          Number(
-            detail.ahorroActual
-          )
-        )
-          ? [[
-              "Ahorro actual",
-              money(
-                detail.ahorroActual
-              ),
-            ]]
-          : []),
       ];
 
     case "reposicion-stock": {
@@ -1053,29 +954,6 @@ function getAuditDetailRows(event) {
           ? [[
               "Venta",
               `#${detail.ventaId}`,
-            ]]
-          : []),
-        ...(detail.agrupadaEnCuentaExistente
-          ? [[
-              "Cuenta",
-              "Agregada a cuenta existente",
-            ]]
-          : []),
-        ...(detail.saldoPendiente !==
-        undefined
-          ? [[
-              "Saldo pendiente",
-              money(
-                detail.saldoPendiente
-              ),
-            ]]
-          : []),
-        ...(detail.operaciones
-          ? [[
-              "Operaciones",
-              String(
-                detail.operaciones
-              ),
             ]]
           : []),
       ];
@@ -1442,6 +1320,7 @@ function getAuditDetailRows(event) {
 
 export default function Historial({
   pos,
+  ticketConfig = null,
 }) {
   const {
     esAdministrador,
@@ -1451,6 +1330,15 @@ export default function Historial({
     selectedSession,
     setSelectedSession,
   ] = useState(null);
+
+  const [
+    selectedTicket,
+    setSelectedTicket,
+  ] = useState(null);
+
+  const ticketEnabled =
+    ticketConfig?.enabled ===
+    true;
 
   const [
     detailMode,
@@ -1692,6 +1580,33 @@ export default function Historial({
     detailMode,
     selectedSession,
   ]);
+
+  /* =========================================================
+     TICKET INDIVIDUAL
+  ========================================================= */
+
+  function handleSaleTicket(
+    sale
+  ) {
+    if (
+      !ticketEnabled ||
+      !sale
+    ) {
+      return;
+    }
+
+    setSelectedTicket(
+      createSaleTicketPayload({
+        sale,
+        shopName:
+          pos?.shopName ||
+          "Mi Negocio",
+        config:
+          ticketConfig ||
+          {},
+      })
+    );
+  }
 
   /* =========================================================
      DESCARGAR PDF
@@ -2300,6 +2215,12 @@ export default function Historial({
               canDelete={
                 esAdministrador
               }
+              ticketEnabled={
+                ticketEnabled
+              }
+              onTicket={
+                handleSaleTicket
+              }
             />
           )}
 
@@ -2331,6 +2252,23 @@ export default function Historial({
             />
           )}
       </Modal>
+
+      {ticketEnabled && (
+        <SaleTicketModal
+          open={Boolean(
+            selectedTicket
+          )}
+          ticket={
+            selectedTicket
+          }
+          source="history"
+          onClose={() =>
+            setSelectedTicket(
+              null
+            )
+          }
+        />
+      )}
 
       {/* =====================================================
           CONFIRMAR ELIMINACIÓN
@@ -2609,6 +2547,8 @@ function SessionDetail({
   onDelete,
   deleting = false,
   canDelete = false,
+  ticketEnabled = false,
+  onTicket,
 }) {
   const diff =
     roundMoney(
@@ -2864,11 +2804,7 @@ function SessionDetail({
         <div className="grid grid-cols-2 gap-2">
           {Object.entries(
             METHOD_LABELS
-          )
-            .filter(([method]) =>
-              method !== "mixto"
-            )
-            .map(
+          ).map(
             ([
               method,
               label,
@@ -3005,6 +2941,12 @@ function SessionDetail({
                   }
                   index={
                     index
+                  }
+                  ticketEnabled={
+                    ticketEnabled
+                  }
+                  onTicket={() =>
+                    onTicket?.(sale)
                   }
                 />
               )
@@ -4040,6 +3982,8 @@ function DeleteCashSessionConfirm({
 function SaleDetailCard({
   sale,
   index,
+  ticketEnabled = false,
+  onTicket,
 }) {
   const method =
     normalizePaymentMethod(
@@ -4066,18 +4010,6 @@ function SaleDetailCard({
   const paymentParts = Array.isArray(sale?.payment?.parts)
     ? sale.payment.parts
     : [];
-
-  const promotionsApplied =
-    Array.isArray(
-      sale?.promotionsApplied
-    )
-      ? sale.promotionsApplied
-      : [];
-
-  const promotionDiscountTotal =
-    roundMoney(
-      sale?.promotionDiscountTotal
-    );
 
   const total =
     roundMoney(
@@ -4262,38 +4194,6 @@ function SaleDetailCard({
         </div>
       )}
 
-      {promotionsApplied.length > 0 && (
-        <div className="border-t border-white/[0.07] px-3.5 py-3">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <span className="text-[9px] font-extrabold uppercase tracking-[0.12em] text-emerald-400/70">
-              Promociones aplicadas
-            </span>
-            {promotionDiscountTotal > 0 && (
-              <strong className="text-[10px] font-black text-emerald-400">
-                Ahorro {money(promotionDiscountTotal)}
-              </strong>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            {promotionsApplied.map((promotion, promotionIndex) => (
-              <div
-                key={`${promotion?.id || "promo"}-${promotionIndex}`}
-                className="flex items-center justify-between gap-3 rounded-xl bg-emerald-500/[0.055] px-3 py-2"
-              >
-                <span className="min-w-0 truncate text-[10px] font-extrabold text-white/60">
-                  {promotion?.name || "Promoción"}
-                  {Number(promotion?.count) > 1 ? ` ×${promotion.count}` : ""}
-                </span>
-                <span className="shrink-0 text-[10px] font-black text-emerald-400">
-                  -{money(promotion?.discount)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* PAGO */}
 
       {method === "mixto" && paymentParts.length > 0 && (
@@ -4355,6 +4255,19 @@ function SaleDetailCard({
           />
         </div>
       )}
+
+      {ticketEnabled && (
+        <div className="border-t border-white/[0.07] px-3.5 py-3">
+          <button
+            type="button"
+            onClick={onTicket}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#FFC61A]/25 bg-[#FFC61A]/[0.08] px-3.5 py-2.5 text-xs font-extrabold text-[#FFC61A] transition hover:border-[#FFC61A]/45 hover:bg-[#FFC61A]/[0.12] active:scale-[0.99]"
+          >
+            <ReceiptIcon className="h-4 w-4" />
+            Ver / reimprimir ticket
+          </button>
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -4374,11 +4287,6 @@ function SaleItemRow({
   const subtotal =
     getItemSubtotal(
       item
-    );
-
-  const promotionDiscount =
-    roundMoney(
-      item?.promotionDiscount
     );
 
   return (
@@ -4444,12 +4352,6 @@ function SaleItemRow({
             item
           )}
         </p>
-
-        {promotionDiscount > 0 && (
-          <p className="mt-1 text-[9px] font-extrabold text-emerald-400/80">
-            Promoción · -{money(promotionDiscount)}
-          </p>
-        )}
       </div>
 
       <span

@@ -10,26 +10,17 @@ import {
   shareTicketPdf,
 } from "../lib/saleTicket";
 
-const STORAGE_KEY = "pos-ticket-width";
-
-function getSavedWidth() {
-  if (typeof window === "undefined") {
-    return 58;
-  }
-
-  try {
-    return Number(window.localStorage.getItem(STORAGE_KEY)) === 80 ? 80 : 58;
-  } catch {
-    return 58;
-  }
+function normalizeWidth(value) {
+  return Number(value) === 80 ? 80 : 58;
 }
 
 export default function SaleTicketModal({
   open,
   onClose,
   ticket,
+  source = "sale",
 }) {
-  const [width, setWidth] = useState(getSavedWidth);
+  const [width, setWidth] = useState(() => normalizeWidth(ticket?.defaultWidth));
   const [sharing, setSharing] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -39,21 +30,19 @@ export default function SaleTicketModal({
   );
 
   useEffect(() => {
-    if (!open) {
+    if (open) {
+      setWidth(normalizeWidth(ticket?.defaultWidth));
       setSharing(false);
       setMessage("");
+      return;
     }
-  }, [open]);
+
+    setSharing(false);
+    setMessage("");
+  }, [open, ticket]);
 
   function changeWidth(nextWidth) {
-    const normalized = Number(nextWidth) === 80 ? 80 : 58;
-    setWidth(normalized);
-
-    try {
-      window.localStorage.setItem(STORAGE_KEY, String(normalized));
-    } catch {
-      // La preferencia sigue funcionando durante la sesión.
-    }
+    setWidth(normalizeWidth(nextWidth));
   }
 
   function handlePrint() {
@@ -107,22 +96,26 @@ export default function SaleTicketModal({
     }
   }
 
+  const isHistory = source === "history";
+
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="Ticket de venta"
+      title={isHistory ? "Ticket guardado" : "Ticket de venta"}
     >
       <div className="space-y-4">
         <section className="rounded-[22px] border border-[#FFC61A]/20 bg-[#FFC61A]/[0.06] p-3.5">
           <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#FFC61A]">
-            Venta registrada
+            {isHistory ? "Reimpresión" : "Venta registrada"}
           </p>
           <h3 className="mt-1 text-base font-black text-white">
-            ¿Qué querés hacer con el ticket?
+            {isHistory ? "Volvé a usar este ticket" : "¿Qué querés hacer con el ticket?"}
           </h3>
           <p className="mt-1 text-[11px] leading-relaxed text-white/45">
-            Es un comprobante interno no fiscal. Podés imprimirlo en papel térmico, descargarlo en PDF o compartirlo desde el dispositivo.
+            {isHistory
+              ? "Este comprobante interno quedó guardado con la venta. Podés reimprimirlo, descargarlo o compartirlo nuevamente."
+              : "Es un comprobante interno no fiscal. Podés imprimirlo en papel térmico, descargarlo en PDF o compartirlo desde el dispositivo."}
           </p>
         </section>
 
