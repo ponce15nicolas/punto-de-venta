@@ -537,6 +537,7 @@ export default function MoreDrawer({
         deviceId={deviceId}
         sessionId={sessionId}
         operadorSesion={operadorSesion}
+        operatorName={operador?.nombre || "Operador"}
       />
 
       <SettingsModal

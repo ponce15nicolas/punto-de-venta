@@ -32,10 +32,12 @@ export default function TicketSettingsModal({
   deviceId,
   sessionId,
   operadorSesion,
+  operatorName = "",
 }) {
   const [form, setForm] = useState(() => normalizeConfig(ticketConfig));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState("success");
 
   useEffect(() => {
     if (open) {
@@ -77,10 +79,10 @@ export default function TicketSettingsModal({
       address: form.address,
       phone: form.phone,
       footerText: form.footerText,
-      operatorName: "Administrador",
+      operatorName: operatorName || "Operador",
       defaultWidth: form.defaultWidth,
     }),
-    [form, shopName]
+    [form, shopName, operatorName]
   );
 
   const previewLines = useMemo(
@@ -91,6 +93,16 @@ export default function TicketSettingsModal({
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
   }
+
+  useEffect(() => {
+    if (!message) return undefined;
+
+    const timer = window.setTimeout(() => {
+      setMessage("");
+    }, messageTone === "success" ? 3200 : 5200);
+
+    return () => window.clearTimeout(timer);
+  }, [message, messageTone]);
 
   async function handleSave() {
     if (saving) return;
@@ -112,9 +124,11 @@ export default function TicketSettingsModal({
         autoOpen: form.autoOpen,
       });
 
+      setMessageTone("success");
       setMessage("Configuración guardada correctamente.");
     } catch (error) {
       console.error("Error guardando configuración de ticket:", error);
+      setMessageTone("error");
       setMessage(
         error?.message || "No se pudo guardar la configuración del ticket."
       );
@@ -254,8 +268,27 @@ export default function TicketSettingsModal({
         </section>
 
         {message && (
-          <div className="rounded-2xl border border-white/10 bg-white/[0.035] px-3.5 py-3 text-[11px] font-semibold text-white/60">
-            {message}
+          <div
+            role="status"
+            aria-live="polite"
+            className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 z-[9999] w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 rounded-2xl px-4 py-3 shadow-[0_18px_45px_rgba(0,0,0,0.35)]"
+            style={{
+              background: messageTone === "success" ? "#157347" : "#B42318",
+              border: `1px solid ${messageTone === "success" ? "#2FB171" : "#E34A3B"}`,
+              color: "#FFFFFF",
+            }}
+          >
+            <div className="flex items-center gap-2.5">
+              <span
+                aria-hidden="true"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/15 text-sm font-black"
+              >
+                {messageTone === "success" ? "✓" : "!"}
+              </span>
+              <span className="text-[12px] font-extrabold leading-snug">
+                {message}
+              </span>
+            </div>
           </div>
         )}
 
