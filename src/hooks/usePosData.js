@@ -646,6 +646,7 @@ export function usePosData({
   deviceSessionId = null,
   operadorSesion = null,
   operadorEsAdministrador = false,
+  ticketConfig = null,
 } = {}) {
   const cleanClienteId =
     String(
@@ -7875,27 +7876,30 @@ export function usePosData({
             : [cuentaId];
 
         try {
-          await registerReceivablePaymentCloud(
-            cleanClienteId,
-            cuentaId,
-            {
-              ...payload,
-              cuentaIds,
-            },
-            {
-              operadorSesion,
-              deviceId:
-                cleanDeviceId,
-            }
-          );
+          const result =
+            await registerReceivablePaymentCloud(
+              cleanClienteId,
+              cuentaId,
+              {
+                ...payload,
+                cuentaIds,
+              },
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
 
           showToast(
-            cuentaIds.length > 1
-              ? "Pago aplicado a la cuenta agrupada"
-              : "Pago registrado"
+            result?.cuenta?.estado === "pagado"
+              ? "Cuenta saldada"
+              : cuentaIds.length > 1
+                ? "Pago aplicado a la cuenta agrupada"
+                : "Pago registrado"
           );
 
-          return true;
+          return result;
         } catch (error) {
           console.error(
             "Error registrando pago de cuenta por cobrar:",
@@ -8031,6 +8035,12 @@ export function usePosData({
 
     shopName,
     setShopName,
+
+    ticketConfig:
+      ticketConfig &&
+      typeof ticketConfig === "object"
+        ? ticketConfig
+        : {},
 
     cart,
 

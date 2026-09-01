@@ -97,25 +97,47 @@ export default function SaleTicketModal({
   }
 
   const isHistory = source === "history";
+  const isReceivablePayment =
+    ticket?.kind === "receivable-payment";
 
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title={isHistory ? "Ticket guardado" : "Ticket de venta"}
+      title={
+        isReceivablePayment
+          ? "Comprobante de cobro"
+          : isHistory
+            ? "Ticket guardado"
+            : "Ticket de venta"
+      }
     >
       <div className="space-y-4">
         <section className="rounded-[22px] border border-[#FFC61A]/20 bg-[#FFC61A]/[0.06] p-3.5">
           <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#FFC61A]">
-            {isHistory ? "Reimpresión" : "Venta registrada"}
+            {isReceivablePayment
+              ? ticket?.settled
+                ? "Cuenta saldada"
+                : "Cobro registrado"
+              : isHistory
+                ? "Reimpresión"
+                : "Venta registrada"}
           </p>
           <h3 className="mt-1 text-base font-black text-white">
-            {isHistory ? "Volvé a usar este ticket" : "¿Qué querés hacer con el ticket?"}
+            {isReceivablePayment
+              ? ticket?.settled
+                ? "Saldo cancelado correctamente"
+                : "Pago aplicado correctamente"
+              : isHistory
+                ? "Volvé a usar este ticket"
+                : "¿Qué querés hacer con el ticket?"}
           </h3>
           <p className="mt-1 text-[11px] leading-relaxed text-white/45">
-            {isHistory
-              ? "Este comprobante interno quedó guardado con la venta. Podés reimprimirlo, descargarlo o compartirlo nuevamente."
-              : "Es un comprobante interno no fiscal. Podés imprimirlo en papel térmico, descargarlo en PDF o compartirlo desde el dispositivo."}
+            {isReceivablePayment
+              ? "Este comprobante deja constancia del cobro realizado sobre la cuenta corriente. No es un comprobante fiscal."
+              : isHistory
+                ? "Este comprobante interno quedó guardado con la venta. Podés reimprimirlo, descargarlo o compartirlo nuevamente."
+                : "Es un comprobante interno no fiscal. Podés imprimirlo en papel térmico, descargarlo en PDF o compartirlo desde el dispositivo."}
           </p>
         </section>
 

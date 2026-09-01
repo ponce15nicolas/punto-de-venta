@@ -15883,6 +15883,40 @@ exports.registrarPagoCuentaPorCobrar =
                                 )
                             );
 
+                        const importeOriginalTotal =
+                            redondearDineroCuentaPorCobrar(
+                                cuentasActivas.reduce(
+                                    (
+                                        total,
+                                        item
+                                    ) =>
+                                        total +
+                                        Number(
+                                            item.data
+                                                .importeOriginal ||
+                                            0
+                                        ),
+                                    0
+                                )
+                            );
+
+                        const totalPagadoAnterior =
+                            redondearDineroCuentaPorCobrar(
+                                cuentasActivas.reduce(
+                                    (
+                                        total,
+                                        item
+                                    ) =>
+                                        total +
+                                        Number(
+                                            item.data
+                                                .totalPagado ||
+                                            0
+                                        ),
+                                    0
+                                )
+                            );
+
                         if (
                             importe >
                             saldoAnteriorTotal
@@ -16354,10 +16388,24 @@ exports.registrarPagoCuentaPorCobrar =
                                             ),
 
                                         importeOriginal:
-                                            saldoAnteriorTotal,
+                                            importeOriginalTotal,
 
                                         totalPagado:
+                                            redondearDineroCuentaPorCobrar(
+                                                totalPagadoAnterior +
+                                                importe
+                                            ),
+
+                                        importeUltimoPago:
                                             importe,
+
+                                        metodoPago,
+
+                                        saldoAnterior:
+                                            saldoAnteriorTotal,
+
+                                        saldoRestante:
+                                            0,
                                     },
                                 });
 
@@ -16421,6 +16469,88 @@ exports.registrarPagoCuentaPorCobrar =
                                                 .toISOString(),
                                     })
                                 ),
+
+                            comprobante: {
+                                pagoId:
+                                    pagoGrupoId,
+
+                                cuentaId,
+
+                                cuentaIds,
+
+                                clienteNombre:
+                                    textoSeguro(
+                                        cuentasActivas[0]
+                                            .data
+                                            .clienteNombre,
+                                        120
+                                    ),
+
+                                clienteTelefono:
+                                    textoSeguro(
+                                        cuentasActivas[0]
+                                            .data
+                                            .clienteTelefono,
+                                        50
+                                    ),
+
+                                concepto:
+                                    cuentaIds.length >
+                                        1
+                                        ? "Cuenta corriente agrupada"
+                                        : textoSeguro(
+                                            cuentasActivas[0]
+                                                .data
+                                                .concepto,
+                                            180
+                                        ),
+
+                                importe,
+
+                                metodoPago,
+
+                                efectivoRecibido:
+                                    metodoPago ===
+                                        "efectivo"
+                                        ? efectivoRecibido
+                                        : null,
+
+                                vuelto,
+
+                                saldoAnterior:
+                                    saldoAnteriorTotal,
+
+                                saldoRestante:
+                                    saldoRestanteTotal,
+
+                                importeOriginal:
+                                    importeOriginalTotal,
+
+                                totalPagado:
+                                    redondearDineroCuentaPorCobrar(
+                                        totalPagadoAnterior +
+                                        importe
+                                    ),
+
+                                estado:
+                                    saldoRestanteTotal <=
+                                        0
+                                        ? "pagado"
+                                        : "parcial",
+
+                                operadorId:
+                                    operadorAutorizado
+                                        .id,
+
+                                operadorNombre,
+
+                                operadorRol,
+
+                                fecha:
+                                    fecha
+                                        .toDate()
+                                        .toISOString(),
+                            },
                         };
                     }
                 );

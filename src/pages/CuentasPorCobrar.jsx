@@ -12,6 +12,10 @@ import { motion } from "motion/react";
 
 import { money } from "../lib/format";
 import Modal from "../components/Modal";
+import SaleTicketModal from "../components/SaleTicketModal";
+import {
+  createReceivablePaymentTicketPayload,
+} from "../lib/saleTicket";
 
 /* =========================================================
    HELPERS
@@ -307,6 +311,20 @@ export default function CuentasPorCobrar({
 
   const [detailMode, setDetailMode] =
     useState("detail");
+
+  const [
+    settlementTicket,
+    setSettlementTicket,
+  ] = useState(null);
+
+  const ticketConfig =
+    pos?.ticketConfig &&
+    typeof pos.ticketConfig === "object"
+      ? pos.ticketConfig
+      : {};
+
+  const ticketEnabled =
+    ticketConfig.enabled === true;
 
   const selectedAccount =
     useMemo(() => {
@@ -862,14 +880,61 @@ export default function CuentasPorCobrar({
                 "detail"
               )
             }
-            onPaid={() =>
+            onPaid={(result) => {
+              const settled =
+                result?.cuenta?.estado ===
+                  "pagado" ||
+                Number(
+                  result?.cuenta
+                    ?.saldoPendiente
+                ) <= 0;
+
+              if (
+                settled &&
+                ticketEnabled &&
+                result?.comprobante
+              ) {
+                setSettlementTicket(
+                  createReceivablePaymentTicketPayload({
+                    receipt:
+                      result.comprobante,
+                    shopName:
+                      pos?.shopName ||
+                      "Mi Negocio",
+                    config:
+                      ticketConfig,
+                  })
+                );
+
+                setSelected(null);
+                setDetailMode(
+                  "detail"
+                );
+                return;
+              }
+
               setDetailMode(
                 "detail"
-              )
-            }
+              );
+            }}
           />
         )}
       </Modal>
+
+      <SaleTicketModal
+        open={Boolean(
+          settlementTicket
+        )}
+        onClose={() =>
+          setSettlementTicket(
+            null
+          )
+        }
+        ticket={
+          settlementTicket
+        }
+        source="receivable"
+      />
     </div>
   );
 }
@@ -2125,7 +2190,7 @@ function RegisterPaymentForm({
     setSaving(true);
 
     try {
-      const ok =
+      const result =
         await pos
           .registerReceivablePayment(
             account,
@@ -2145,8 +2210,10 @@ function RegisterPaymentForm({
             }
           );
 
-      if (ok) {
-        onPaid?.();
+      if (result) {
+        onPaid?.(
+          result
+        );
       }
     } finally {
       setSaving(false);

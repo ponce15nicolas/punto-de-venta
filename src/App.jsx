@@ -255,6 +255,10 @@ function PosApp({ license }) {
       license.sessionId,
     operadorSesion,
     operadorEsAdministrador,
+    ticketConfig:
+      license.datosCliente
+        ?.ticket ||
+      {},
   });
 
   const [tab, setTab] = useState("vender");

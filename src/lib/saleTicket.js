@@ -187,7 +187,12 @@ export function ticketFileName(ticket) {
     .replace(/[^a-zA-Z0-9_-]/g, "")
     .slice(-12);
 
-  return `ticket-${id || "venta"}.pdf`;
+  const prefix =
+    ticket?.kind === "receivable-payment"
+      ? "cobro"
+      : "ticket";
+
+  return `${prefix}-${id || "venta"}.pdf`;
 }
 
 export function createSaleTicketPayload({
@@ -220,7 +225,154 @@ export function createSaleTicketPayload({
   };
 }
 
+export function createReceivablePaymentTicketPayload({
+  receipt,
+  shopName = "Mi Negocio",
+  config = {},
+} = {}) {
+  const ticketConfig = config && typeof config === "object" ? config : {};
+  const data = receipt && typeof receipt === "object" ? receipt : {};
+
+  return {
+    kind: "receivable-payment",
+    id: cleanText(data.pagoId || data.id || `cobro-${Date.now()}`),
+    shopName:
+      cleanText(ticketConfig.businessName) ||
+      cleanText(shopName) ||
+      "Mi Negocio",
+    address: cleanText(ticketConfig.address),
+    phone: cleanText(ticketConfig.phone),
+    footerText: cleanText(ticketConfig.footerText),
+    operatorName: cleanText(data.operadorNombre),
+    customerName: cleanText(data.clienteNombre),
+    customerPhone: cleanText(data.clienteTelefono),
+    payment: {
+      method: cleanText(data.metodoPago),
+      amount: toNumber(data.importe),
+      received: toNumber(data.efectivoRecibido),
+      change: toNumber(data.vuelto),
+    },
+    previousBalance: toNumber(data.saldoAnterior),
+    remainingBalance: toNumber(data.saldoRestante),
+    originalAmount: toNumber(data.importeOriginal),
+    totalPaid: toNumber(data.totalPagado),
+    concept: cleanText(data.concepto),
+    timestamp: data.fecha || new Date().toISOString(),
+    settled: data.estado === "pagado" || toNumber(data.saldoRestante) <= 0,
+    defaultWidth: Number(ticketConfig.defaultWidth) === 80 ? 80 : 58,
+  };
+}
+
+function buildReceivablePaymentLines(ticket, width = 58) {
+  const normalizedWidth = normalizeWidth(width);
+  const columns = TICKET_WIDTHS[normalizedWidth].columns;
+  const separator = repeat("-", columns);
+  const lines = [];
+  const shopName = cleanText(ticket?.shopName || "Mi Negocio");
+  const address = cleanText(ticket?.address);
+  const phone = cleanText(ticket?.phone);
+  const footerText = cleanText(ticket?.footerText);
+  const payment = ticket?.payment || {};
+  const settled =
+    ticket?.settled === true ||
+    toNumber(ticket?.remainingBalance) <= 0;
+
+  lines.push(center(shopName.toUpperCase(), columns));
+
+  if (address) {
+    lines.push(
+      ...wrapText(address, columns)
+        .map((line) => center(line, columns))
+    );
+  }
+
+  if (phone) {
+    lines.push(center(`Tel: ${phone}`, columns));
+  }
+
+  lines.push(center("COMPROBANTE DE COBRO", columns));
+  lines.push(center("NO FISCAL", columns));
+  lines.push(separator);
+  lines.push(pair("Cobro", getDisplayTicketId(ticket), columns));
+  lines.push(pair("Fecha", formatDate(ticket?.timestamp), columns));
+
+  if (ticket?.operatorName) {
+    lines.push(pair("Operador", ticket.operatorName, columns));
+  }
+
+  lines.push(
+    ...wrapText(
+      `Cliente: ${cleanText(ticket?.customerName) || "Sin informar"}`,
+      columns
+    )
+  );
+
+  if (ticket?.customerPhone) {
+    lines.push(
+      ...wrapText(`Tel. cliente: ${ticket.customerPhone}`, columns)
+    );
+  }
+
+  if (ticket?.concept) {
+    lines.push(
+      ...wrapText(`Concepto: ${ticket.concept}`, columns)
+    );
+  }
+
+  lines.push(separator);
+  lines.push(
+    pair("Saldo anterior", formatMoney(ticket?.previousBalance), columns)
+  );
+  lines.push(
+    pair("Importe abonado", formatMoney(payment?.amount), columns)
+  );
+  lines.push(
+    pair("Saldo restante", formatMoney(ticket?.remainingBalance), columns)
+  );
+
+  if (settled) {
+    lines.push(center("CUENTA SALDADA", columns));
+  }
+
+  lines.push(separator);
+  lines.push(
+    pair("Forma de pago", paymentLabel(payment?.method), columns)
+  );
+
+  if (payment?.method === "efectivo") {
+    lines.push(
+      pair("Recibido", formatMoney(payment?.received), columns)
+    );
+    lines.push(
+      pair("Vuelto", formatMoney(payment?.change), columns)
+    );
+  }
+
+  lines.push(separator);
+
+  if (settled) {
+    lines.push(center("Saldo cancelado correctamente", columns));
+  } else {
+    lines.push(center("Pago aplicado a cuenta corriente", columns));
+  }
+
+  if (footerText) {
+    lines.push(
+      ...wrapText(footerText, columns)
+        .map((line) => center(line, columns))
+    );
+  }
+
+  lines.push(center("Comprobante interno - no fiscal", columns));
+
+  return lines;
+}
+
 export function buildTicketLines(ticket, width = 58) {
+  if (ticket?.kind === "receivable-payment") {
+    return buildReceivablePaymentLines(ticket, width);
+  }
+
   const normalizedWidth = normalizeWidth(width);
   const columns = TICKET_WIDTHS[normalizedWidth].columns;
   const sale = ticket?.sale || ticket || {};

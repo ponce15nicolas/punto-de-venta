@@ -1000,9 +1000,27 @@ function getEventDetails(event) {
           ),
         },
         {
+          label: "Último pago",
+          value: formatMoney(
+            d.importeUltimoPago
+          ),
+        },
+        {
+          label: "Medio de pago",
+          value: formatPaymentMethod(
+            d.metodoPago
+          ),
+        },
+        {
           label: "Total pagado",
           value: formatMoney(
             d.totalPagado
+          ),
+        },
+        {
+          label: "Saldo restante",
+          value: formatMoney(
+            d.saldoRestante
           ),
         },
       ]);
