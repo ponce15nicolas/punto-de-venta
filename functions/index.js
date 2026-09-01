@@ -11387,7 +11387,7 @@ exports.guardarConfiguracionTicket =
                     request,
                     {
                         requireRole:
-                            "admin",
+                            "administrador",
                     }
                 );
 

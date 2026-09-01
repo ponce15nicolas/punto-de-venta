@@ -155,7 +155,7 @@ export default function TicketSettingsModal({
               value={form.address}
               onChange={(event) => update("address", event.target.value)}
               maxLength={180}
-              placeholder="Ej. Pío XII 356 · Florencia"
+              placeholder="Ej. Av. Principal 123 · Ciudad"
               className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-4 py-3 text-sm font-bold text-white outline-none transition focus:border-[#FFC61A]"
             />
           </Field>
@@ -166,7 +166,7 @@ export default function TicketSettingsModal({
               onChange={(event) => update("phone", event.target.value)}
               maxLength={60}
               inputMode="tel"
-              placeholder="Ej. 3482 440734"
+              placeholder="Ej. 11 1234 5678"
               className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-4 py-3 text-sm font-bold text-white outline-none transition focus:border-[#FFC61A]"
             />
           </Field>
