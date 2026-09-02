@@ -17,6 +17,12 @@ const DATE_FORMATTER = new Intl.DateTimeFormat("es-AR", {
   minute: "2-digit",
 });
 
+const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat("es-AR", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+});
+
 export const TICKET_WIDTHS = {
   58: {
     widthMm: 58,
@@ -57,6 +63,20 @@ function formatQuantity(value) {
 function formatDate(value) {
   const date = new Date(value || Date.now());
   return Number.isNaN(date.getTime()) ? DATE_FORMATTER.format(new Date()) : DATE_FORMATTER.format(date);
+}
+
+function formatDateOnly(value) {
+  const raw = cleanText(value);
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+
+  if (dateOnly) {
+    return `${dateOnly[3]}/${dateOnly[2]}/${dateOnly[1]}`;
+  }
+
+  const date = new Date(value || Date.now());
+  return Number.isNaN(date.getTime())
+    ? DATE_ONLY_FORMATTER.format(new Date())
+    : DATE_ONLY_FORMATTER.format(date);
 }
 
 function normalizeWidth(width) {
@@ -190,7 +210,9 @@ export function ticketFileName(ticket) {
   const prefix =
     ticket?.kind === "receivable-payment"
       ? "cobro"
-      : "ticket";
+      : ticket?.kind === "receivable-debt"
+        ? "deuda"
+        : "ticket";
 
   return `${prefix}-${id || "venta"}.pdf`;
 }
@@ -261,6 +283,131 @@ export function createReceivablePaymentTicketPayload({
     settled: data.estado === "pagado" || toNumber(data.saldoRestante) <= 0,
     defaultWidth: Number(ticketConfig.defaultWidth) === 80 ? 80 : 58,
   };
+}
+
+export function createReceivableDebtTicketPayload({
+  account,
+  shopName = "Mi Negocio",
+  config = {},
+} = {}) {
+  const ticketConfig = config && typeof config === "object" ? config : {};
+  const data = account && typeof account === "object" ? account : {};
+
+  return {
+    kind: "receivable-debt",
+    id: cleanText(data.id || data.ventaId || `deuda-${Date.now()}`),
+    shopName:
+      cleanText(ticketConfig.businessName) ||
+      cleanText(shopName) ||
+      "Mi Negocio",
+    address: cleanText(ticketConfig.address),
+    phone: cleanText(ticketConfig.phone),
+    footerText: cleanText(ticketConfig.footerText),
+    operatorName: cleanText(
+      data?.creadoPor?.operadorNombre ||
+        data?.operadorNombre
+    ),
+    customerName: cleanText(data.clienteNombre),
+    customerPhone: cleanText(data.clienteTelefono),
+    concept: cleanText(data.concepto),
+    originalAmount: toNumber(data.importeOriginal),
+    totalPaid: toNumber(data.totalPagado),
+    remainingBalance: toNumber(data.saldoPendiente),
+    originDate: data.fechaOrigen || data.createdAt || data.fecha,
+    dueDate: data.vencimiento || "",
+    generatedAt: new Date().toISOString(),
+    defaultWidth: Number(ticketConfig.defaultWidth) === 80 ? 80 : 58,
+  };
+}
+
+function buildReceivableDebtLines(ticket, width = 58) {
+  const normalizedWidth = normalizeWidth(width);
+  const columns = TICKET_WIDTHS[normalizedWidth].columns;
+  const separator = repeat("-", columns);
+  const lines = [];
+  const shopName = cleanText(ticket?.shopName || "Mi Negocio");
+  const address = cleanText(ticket?.address);
+  const phone = cleanText(ticket?.phone);
+  const footerText = cleanText(ticket?.footerText);
+
+  lines.push(center(shopName.toUpperCase(), columns));
+
+  if (address) {
+    lines.push(
+      ...wrapText(address, columns)
+        .map((line) => center(line, columns))
+    );
+  }
+
+  if (phone) {
+    lines.push(center(`Tel: ${phone}`, columns));
+  }
+
+  lines.push(center("COMPROBANTE DE DEUDA", columns));
+  lines.push(center("NO FISCAL", columns));
+  lines.push(separator);
+  lines.push(pair("Cuenta", getDisplayTicketId(ticket), columns));
+  lines.push(pair("Emitido", formatDate(ticket?.generatedAt), columns));
+
+  if (ticket?.operatorName) {
+    lines.push(pair("Registrada por", ticket.operatorName, columns));
+  }
+
+  lines.push(
+    ...wrapText(
+      `Cliente: ${cleanText(ticket?.customerName) || "Sin informar"}`,
+      columns
+    )
+  );
+
+  if (ticket?.customerPhone) {
+    lines.push(
+      ...wrapText(`Tel. cliente: ${ticket.customerPhone}`, columns)
+    );
+  }
+
+  if (ticket?.concept) {
+    lines.push(
+      ...wrapText(`Concepto: ${ticket.concept}`, columns)
+    );
+  }
+
+  if (ticket?.originDate) {
+    lines.push(pair("Fecha origen", formatDateOnly(ticket.originDate), columns));
+  }
+
+  if (ticket?.dueDate) {
+    lines.push(pair("Vencimiento", formatDateOnly(ticket.dueDate), columns));
+  }
+
+  lines.push(separator);
+  lines.push(
+    pair("Importe original", formatMoney(ticket?.originalAmount), columns)
+  );
+  lines.push(
+    pair("Total pagado", formatMoney(ticket?.totalPaid), columns)
+  );
+  lines.push(
+    pair("SALDO PENDIENTE", formatMoney(ticket?.remainingBalance), columns)
+  );
+  lines.push(separator);
+  lines.push(
+    ...wrapText(
+      "Saldo pendiente al momento de emitir este comprobante.",
+      columns
+    ).map((line) => center(line, columns))
+  );
+
+  if (footerText) {
+    lines.push(
+      ...wrapText(footerText, columns)
+        .map((line) => center(line, columns))
+    );
+  }
+
+  lines.push(center("Comprobante interno - no fiscal", columns));
+
+  return lines;
 }
 
 function buildReceivablePaymentLines(ticket, width = 58) {
@@ -371,6 +518,10 @@ function buildReceivablePaymentLines(ticket, width = 58) {
 export function buildTicketLines(ticket, width = 58) {
   if (ticket?.kind === "receivable-payment") {
     return buildReceivablePaymentLines(ticket, width);
+  }
+
+  if (ticket?.kind === "receivable-debt") {
+    return buildReceivableDebtLines(ticket, width);
   }
 
   const normalizedWidth = normalizeWidth(width);

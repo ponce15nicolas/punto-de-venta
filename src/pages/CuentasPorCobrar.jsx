@@ -14,6 +14,7 @@ import { money } from "../lib/format";
 import Modal from "../components/Modal";
 import SaleTicketModal from "../components/SaleTicketModal";
 import {
+  createReceivableDebtTicketPayload,
   createReceivablePaymentTicketPayload,
 } from "../lib/saleTicket";
 
@@ -283,6 +284,7 @@ const FILTERS = [
 export default function CuentasPorCobrar({
   pos,
   onBack,
+  ticketConfig: providedTicketConfig = null,
 }) {
   const accounts =
     Array.isArray(
@@ -313,15 +315,18 @@ export default function CuentasPorCobrar({
     useState("detail");
 
   const [
-    settlementTicket,
-    setSettlementTicket,
+    activeTicket,
+    setActiveTicket,
   ] = useState(null);
 
   const ticketConfig =
-    pos?.ticketConfig &&
-    typeof pos.ticketConfig === "object"
-      ? pos.ticketConfig
-      : {};
+    providedTicketConfig &&
+    typeof providedTicketConfig === "object"
+      ? providedTicketConfig
+      : pos?.ticketConfig &&
+          typeof pos.ticketConfig === "object"
+        ? pos.ticketConfig
+        : {};
 
   const ticketEnabled =
     ticketConfig.enabled === true;
@@ -413,9 +418,27 @@ export default function CuentasPorCobrar({
       return;
     }
 
-    setSettlementTicket(
+    setActiveTicket(
       createReceivablePaymentTicketPayload({
         receipt,
+        shopName: pos?.shopName || "Mi Negocio",
+        config: ticketConfig,
+      })
+    );
+  }
+
+  function openDebtTicket(account) {
+    if (
+      !ticketEnabled ||
+      !account ||
+      isSettled(account)
+    ) {
+      return;
+    }
+
+    setActiveTicket(
+      createReceivableDebtTicketPayload({
+        account,
         shopName: pos?.shopName || "Mi Negocio",
         config: ticketConfig,
       })
@@ -492,7 +515,6 @@ export default function CuentasPorCobrar({
               account?.clienteNombre,
               account?.clienteTelefono,
               account?.concepto,
-              account?.notas,
             ].some(
               (value) =>
                 normalizeSearch(
@@ -999,6 +1021,11 @@ export default function CuentasPorCobrar({
                 payment
               )
             }
+            onOpenDebtTicket={() =>
+              openDebtTicket(
+                selectedAccount
+              )
+            }
             onPay={() =>
               setDetailMode(
                 "payment"
@@ -1025,7 +1052,7 @@ export default function CuentasPorCobrar({
                 ticketEnabled &&
                 result?.comprobante
               ) {
-                setSettlementTicket(
+                setActiveTicket(
                   createReceivablePaymentTicketPayload({
                     receipt:
                       result.comprobante,
@@ -1054,15 +1081,15 @@ export default function CuentasPorCobrar({
 
       <SaleTicketModal
         open={Boolean(
-          settlementTicket
+          activeTicket
         )}
         onClose={() =>
-          setSettlementTicket(
+          setActiveTicket(
             null
           )
         }
         ticket={
-          settlementTicket
+          activeTicket
         }
         source="receivable"
       />
@@ -1101,7 +1128,6 @@ function CreateDebtForm({
       fechaOrigen:
         todayDateOnly(),
       vencimiento: "",
-      notas: "",
     }));
 
   const amount =
@@ -1368,22 +1394,6 @@ function CreateDebtForm({
           />
         </FormField>
       </div>
-
-      <FormField label="Notas">
-        <textarea
-          rows="3"
-          value={form.notas}
-          maxLength={1000}
-          placeholder="Información adicional, detalle de productos, acuerdo de pago, etc."
-          onChange={(event) =>
-            setField(
-              "notas",
-              event.target.value
-            )
-          }
-          className={`${inputClassName} resize-none`}
-        />
-      </FormField>
 
       {form.vencimiento &&
         form.fechaOrigen &&
@@ -1683,6 +1693,7 @@ function AccountDetail({
   ticketEnabled = false,
   onOpenTicket,
   onOpenPaymentTicket,
+  onOpenDebtTicket,
   onPay,
 }) {
   const status =
@@ -1859,43 +1870,6 @@ function AccountDetail({
         />
       )}
 
-      {account?.notas && (
-        <div
-          className="
-            mt-3
-            rounded-[20px]
-            border
-            border-white/10
-            bg-white/5
-            p-3.5
-          "
-        >
-          <p
-            className="
-              text-[9px]
-              font-extrabold
-              uppercase
-              tracking-[0.12em]
-              text-white/35
-            "
-          >
-            Notas
-          </p>
-
-          <p
-            className="
-              mt-1.5
-              whitespace-pre-wrap
-              text-xs
-              leading-relaxed
-              text-white/60
-            "
-          >
-            {account.notas}
-          </p>
-        </div>
-      )}
-
       {isSettled(account) && (
         <div
           className="
@@ -1972,15 +1946,33 @@ function AccountDetail({
             p-3.5
           "
         >
-          <p
-            className="
-              text-sm
-              font-extrabold
-              text-white
-            "
-          >
-            Registrar cobro
-          </p>
+          <div className="flex items-center justify-between gap-3">
+            <p
+              className="
+                text-sm
+                font-extrabold
+                text-white
+              "
+            >
+              Registrar cobro
+            </p>
+
+            {ticketEnabled && (
+              <button
+                type="button"
+                onClick={onOpenDebtTicket}
+                className="
+                  shrink-0 rounded-xl border
+                  border-[#FFC61A]/25 bg-[#FFC61A]/10
+                  px-3 py-2 text-[10px] font-extrabold
+                  text-[#FFC61A] transition
+                  hover:bg-[#FFC61A]/15 active:scale-[0.99]
+                "
+              >
+                Imprimir deuda
+              </button>
+            )}
+          </div>
 
           <p
             className="

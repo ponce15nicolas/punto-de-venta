@@ -12,7 +12,7 @@
 //
 // No requiere dependencias nuevas.
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { motion } from "motion/react";
 
 import {
@@ -22,6 +22,8 @@ import {
 } from "../lib/format";
 
 import Modal from "../components/Modal";
+import SaleTicketModal from "../components/SaleTicketModal";
+import { createSaleTicketPayload } from "../lib/saleTicket";
 
 import CuentasPorCobrar, {
   getAccountsReceivableSummary,
@@ -149,13 +151,64 @@ function getPaymentMethod(
     : "efectivo";
 }
 
+function getSaleItemSubtotal(item) {
+  const stored = Number(
+    item?.subtotal
+  );
+
+  if (Number.isFinite(stored)) {
+    return roundMoney(stored);
+  }
+
+  return roundMoney(
+    toNumber(item?.qty, 1) *
+      toNumber(item?.price)
+  );
+}
+
+function formatSaleQuantity(value) {
+  return toNumber(value).toLocaleString(
+    "es-AR",
+    {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 3,
+    }
+  );
+}
+
+function formatSaleItemDetail(item) {
+  if (item?.tipoVenta === "peso") {
+    return `${formatSaleQuantity(
+      item?.qty
+    )} kg × ${money(
+      item?.price
+    )}/kg`;
+  }
+
+  if (item?.tipoVenta === "precio-libre") {
+    return "Importe manual";
+  }
+
+  const qty = Math.max(
+    0,
+    Math.trunc(
+      toNumber(item?.qty)
+    )
+  );
+
+  return `${qty} × ${money(
+    item?.price
+  )}`;
+}
+
 /* =========================================================
    COMPONENTE
 ========================================================= */
 
 export default function Caja({
   pos,
-  effectsMode = "complete",
+  ticketEnabled = false,
+  ticketConfig = null,
 }) {
   const {
     openSession,
@@ -163,12 +216,6 @@ export default function Caja({
     closeCashSession,
     paymentBreakdown,
   } = pos;
-
-  const performanceMode =
-    effectsMode === "performance";
-
-  const balancedMode =
-    effectsMode === "balanced";
 
   const [
     openAmount,
@@ -200,61 +247,48 @@ export default function Caja({
     setSection,
   ] = useState("cash");
 
+  const [
+    selectedSale,
+    setSelectedSale,
+  ] = useState(null);
+
+  const [
+    selectedTicket,
+    setSelectedTicket,
+  ] = useState(null);
+
+  const canUseTickets =
+    ticketEnabled === true ||
+    ticketConfig?.enabled === true;
+
+  function openSaleTicket(sale) {
+    if (!canUseTickets || !sale) {
+      return;
+    }
+
+    setSelectedTicket(
+      createSaleTicketPayload({
+        sale,
+        shopName:
+          pos?.shopName ||
+          "Mi Negocio",
+        config:
+          ticketConfig ||
+          {},
+      })
+    );
+  }
+
   const receivablesSummary =
-    useMemo(
-      () =>
-        getAccountsReceivableSummary(
-          pos?.accountsReceivable
-        ),
-      [
-        pos?.accountsReceivable,
-      ]
-    );
-
-  /*
-   * paymentBreakdown recorre ventas y movimientos del turno. Estos hooks
-   * permanecen antes de cualquier return condicional para respetar el
-   * orden estable de Hooks cuando se abre o cierra la caja.
-   */
-  const breakdown =
-    useMemo(
-      () =>
-        openSession
-          ? paymentBreakdown(
-              openSession.id
-            ) || {}
-          : {},
-      [
-        paymentBreakdown,
-        openSession?.id,
-        pos?.sales,
-        pos?.accountsReceivable,
-        pos?.accountsPayable,
-      ]
-    );
-
-  const sessSales =
-    Array.isArray(
-      breakdown.sessSales
-    )
-      ? breakdown.sessSales
-      : [];
-
-  const reversedSessSales =
-    useMemo(
-      () =>
-        sessSales
-          .slice()
-          .reverse(),
-      [
-        sessSales,
-      ]
+    getAccountsReceivableSummary(
+      pos?.accountsReceivable
     );
 
   if (section === "receivables") {
     return (
       <CuentasPorCobrar
         pos={pos}
+        ticketConfig={ticketConfig}
         onBack={() =>
           setSection("cash")
         }
@@ -598,6 +632,18 @@ export default function Caja({
   /* =========================================================
      CAJA ABIERTA
   ========================================================= */
+
+  const breakdown =
+    paymentBreakdown(
+      openSession.id
+    ) || {};
+
+  const sessSales =
+    Array.isArray(
+      breakdown.sessSales
+    )
+      ? breakdown.sessSales
+      : [];
 
   const totals =
     breakdown.totals ||
@@ -1246,7 +1292,9 @@ export default function Caja({
           </div>
 
           <div className="space-y-2.5">
-            {reversedSessSales
+            {sessSales
+              .slice()
+              .reverse()
               .map(
                 (
                   sale,
@@ -1316,50 +1364,48 @@ export default function Caja({
                     );
 
                   return (
-                    <motion.article
+                    <motion.button
+                      type="button"
                       key={
                         sale.id ||
                         `${sale.timestamp}-${index}`
                       }
-                      initial={
-                        performanceMode
-                          ? false
-                          : {
-                              opacity:
-                                0,
-                              y: 6,
-                            }
+                      onClick={() =>
+                        setSelectedSale(
+                          sale
+                        )
                       }
+                      initial={{
+                        opacity:
+                          0,
+                        y: 6,
+                      }}
                       animate={{
                         opacity:
                           1,
                         y: 0,
                       }}
                       transition={{
-                        duration:
-                          performanceMode
-                            ? 0
-                            : balancedMode
-                              ? 0.08
-                              : 0.16,
                         delay:
-                          performanceMode ||
-                          balancedMode
-                            ? 0
-                            : Math.min(
-                                index *
-                                  0.03,
-                                0.18
-                              ),
+                          Math.min(
+                            index *
+                              0.03,
+                            0.18
+                          ),
                       }}
                       className="
-                        pos-content-auto
+                        w-full
                         rounded-[22px]
                         border
                         border-white/10
                         bg-[#151A22]
                         p-3.5
+                        text-left
                         shadow-[0_12px_30px_rgba(0,0,0,0.14)]
+                        transition
+                        hover:border-[#FFC61A]/25
+                        hover:bg-[#171D26]
+                        active:scale-[0.995]
                       "
                     >
                       <div
@@ -1608,12 +1654,54 @@ export default function Caja({
                           )}
                         </div>
                       )}
-                    </motion.article>
+                      <div className="mt-3 border-t border-white/[0.07] pt-2.5 text-[10px] font-extrabold text-[#FFC61A]/80">
+                        {canUseTickets
+                          ? "Ver detalles y ticket"
+                          : "Ver detalles"}
+                      </div>
+                    </motion.button>
                   );
                 }
               )}
           </div>
         </section>
+      )}
+
+      <Modal
+        open={Boolean(
+          selectedSale
+        )}
+        onClose={() =>
+          setSelectedSale(null)
+        }
+        title="Detalle de venta"
+      >
+        {selectedSale && (
+          <CurrentSaleDetail
+            sale={selectedSale}
+            ticketEnabled={canUseTickets}
+            onTicket={() =>
+              openSaleTicket(
+                selectedSale
+              )
+            }
+          />
+        )}
+      </Modal>
+
+      {canUseTickets && (
+        <SaleTicketModal
+          open={Boolean(
+            selectedTicket
+          )}
+          ticket={selectedTicket}
+          source="cash"
+          onClose={() =>
+            setSelectedTicket(
+              null
+            )
+          }
+        />
       )}
 
       {/* =====================================================
@@ -2015,6 +2103,221 @@ export default function Caja({
 /* =========================================================
    ACCESO A CUENTAS POR COBRAR
 ========================================================= */
+
+function CurrentSaleDetail({
+  sale,
+  ticketEnabled = false,
+  onTicket,
+}) {
+  const items = Array.isArray(
+    sale?.items
+  )
+    ? sale.items
+    : [];
+
+  const method =
+    getPaymentMethod(sale);
+  const payment =
+    sale?.payment || {};
+  const paymentParts =
+    Array.isArray(payment?.parts)
+      ? payment.parts.filter(
+          (part) =>
+            roundMoney(
+              part?.amount
+            ) > 0
+        )
+      : [];
+  const customerName =
+    payment?.receivable
+      ?.clienteNombre || "";
+  const customerPhone =
+    payment?.receivable
+      ?.clienteTelefono || "";
+  const discount = roundMoney(
+    sale?.promotionDiscountTotal
+  );
+
+  return (
+    <div>
+      <div className="overflow-hidden rounded-[22px] bg-white text-[#111318]">
+        <div className="p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-[#B98700]">
+                Venta del turno
+              </p>
+              <h3 className="mt-1 text-lg font-black text-[#111318]">
+                {fmtDateTime(
+                  sale?.timestamp
+                )}
+              </h3>
+              <p className="mt-1 text-xs font-semibold text-black/40">
+                {METHOD_LABEL[method] || "Medio de pago"}
+              </p>
+            </div>
+
+            <strong className="shrink-0 text-lg font-black text-[#9A7100]">
+              {money(
+                roundMoney(
+                  sale?.total
+                )
+              )}
+            </strong>
+          </div>
+
+          <div className="mt-4 h-[3px] rounded-full bg-[#FFC61A]" />
+        </div>
+      </div>
+
+      <div className="mt-3 overflow-hidden rounded-[20px] border border-white/10 bg-[#151A22] px-3.5">
+        {items.map((item, index) => (
+          <div
+            key={
+              item?.id ||
+              `${item?.name || "producto"}-${index}`
+            }
+            className="flex items-center gap-3 border-b border-white/[0.07] py-3 last:border-b-0"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-extrabold text-white">
+                {item?.name ||
+                  "Producto"}
+              </p>
+              <p className="mt-0.5 truncate text-[10px] font-semibold text-white/35">
+                {formatSaleItemDetail(
+                  item
+                )}
+              </p>
+            </div>
+            <span className="shrink-0 text-xs font-black text-white">
+              {money(
+                getSaleItemSubtotal(
+                  item
+                )
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {discount > 0 && (
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-[18px] border border-emerald-400/15 bg-emerald-500/[0.06] px-3.5 py-3">
+          <span className="text-xs font-bold text-white/45">
+            Descuento aplicado
+          </span>
+          <strong className="text-xs font-black text-emerald-300">
+            -{money(discount)}
+          </strong>
+        </div>
+      )}
+
+      {method === "mixto" &&
+        paymentParts.length > 0 && (
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {paymentParts.map(
+              (part, index) => (
+                <div
+                  key={`${part?.method || "metodo"}-${index}`}
+                  className="rounded-[18px] border border-white/10 bg-white/5 px-3.5 py-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-white/40">
+                      {METHOD_LABEL[
+                        part?.method
+                      ] || "Método"}
+                    </span>
+                    <strong className="text-xs font-black text-[#FFC61A]">
+                      {money(
+                        roundMoney(
+                          part?.amount
+                        )
+                      )}
+                    </strong>
+                  </div>
+                  {part?.method ===
+                    "efectivo" &&
+                    roundMoney(
+                      part?.change
+                    ) > 0 && (
+                      <p className="mt-1 text-[10px] font-semibold text-white/35">
+                        Recibido {money(
+                          roundMoney(
+                            part?.received
+                          )
+                        )} · Vuelto {money(
+                          roundMoney(
+                            part?.change
+                          )
+                        )}
+                      </p>
+                    )}
+                </div>
+              )
+            )}
+          </div>
+        )}
+
+      {method === "efectivo" && (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <DarkStat
+            label="Recibido"
+            value={money(
+              roundMoney(
+                payment?.received ||
+                  sale?.total
+              )
+            )}
+          />
+          <DarkStat
+            label="Vuelto"
+            value={money(
+              roundMoney(
+                payment?.change
+              )
+            )}
+            highlight={
+              roundMoney(
+                payment?.change
+              ) > 0
+            }
+          />
+        </div>
+      )}
+
+      {method === "cuenta" &&
+        (customerName ||
+          customerPhone) && (
+          <div className="mt-3 rounded-[20px] border border-white/10 bg-white/5 p-3.5">
+            <p className="text-[9px] font-extrabold uppercase tracking-[0.12em] text-white/35">
+              Cuenta por cobrar
+            </p>
+            {customerName && (
+              <p className="mt-1.5 text-xs font-extrabold text-white">
+                {customerName}
+              </p>
+            )}
+            {customerPhone && (
+              <p className="mt-1 text-[10px] font-semibold text-white/35">
+                {customerPhone}
+              </p>
+            )}
+          </div>
+        )}
+
+      {ticketEnabled && (
+        <button
+          type="button"
+          onClick={onTicket}
+          className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[#FFC61A] px-4 py-3.5 text-sm font-extrabold text-black transition hover:bg-[#FFD248] active:scale-[0.99]"
+        >
+          <ReceiptIcon className="h-4 w-4" />
+          Ver / reimprimir ticket
+        </button>
+      )}
+    </div>
+  );
+}
 
 function AccountsReceivableAccess({
   summary,
