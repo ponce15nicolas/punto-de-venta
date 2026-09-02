@@ -1708,6 +1708,9 @@ const AUDIT_ACTIONS = Object.freeze({
     CIERRE_CAJA:
         "cierre-caja",
 
+    CONVERSION_FONDOS:
+        "conversion-fondos",
+
     VENTA_REALIZADA:
         "venta-realizada",
 
@@ -23901,6 +23904,17 @@ exports.abrirCaja =
                                     0,
                             },
 
+                            fundConversionTotals: {
+                                efectivo:
+                                    0,
+
+                                transferencia:
+                                    0,
+                            },
+
+                            fundConversionCount:
+                                0,
+
                             status:
                                 "open",
 
@@ -23992,6 +24006,471 @@ exports.abrirCaja =
         }
     );
 
+
+/* =========================================================
+   CONVERSIÓN DE FONDOS
+========================================================= */
+
+const FUND_CONVERSION_METHODS = new Set([
+    "efectivo",
+    "transferencia",
+]);
+
+function totalMetodoSesion(
+    session,
+    method
+) {
+    return redondearDineroVenta(
+        Number(
+            session
+                ?.paymentTotals
+                ?.[method] ||
+            0
+        ) +
+        Number(
+            session
+                ?.receivablePaymentTotals
+                ?.[method] ||
+            0
+        ) -
+        Number(
+            session
+                ?.payablePaymentTotals
+                ?.[method] ||
+            0
+        ) +
+        Number(
+            session
+                ?.fundConversionTotals
+                ?.[method] ||
+            0
+        )
+    );
+}
+
+exports.convertirFondos =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } = await resolverClienteAutenticado(
+                request.auth
+            );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(clienteData);
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+            validarClienteIdSolicitado(
+                request.data,
+                clienteRef
+            );
+
+            const deviceId = validarId(
+                request.data?.deviceId,
+                "deviceId"
+            );
+
+            const operador =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data?.operadorSesion,
+                    {
+                        requireRole:
+                            "administrador",
+                        deviceId,
+                    }
+                );
+
+            const conversionId = validarId(
+                request.data?.conversionId,
+                "conversionId"
+            );
+            const cashSessionId = validarId(
+                request.data?.cashSessionId,
+                "cashSessionId"
+            );
+            const origen = textoSeguro(
+                request.data?.origen,
+                40
+            );
+            const destino = textoSeguro(
+                request.data?.destino,
+                40
+            );
+            const importe = redondearDineroVenta(
+                request.data?.importe
+            );
+            const motivo = validarTextoEstricto(
+                request.data?.motivo,
+                "motivo",
+                {
+                    minLength: 3,
+                    maxLength: 180,
+                }
+            );
+
+            if (
+                !FUND_CONVERSION_METHODS.has(origen) ||
+                !FUND_CONVERSION_METHODS.has(destino) ||
+                origen === destino
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Elegí un origen y destino válidos."
+                );
+            }
+
+            if (
+                !Number.isFinite(
+                    Number(request.data?.importe)
+                ) ||
+                importe <= 0
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá un importe válido."
+                );
+            }
+
+            const configRef = clienteRef
+                .collection("configuracion")
+                .doc("pos");
+            const sessionRef = clienteRef
+                .collection("cajas")
+                .doc(cashSessionId);
+            const conversionRef = clienteRef
+                .collection("conversionesFondos")
+                .doc(conversionId);
+
+            const result = await db.runTransaction(
+                async (transaction) => {
+                    const [
+                        freshClientSnap,
+                        configSnap,
+                        sessionSnap,
+                        conversionSnap,
+                    ] = await transaction.getAll(
+                        clienteRef,
+                        configRef,
+                        sessionRef,
+                        conversionRef
+                    );
+
+                    if (
+                        freshClientSnap.data()
+                            ?.arca
+                            ?.productionEnabled === true
+                    ) {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "La conversión de fondos no está disponible cuando la facturación fiscal está operativa.",
+                            {
+                                motivo:
+                                    "fund-conversion-fiscal-enabled",
+                            }
+                        );
+                    }
+
+                    const session =
+                        sessionSnap.exists
+                            ? sessionSnap.data() || {}
+                            : {};
+
+                    if (conversionSnap.exists) {
+                        const existing =
+                            conversionSnap.data() || {};
+
+                        if (
+                            existing.cashSessionId !== cashSessionId ||
+                            existing.origen !== origen ||
+                            existing.destino !== destino ||
+                            redondearDineroVenta(existing.importe) !== importe ||
+                            textoSeguro(existing.motivo, 180) !== motivo
+                        ) {
+                            throw new HttpsError(
+                                "already-exists",
+                                "El identificador de esta conversión ya fue utilizado."
+                            );
+                        }
+
+                        return {
+                            created: false,
+                            conversion: {
+                                id: conversionId,
+                                cashSessionId,
+                                origen,
+                                destino,
+                                importe,
+                                motivo,
+                                fecha:
+                                    existing.fecha || null,
+                            },
+                            session: {
+                                id: cashSessionId,
+                                fundConversionTotals:
+                                    session.fundConversionTotals ||
+                                    {
+                                        efectivo: 0,
+                                        transferencia: 0,
+                                    },
+                                fundConversionCount:
+                                    Math.max(
+                                        0,
+                                        Math.trunc(
+                                            Number(
+                                                session.fundConversionCount ||
+                                                0
+                                            )
+                                        )
+                                    ),
+                            },
+                        };
+                    }
+
+                    const activeCashSessionId =
+                        textoSeguro(
+                            configSnap.data()
+                                ?.openCashSessionId,
+                            180
+                        );
+
+                    if (!activeCashSessionId) {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "Abrí una caja antes de convertir fondos.",
+                            {
+                                motivo:
+                                    "cash-not-open",
+                            }
+                        );
+                    }
+
+                    if (
+                        activeCashSessionId !==
+                        cashSessionId
+                    ) {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "La caja activa cambió. Actualizá e intentá nuevamente.",
+                            {
+                                motivo:
+                                    "cash-session-mismatch",
+                            }
+                        );
+                    }
+
+                    if (
+                        !sessionSnap.exists ||
+                        session.status !== "open"
+                    ) {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "La caja ya no se encuentra abierta.",
+                            {
+                                motivo:
+                                    "cash-already-closed",
+                            }
+                        );
+                    }
+
+                    const previousTotals = {
+                        efectivo:
+                            redondearDineroVenta(
+                                session
+                                    ?.fundConversionTotals
+                                    ?.efectivo ||
+                                0
+                            ),
+                        transferencia:
+                            redondearDineroVenta(
+                                session
+                                    ?.fundConversionTotals
+                                    ?.transferencia ||
+                                0
+                            ),
+                    };
+
+                    const efectivoAnterior =
+                        redondearDineroVenta(
+                            Number(session.openAmount || 0) +
+                            totalMetodoSesion(
+                                session,
+                                "efectivo"
+                            )
+                        );
+                    const transferenciaTurnoAnterior =
+                        totalMetodoSesion(
+                            session,
+                            "transferencia"
+                        );
+
+                    if (
+                        origen === "efectivo" &&
+                        importe > efectivoAnterior + 0.001
+                    ) {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "El importe supera el efectivo esperado disponible en caja.",
+                            {
+                                motivo:
+                                    "fund-conversion-insufficient-cash",
+                                efectivoDisponible:
+                                    efectivoAnterior,
+                            }
+                        );
+                    }
+
+                    const deltaEfectivo =
+                        origen === "efectivo"
+                            ? -importe
+                            : importe;
+                    const deltaTransferencia =
+                        origen === "transferencia"
+                            ? -importe
+                            : importe;
+
+                    const nextTotals = {
+                        efectivo:
+                            redondearDineroVenta(
+                                previousTotals.efectivo +
+                                deltaEfectivo
+                            ),
+                        transferencia:
+                            redondearDineroVenta(
+                                previousTotals.transferencia +
+                                deltaTransferencia
+                            ),
+                    };
+
+                    const efectivoNuevo =
+                        redondearDineroVenta(
+                            efectivoAnterior +
+                            deltaEfectivo
+                        );
+                    const transferenciaTurnoNueva =
+                        redondearDineroVenta(
+                            transferenciaTurnoAnterior +
+                            deltaTransferencia
+                        );
+                    const fundConversionCount =
+                        Math.max(
+                            0,
+                            Math.trunc(
+                                Number(
+                                    session.fundConversionCount ||
+                                    0
+                                )
+                            )
+                        ) + 1;
+                    const fecha =
+                        new Date().toISOString();
+
+                    transaction.update(
+                        sessionRef,
+                        {
+                            fundConversionTotals:
+                                nextTotals,
+                            fundConversionCount,
+                            fundConversionUpdatedAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                            updatedAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                        }
+                    );
+
+                    transaction.set(
+                        conversionRef,
+                        {
+                            id: conversionId,
+                            cashSessionId,
+                            origen,
+                            destino,
+                            importe,
+                            motivo,
+                            fecha,
+                            operadorId:
+                                operador.id,
+                            operadorNombre:
+                                textoSeguro(
+                                    operador
+                                        ?.data
+                                        ?.nombre,
+                                    80
+                                ) || "Operador",
+                            operadorRol:
+                                operador.rol,
+                            deviceId,
+                            efectivoAnterior,
+                            efectivoNuevo,
+                            transferenciaTurnoAnterior,
+                            transferenciaTurnoNueva,
+                            createdAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                        }
+                    );
+
+                    const auditEvent =
+                        crearEventoAuditoria({
+                            clienteRef,
+                            operador,
+                            accion:
+                                AUDIT_ACTIONS
+                                    .CONVERSION_FONDOS,
+                            sessionId:
+                                cashSessionId,
+                            deviceId,
+                            detalle: {
+                                conversionId,
+                                origen,
+                                destino,
+                                importe,
+                                motivo,
+                                efectivoAnterior,
+                                efectivoNuevo,
+                                transferenciaTurnoAnterior,
+                                transferenciaTurnoNueva,
+                            },
+                        });
+
+                    transaction.set(
+                        auditEvent.ref,
+                        auditEvent.data
+                    );
+
+                    return {
+                        created: true,
+                        conversion: {
+                            id: conversionId,
+                            cashSessionId,
+                            origen,
+                            destino,
+                            importe,
+                            motivo,
+                            fecha,
+                        },
+                        session: {
+                            id: cashSessionId,
+                            fundConversionTotals:
+                                nextTotals,
+                            fundConversionCount,
+                        },
+                    };
+                }
+            );
+
+            return {
+                ok: true,
+                ...result,
+            };
+        }
+    );
 
 
 /* =========================================================
@@ -24314,6 +24793,33 @@ exports.cerrarCaja =
                                 )
                             );
 
+                        const fundConversionTotals = {
+                            efectivo:
+                                roundMoney(
+                                    session
+                                        ?.fundConversionTotals
+                                        ?.efectivo
+                                ),
+                            transferencia:
+                                roundMoney(
+                                    session
+                                        ?.fundConversionTotals
+                                        ?.transferencia
+                                ),
+                        };
+
+                        const fundConversionCount =
+                            Math.max(
+                                0,
+                                Math.trunc(
+                                    Number(
+                                        session
+                                            ?.fundConversionCount ||
+                                        0
+                                    )
+                                )
+                            );
+
                         const expectedAmount =
                             roundMoney(
                                 Number(
@@ -24324,6 +24830,8 @@ exports.cerrarCaja =
                                 receivablePaymentTotals
                                     .efectivo -
                                 payablePaymentTotals
+                                    .efectivo +
+                                fundConversionTotals
                                     .efectivo
                             );
 
@@ -24368,6 +24876,10 @@ exports.cerrarCaja =
                                 payablePaymentsTotal,
 
                                 payablePaymentsCount,
+
+                                fundConversionTotals,
+
+                                fundConversionCount,
 
                                 status:
                                     "closed",
@@ -24439,6 +24951,13 @@ exports.cerrarCaja =
 
                                     cantidadCobranzas:
                                         receivablePaymentsCount,
+
+                                    ajusteConversionesEfectivo:
+                                        fundConversionTotals
+                                            .efectivo,
+
+                                    cantidadConversiones:
+                                        fundConversionCount,
                                 },
                             });
 
@@ -24469,6 +24988,10 @@ exports.cerrarCaja =
                             salesCount,
 
                             paymentTotals,
+
+                            fundConversionTotals,
+
+                            fundConversionCount,
 
                             status:
                                 "closed",

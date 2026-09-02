@@ -115,6 +115,16 @@ function roundMoney(value) {
   );
 }
 
+function signedMoney(value) {
+  const amount = roundMoney(value);
+
+  if (amount === 0) {
+    return money(0);
+  }
+
+  return `${amount > 0 ? "+" : "-"}${money(Math.abs(amount))}`;
+}
+
 function getSaleItemCount(
   sale
 ) {
@@ -766,6 +776,33 @@ export default function Caja({
       ),
   };
 
+  const fundConversionTotals =
+    openSession
+      ?.fundConversionTotals ||
+    {};
+
+  const safeFundConversionTotals = {
+    efectivo:
+      roundMoney(
+        fundConversionTotals.efectivo
+      ),
+    transferencia:
+      roundMoney(
+        fundConversionTotals.transferencia
+      ),
+  };
+
+  const fundConversionCount =
+    Math.max(
+      0,
+      Math.trunc(
+        toNumber(
+          openSession
+            ?.fundConversionCount
+        )
+      )
+    );
+
   const openAmountNumber =
     roundMoney(
       openSession.openAmount
@@ -779,7 +816,8 @@ export default function Caja({
     roundMoney(
       openAmountNumber +
         safeTotals.efectivo -
-        safePayableTotals.efectivo
+        safePayableTotals.efectivo +
+        safeFundConversionTotals.efectivo
     );
 
   const countedNum =
@@ -1174,6 +1212,40 @@ export default function Caja({
                 Ventas a cuenta: {money(
                   totalCreditSales
                 )}. Forman parte de las ventas del turno, pero no ingresan dinero a caja hasta que se cobren.
+              </div>
+            )}
+
+            {fundConversionCount > 0 && (
+              <div
+                className="
+                  mt-2.5
+                  rounded-2xl
+                  border
+                  border-[#FFC61A]/20
+                  bg-[#FFF8DD]
+                  px-3.5
+                  py-3
+                "
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <span className="block text-[10px] font-extrabold uppercase tracking-[0.11em] text-[#8C6700]">
+                      Conversión de fondos
+                    </span>
+                    <span className="mt-1 block text-[11px] font-semibold text-black/45">
+                      {fundConversionCount} {fundConversionCount === 1 ? "movimiento" : "movimientos"} en este turno
+                    </span>
+                  </div>
+
+                  <div className="text-right">
+                    <strong className="block text-xs font-black text-[#111318]">
+                      Efectivo {signedMoney(safeFundConversionTotals.efectivo)}
+                    </strong>
+                    <span className="mt-0.5 block text-[10px] font-bold text-black/40">
+                      Transferencia {signedMoney(safeFundConversionTotals.transferencia)}
+                    </span>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -1773,6 +1845,17 @@ export default function Caja({
             </div>
           )}
 
+          {fundConversionCount > 0 && (
+            <div className="mb-4">
+              <DarkStat
+                label="Conversión de fondos · efectivo"
+                value={signedMoney(
+                  safeFundConversionTotals.efectivo
+                )}
+              />
+            </div>
+          )}
+
           {/* ===============================================
               EFECTIVO ESPERADO
           =============================================== */}
@@ -1858,7 +1941,7 @@ export default function Caja({
                 text-white/35
               "
             >
-              Incluye ventas y cobros de cuentas por cobrar en efectivo, menos los pagos de cuentas por pagar realizados en efectivo. Transferencia, QR y tarjeta no modifican la caja física.
+              Incluye ventas y cobros de cuentas por cobrar en efectivo, menos los pagos de cuentas por pagar y el efecto neto de las conversiones de fondos. QR y tarjeta no modifican la caja física.
             </p>
           </div>
 

@@ -51,6 +51,8 @@ export default function MoreDrawer({
   isOnline = true,
   onOpenSync,
   arcaEnabled = false,
+  fundConversionAllowed = true,
+  onOpenFundConversion,
   ticketEnabled = false,
   ticketConfig = null,
   clienteId = null,
@@ -206,6 +208,18 @@ export default function MoreDrawer({
 
   function openSync() {
     onOpenSync?.();
+
+    if (!isDesktop) {
+      onClose?.();
+    }
+  }
+
+  function openFundConversion() {
+    if (!esAdministrador || !fundConversionAllowed || !openSession) {
+      return;
+    }
+
+    onOpenFundConversion?.();
 
     if (!isDesktop) {
       onClose?.();
@@ -417,6 +431,17 @@ export default function MoreDrawer({
                   active={currentTab === "actividad"}
                   onClick={() => navigate("actividad")}
                 />
+
+                {esAdministrador && fundConversionAllowed && (
+                  <DrawerRow
+                    icon={ExchangeIcon}
+                    label="Conversión de fondos"
+                    badge={openSession ? "Efectivo ↔ Transferencia" : "Abrí caja"}
+                    badgeTone={openSession ? "amber" : "neutral"}
+                    disabled={!openSession}
+                    onClick={openFundConversion}
+                  />
+                )}
 
                 {esAdministrador && ticketEnabled && (
                   <DrawerRow
@@ -861,6 +886,17 @@ function PurchaseIcon({ className = "" }) {
     <IconBase className={className}>
       <path d="M6 8h12l1 12H5L6 8Z" />
       <path d="M9 8a3 3 0 0 1 6 0" />
+    </IconBase>
+  );
+}
+
+function ExchangeIcon({ className = "" }) {
+  return (
+    <IconBase className={className}>
+      <path d="M7 7h11l-3-3" />
+      <path d="m18 7-3 3" />
+      <path d="M17 17H6l3 3" />
+      <path d="m6 17 3-3" />
     </IconBase>
   );
 }

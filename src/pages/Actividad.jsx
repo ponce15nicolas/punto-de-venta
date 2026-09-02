@@ -16,6 +16,7 @@ const ACTIONS = [
   { id: "all", label: "Todo" },
   { id: "apertura-caja", label: "Aperturas" },
   { id: "cierre-caja", label: "Cierres" },
+  { id: "conversion-fondos", label: "Conversiones" },
   { id: "venta-realizada", label: "Ventas" },
   { id: "alta-promocion", label: "Promos +" },
   { id: "edicion-promocion", label: "Promos edit." },
@@ -57,6 +58,11 @@ const ACTION_META = {
     title: "Cierre de caja",
     eyebrow: "Caja",
     icon: CashCloseIcon,
+  },
+  "conversion-fondos": {
+    title: "Conversión de fondos",
+    eyebrow: "Caja",
+    icon: ExchangeIcon,
   },
   "venta-realizada": {
     title: "Venta realizada",
@@ -582,6 +588,36 @@ function getEventDetails(event) {
         {
           label: "Ventas",
           value: finiteString(d.cantidadVentas),
+        },
+      ]);
+
+    case "conversion-fondos":
+      return compactDetails([
+        {
+          label: "Conversión",
+          value: `${formatPaymentMethod(d.origen)} → ${formatPaymentMethod(d.destino)}`,
+        },
+        {
+          label: "Importe",
+          value: formatMoney(d.importe),
+        },
+        {
+          label: "Efectivo",
+          value: formatMoneyTransition(
+            d.efectivoAnterior,
+            d.efectivoNuevo
+          ),
+        },
+        {
+          label: "Transferencia del turno",
+          value: formatMoneyTransition(
+            d.transferenciaTurnoAnterior,
+            d.transferenciaTurnoNueva
+          ),
+        },
+        {
+          label: "Motivo",
+          value: d.motivo,
         },
       ]);
 
@@ -1579,6 +1615,18 @@ function CashCloseIcon({ className = "" }) {
       <path d="M8 8V5h8v3" />
       <path d="M12 12v4" />
       <path d="m10 14 2 2 2-2" />
+    </svg>
+  );
+}
+
+function ExchangeIcon({ className = "" }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M7 7h11l-3-3" />
+      <path d="m18 7-3 3" />
+      <path d="M17 17H6l3 3" />
+      <path d="m6 17 3-3" />
     </svg>
   );
 }

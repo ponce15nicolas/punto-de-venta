@@ -14,6 +14,7 @@ import { fmtTime } from "./lib/format";
 import Header from "./components/Header";
 import BottomNav from "./components/BottomNav";
 import MoreDrawer from "./components/MoreDrawer";
+import FundConversionModal from "./components/FundConversionModal";
 import Toast from "./components/Toast";
 import UpdateNotice from "./components/UpdateNotice";
 import OfflineStatusBar from "./components/OfflineStatusBar";
@@ -264,11 +265,17 @@ function PosApp({ license }) {
     useState(getCurrentEffectsMode);
   const [moreOpen, setMoreOpen] = useState(false);
   const [syncCenterOpen, setSyncCenterOpen] = useState(false);
+  const [fundConversionOpen, setFundConversionOpen] = useState(false);
 
   const arcaEnabled =
     license.datosCliente
       ?.arca
       ?.enabled === true;
+
+  const fundConversionAllowed =
+    license.datosCliente
+      ?.arca
+      ?.productionEnabled !== true;
 
   const ticketConfig =
     license.datosCliente
@@ -810,6 +817,8 @@ function PosApp({ license }) {
         isOnline={pos.isOnline}
         onOpenSync={() => setSyncCenterOpen(true)}
         arcaEnabled={arcaEnabled}
+        fundConversionAllowed={fundConversionAllowed}
+        onOpenFundConversion={() => setFundConversionOpen(true)}
         deviceId={license.deviceId}
         theme={theme}
         onToggleTheme={handleToggleTheme}
@@ -821,6 +830,14 @@ function PosApp({ license }) {
       {/* =====================================================
           TOAST
       ===================================================== */}
+
+      <FundConversionModal
+        open={fundConversionOpen}
+        openSession={pos.openSession}
+        isOnline={pos.isOnline}
+        onConvert={pos.convertFunds}
+        onClose={() => setFundConversionOpen(false)}
+      />
 
       <SyncCenterModal
         open={syncCenterOpen}

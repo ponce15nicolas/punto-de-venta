@@ -77,6 +77,10 @@ import {
   isNetworkError,
 } from "../lib/network";
 
+import {
+  convertFundsCloud,
+} from "../services/pos/fundsFirestore";
+
 /* =========================================================
    CONFIGURACIÓN
 ========================================================= */
@@ -864,6 +868,9 @@ export function usePosData({
     useRef(false);
 
   const closingCashRef =
+    useRef(false);
+
+  const convertingFundsRef =
     useRef(false);
 
   /*
@@ -7143,6 +7150,168 @@ export function usePosData({
     );
 
   /* =========================================================
+     CONVERSIÓN DE FONDOS
+  ========================================================= */
+
+  const convertFunds =
+    useCallback(
+      async ({
+        origen,
+        destino,
+        importe,
+        motivo,
+      } = {}) => {
+        if (convertingFundsRef.current) {
+          return false;
+        }
+
+        if (!operadorEsAdministrador) {
+          showToast(
+            "Esta operación requiere un administrador",
+            true
+          );
+
+          return false;
+        }
+
+        const currentOpenSession =
+          cashSessionsRef.current
+            .find(
+              (session) =>
+                session?.status ===
+                "open"
+            ) ||
+          null;
+
+        if (!currentOpenSession) {
+          showToast(
+            "Abrí una caja antes de convertir fondos",
+            true
+          );
+
+          return false;
+        }
+
+        if (!cloudActiveRef.current) {
+          showToast(
+            "Necesitás conexión con la nube para convertir fondos",
+            true
+          );
+
+          return false;
+        }
+
+        const from = String(origen || "").trim();
+        const to = String(destino || "").trim();
+        const amount = roundMoney(
+          toNumber(importe, NaN)
+        );
+        const reason = String(motivo || "").trim();
+
+        if (
+          !["efectivo", "transferencia"].includes(from) ||
+          !["efectivo", "transferencia"].includes(to) ||
+          from === to
+        ) {
+          showToast(
+            "Elegí un origen y destino válidos",
+            true
+          );
+
+          return false;
+        }
+
+        if (!Number.isFinite(amount) || amount <= 0) {
+          showToast(
+            "Ingresá un importe válido",
+            true
+          );
+
+          return false;
+        }
+
+        if (reason.length < 3) {
+          showToast(
+            "Ingresá un motivo para la conversión",
+            true
+          );
+
+          return false;
+        }
+
+        const conversionId = uid();
+        convertingFundsRef.current = true;
+
+        try {
+          const result =
+            await convertFundsCloud(
+              cleanClienteId,
+              {
+                conversionId,
+                cashSessionId: currentOpenSession.id,
+                origen: from,
+                destino: to,
+                importe: amount,
+                motivo: reason,
+              },
+              {
+                operadorSesion,
+                deviceId: cleanDeviceId,
+              }
+            );
+
+          if (
+            result?.session &&
+            result.session.id === currentOpenSession.id
+          ) {
+            persistCashSessions(
+              cashSessionsRef.current.map(
+                (session) =>
+                  session.id === currentOpenSession.id
+                    ? {
+                        ...session,
+                        ...result.session,
+                      }
+                    : session
+              )
+            );
+          }
+
+          showToast(
+            "Conversión de fondos registrada"
+          );
+
+          return result?.conversion || result;
+        } catch (error) {
+          console.error(
+            "Error convirtiendo fondos:",
+            error
+          );
+
+          showToast(
+            String(
+              error?.message ||
+                mapCloudError(error)
+            ),
+            true
+          );
+
+          return false;
+        } finally {
+          convertingFundsRef.current = false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorEsAdministrador,
+        operadorSesion,
+        persistCashSessions,
+        showToast,
+      ]
+    );
+
+  /* =========================================================
      ELIMINAR CIERRE HISTÓRICO
   ========================================================= */
 
@@ -8077,6 +8246,7 @@ export function usePosData({
 
     openCashSession,
     closeCashSession,
+    convertFunds,
     deleteCashSession,
 
     createManualReceivable,
