@@ -303,18 +303,9 @@ export function createReceivableDebtTicketPayload({
     address: cleanText(ticketConfig.address),
     phone: cleanText(ticketConfig.phone),
     footerText: cleanText(ticketConfig.footerText),
-    operatorName: cleanText(
-      data?.creadoPor?.operadorNombre ||
-        data?.operadorNombre
-    ),
     customerName: cleanText(data.clienteNombre),
     customerPhone: cleanText(data.clienteTelefono),
-    concept: cleanText(data.concepto),
-    originalAmount: toNumber(data.importeOriginal),
-    totalPaid: toNumber(data.totalPagado),
     remainingBalance: toNumber(data.saldoPendiente),
-    originDate: data.fechaOrigen || data.createdAt || data.fecha,
-    dueDate: data.vencimiento || "",
     generatedAt: new Date().toISOString(),
     defaultWidth: Number(ticketConfig.defaultWidth) === 80 ? 80 : 58,
   };
@@ -349,10 +340,6 @@ function buildReceivableDebtLines(ticket, width = 58) {
   lines.push(pair("Cuenta", getDisplayTicketId(ticket), columns));
   lines.push(pair("Emitido", formatDate(ticket?.generatedAt), columns));
 
-  if (ticket?.operatorName) {
-    lines.push(pair("Registrada por", ticket.operatorName, columns));
-  }
-
   lines.push(
     ...wrapText(
       `Cliente: ${cleanText(ticket?.customerName) || "Sin informar"}`,
@@ -366,27 +353,7 @@ function buildReceivableDebtLines(ticket, width = 58) {
     );
   }
 
-  if (ticket?.concept) {
-    lines.push(
-      ...wrapText(`Concepto: ${ticket.concept}`, columns)
-    );
-  }
-
-  if (ticket?.originDate) {
-    lines.push(pair("Fecha origen", formatDateOnly(ticket.originDate), columns));
-  }
-
-  if (ticket?.dueDate) {
-    lines.push(pair("Vencimiento", formatDateOnly(ticket.dueDate), columns));
-  }
-
   lines.push(separator);
-  lines.push(
-    pair("Importe original", formatMoney(ticket?.originalAmount), columns)
-  );
-  lines.push(
-    pair("Total pagado", formatMoney(ticket?.totalPaid), columns)
-  );
   lines.push(
     pair("SALDO PENDIENTE", formatMoney(ticket?.remainingBalance), columns)
   );
