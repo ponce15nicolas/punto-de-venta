@@ -818,6 +818,7 @@ function CompleteShoppingModal({
     productoBarcode: "",
     cantidadStock: "1",
     generarCuentaPorPagar: false,
+    metodoPago: "efectivo",
     vencimiento: "",
   });
   const [saving, setSaving] =
@@ -853,6 +854,7 @@ function CompleteShoppingModal({
           ? String(quantity)
           : "1",
       generarCuentaPorPagar: false,
+      metodoPago: "efectivo",
       vencimiento: "",
     });
     setSaving(false);
@@ -885,6 +887,9 @@ function CompleteShoppingModal({
     try {
       await onSave({
         ...form,
+        generarCuentaPorPagar:
+          form.metodoPago ===
+          "cuenta",
         costoReal:
           toNumber(
             form.costoReal,
@@ -991,27 +996,53 @@ function CompleteShoppingModal({
           </>
         )}
 
-        <CheckRow
-          checked={form.generarCuentaPorPagar}
-          onChange={(checked) =>
-            set(
-              "generarCuentaPorPagar",
-              checked
-            )
-          }
-          title="Queda pendiente de pago"
-          text="Creará automáticamente una cuenta por pagar por el costo real."
-        />
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-bold text-white/55">
+            Forma de pago
+          </span>
+          <select
+            value={form.metodoPago}
+            onChange={(event) => {
+              const value =
+                event.target.value;
 
-        {form.generarCuentaPorPagar && (
-          <InputField
-            label="Vencimiento (opcional)"
-            type="date"
-            value={form.vencimiento}
-            onChange={(value) =>
-              set("vencimiento", value)
-            }
-          />
+              set(
+                "metodoPago",
+                value
+              );
+              set(
+                "generarCuentaPorPagar",
+                value === "cuenta"
+              );
+            }}
+            className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-3.5 py-3 text-sm font-bold text-white outline-none focus:border-[#FFC61A]"
+          >
+            <option value="efectivo">
+              Efectivo
+            </option>
+            <option value="transferencia">
+              Transferencia
+            </option>
+            <option value="cuenta">
+              Cuenta por pagar
+            </option>
+          </select>
+        </label>
+
+        {form.metodoPago === "cuenta" && (
+          <>
+            <p className="rounded-2xl border border-[#FFC61A]/15 bg-[#FFC61A]/10 px-3.5 py-3 text-[11px] leading-relaxed text-white/50">
+              La compra quedará pendiente y recién se descontará de fondos cuando registres el pago.
+            </p>
+            <InputField
+              label="Vencimiento (opcional)"
+              type="date"
+              value={form.vencimiento}
+              onChange={(value) =>
+                set("vencimiento", value)
+              }
+            />
+          </>
         )}
 
         <PrimaryButton
@@ -1019,7 +1050,7 @@ function CompleteShoppingModal({
             saving ||
             (form.sumarStock &&
               !form.productoBarcode) ||
-            (form.generarCuentaPorPagar &&
+            (form.metodoPago === "cuenta" &&
               toNumber(form.costoReal) <= 0)
           }
           onClick={submit}

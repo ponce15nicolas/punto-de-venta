@@ -1067,6 +1067,9 @@ export default function Ganancias({ pos }) {
   const [migrationSaving, setMigrationSaving] =
     useState(false);
 
+  const [otherCostOpen, setOtherCostOpen] =
+    useState(false);
+
   const sales = Array.isArray(
     pos?.sales
   )
@@ -1075,6 +1078,29 @@ export default function Ganancias({ pos }) {
 
   const catalog =
     pos?.catalog || {};
+
+  const shoppingList =
+    Array.isArray(pos?.shoppingList)
+      ? pos.shoppingList
+      : [];
+
+  const accountsPayable =
+    Array.isArray(pos?.accountsPayable)
+      ? pos.accountsPayable
+      : [];
+
+  const accountsReceivable =
+    Array.isArray(pos?.accountsReceivable)
+      ? pos.accountsReceivable
+      : [];
+
+  const otherCosts =
+    Array.isArray(pos?.otherCosts)
+      ? pos.otherCosts
+      : [];
+
+  const activeActivity =
+    pos?.activeActivity || null;
 
   const historicalData =
     useMemo(
@@ -1485,6 +1511,217 @@ export default function Ganancias({ pos }) {
     };
   }, [periodSales]);
 
+  const activityFinancial = useMemo(() => {
+    const startMs = activeActivity?.startedAt
+      ? new Date(activeActivity.startedAt).getTime()
+      : Number.NaN;
+
+    const inActivity = (value) => {
+      if (!Number.isFinite(startMs)) {
+        return true;
+      }
+
+      const ms = value
+        ? new Date(value).getTime()
+        : Number.NaN;
+
+      return Number.isFinite(ms) && ms >= startMs;
+    };
+
+    const activitySales = sales.filter((sale) =>
+      inActivity(
+        sale?.timestamp ||
+        sale?.createdAt
+      )
+    );
+
+    let revenue = 0;
+    let cost = 0;
+    let profit = 0;
+    let pendingCost = 0;
+
+    const receivableMap = new Map();
+
+    for (const account of accountsReceivable) {
+      const ids = [
+        account?.id,
+        ...(Array.isArray(account?.cuentaIds)
+          ? account.cuentaIds
+          : []),
+        ...(Array.isArray(account?.cuentasOrigen)
+          ? account.cuentasOrigen.map(
+              (source) => source?.id
+            )
+          : []),
+      ];
+
+      for (const id of ids) {
+        if (id) {
+          receivableMap.set(
+            String(id),
+            account
+          );
+        }
+      }
+    }
+
+    for (const sale of activitySales) {
+      const snapshot =
+        getSaleProfitSnapshot(sale);
+
+      revenue += snapshot.revenue;
+
+      if (!snapshot.known) {
+        continue;
+      }
+
+      cost += snapshot.cost;
+      profit += snapshot.profit;
+
+      if (
+        sale?.payment?.method === "cuenta" &&
+        sale?.cuentaPorCobrarId
+      ) {
+        const account = receivableMap.get(
+          String(sale.cuentaPorCobrarId)
+        );
+        const original = Math.max(
+          0,
+          toNumber(account?.importeOriginal)
+        );
+        const pending = Math.max(
+          0,
+          toNumber(account?.saldoPendiente)
+        );
+        const pendingRatio = original > 0
+          ? Math.min(1, pending / original)
+          : 1;
+
+        pendingCost +=
+          snapshot.cost * pendingRatio;
+      }
+    }
+
+    const directPurchases = shoppingList
+      .filter((item) =>
+        item?.estado === "comprado" &&
+        item?.pagoEstado === "pagado" &&
+        ["efectivo", "transferencia"].includes(
+          item?.metodoPago
+        ) &&
+        inActivity(item?.compradoEn)
+      )
+      .reduce(
+        (sum, item) =>
+          sum + Math.max(0, toNumber(item?.importePagado ?? item?.costoReal)),
+        0
+      );
+
+    const payablePurchasePayments = accountsPayable
+      .filter((account) =>
+        account?.origen === "compra" ||
+        Boolean(account?.compraId)
+      )
+      .flatMap((account) =>
+        Array.isArray(account?.pagos)
+          ? account.pagos
+          : []
+      )
+      .filter((payment) =>
+        inActivity(payment?.fecha)
+      )
+      .reduce(
+        (sum, payment) =>
+          sum + Math.max(0, toNumber(payment?.importe)),
+        0
+      );
+
+    const paidPurchases = roundMoney(
+      directPurchases + payablePurchasePayments
+    );
+
+    const activityOtherCosts = otherCosts
+      .filter((costItem) =>
+        !activeActivity?.id ||
+        costItem?.activityId === activeActivity.id
+      );
+
+    const otherCostsTotal = roundMoney(
+      activityOtherCosts.reduce(
+        (sum, costItem) =>
+          sum + Math.max(0, toNumber(costItem?.importe)),
+        0
+      )
+    );
+
+    const openingFund = roundMoney(
+      Math.max(
+        0,
+        toNumber(activeActivity?.openingReplacementFund)
+      )
+    );
+
+    const availableRecoveredCost = roundMoney(
+      Math.max(0, cost - pendingCost)
+    );
+
+    const replacementBeforeExpenses = roundMoney(
+      openingFund + availableRecoveredCost - paidPurchases
+    );
+
+    const purchaseExcess = roundMoney(
+      Math.max(0, -replacementBeforeExpenses)
+    );
+
+    const replacementBase = roundMoney(
+      Math.max(0, replacementBeforeExpenses)
+    );
+
+    const availableProfit = roundMoney(
+      Math.max(0, profit - otherCostsTotal)
+    );
+
+    const expensesBeyondProfit = roundMoney(
+      Math.max(0, otherCostsTotal - profit)
+    );
+
+    const unreplacedMerchandise = roundMoney(
+      Math.min(replacementBase, expensesBeyondProfit)
+    );
+
+    const replacementFund = roundMoney(
+      Math.max(0, replacementBase - expensesBeyondProfit)
+    );
+
+    const externalDeficit = roundMoney(
+      Math.max(0, expensesBeyondProfit - replacementBase)
+    );
+
+    return {
+      revenue: roundMoney(revenue),
+      cost: roundMoney(cost),
+      profit: roundMoney(profit),
+      pendingCost: roundMoney(pendingCost),
+      availableRecoveredCost,
+      openingFund,
+      paidPurchases,
+      purchaseExcess,
+      otherCostsTotal,
+      availableProfit,
+      unreplacedMerchandise,
+      replacementFund,
+      externalDeficit,
+      otherCostsCount: activityOtherCosts.length,
+    };
+  }, [
+    activeActivity,
+    accountsPayable,
+    accountsReceivable,
+    otherCosts,
+    sales,
+    shoppingList,
+  ]);
+
   const products = useMemo(() => {
     const map = new Map();
 
@@ -1773,6 +2010,82 @@ export default function Ganancias({ pos }) {
             </div>
           )}
         </div>
+      </section>
+
+      <section className="mb-4 rounded-[24px] border border-white/10 bg-[#11151C] p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[9px] font-extrabold uppercase tracking-[0.14em] text-[#FFC61A]">
+              Actividad actual
+            </p>
+            <h3 className="mt-1 text-base font-black text-white">
+              Reposición y resultado disponible
+            </h3>
+            <p className="mt-1 text-[11px] leading-relaxed text-white/40">
+              Las compras de mercadería usan capital recuperado. Los otros costos reducen primero la ganancia disponible.
+            </p>
+          </div>
+
+          {esAdministrador && (
+            <button
+              type="button"
+              onClick={() => setOtherCostOpen(true)}
+              className="shrink-0 rounded-xl bg-[#FFC61A] px-3 py-2 text-xs font-extrabold text-black"
+            >
+              + Costo
+            </button>
+          )}
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+          <ActivityStat
+            label="Fondo reposición"
+            value={money(activityFinancial.replacementFund)}
+          />
+          <ActivityStat
+            label="Compras pagadas"
+            value={money(activityFinancial.paidPurchases)}
+          />
+          <ActivityStat
+            label="Otros costos"
+            value={money(activityFinancial.otherCostsTotal)}
+          />
+          <ActivityStat
+            label="Ganancia disponible"
+            value={money(activityFinancial.availableProfit)}
+            highlight
+          />
+          <ActivityStat
+            label="Costo pend. de cobro"
+            value={money(activityFinancial.pendingCost)}
+          />
+          <ActivityStat
+            label="Costo recuperado disp."
+            value={money(activityFinancial.availableRecoveredCost)}
+          />
+        </div>
+
+        {activityFinancial.purchaseExcess > 0 && (
+          <FinanceNotice
+            title="Compra sobre fondo de reposición"
+            text={`Las compras superan en ${money(activityFinancial.purchaseExcess)} el capital de reposición disponible. No se descuenta automáticamente de la ganancia.`}
+          />
+        )}
+
+        {activityFinancial.unreplacedMerchandise > 0 && (
+          <FinanceNotice
+            title="Mercadería no repuesta"
+            text={`${money(activityFinancial.unreplacedMerchandise)} del capital de reposición fue utilizado para cubrir otros costos. No es ganancia.`}
+          />
+        )}
+
+        {activityFinancial.externalDeficit > 0 && (
+          <FinanceNotice
+            title="Fondos externos / déficit"
+            text={`${money(activityFinancial.externalDeficit)} exceden la ganancia y el fondo de reposición generado.`}
+            danger
+          />
+        )}
       </section>
 
       <section
@@ -2081,7 +2394,16 @@ export default function Ganancias({ pos }) {
         }}
         title="Ganancias históricas"
       >
-        <HistoricalMigrationModal
+        <OtherCostModal
+        open={otherCostOpen}
+        onClose={() => setOtherCostOpen(false)}
+        onSave={async (payload) => {
+          const ok = await pos?.createOtherCost?.(payload);
+          if (ok) setOtherCostOpen(false);
+        }}
+      />
+
+      <HistoricalMigrationModal
           historicalData={historicalData}
           draft={migrationDraft}
           config={migrationConfig}
@@ -2524,6 +2846,109 @@ function MigrationPreviewStat({
         {value}
       </strong>
     </div>
+  );
+}
+
+function ActivityStat({ label, value, highlight = false }) {
+  return (
+    <div className={
+      "rounded-2xl border p-3 " +
+      (highlight
+        ? "border-[#FFC61A]/25 bg-[#FFC61A]/10"
+        : "border-white/10 bg-white/[0.035]")
+    }>
+      <p className="text-[9px] font-extrabold uppercase tracking-[0.09em] text-white/35">
+        {label}
+      </p>
+      <strong className={
+        "mt-1 block text-sm font-black " +
+        (highlight ? "text-[#FFC61A]" : "text-white/80")
+      }>
+        {value}
+      </strong>
+    </div>
+  );
+}
+
+function FinanceNotice({ title, text, danger = false }) {
+  return (
+    <div className={
+      "mt-3 rounded-2xl border px-3.5 py-3 " +
+      (danger
+        ? "border-red-400/20 bg-red-400/10"
+        : "border-[#FFC61A]/15 bg-[#FFC61A]/[0.06]")
+    }>
+      <p className="text-xs font-black text-white/80">{title}</p>
+      <p className="mt-1 text-[11px] leading-relaxed text-white/45">{text}</p>
+    </div>
+  );
+}
+
+function OtherCostModal({ open, onClose, onSave }) {
+  const [concepto, setConcepto] = useState("");
+  const [importe, setImporte] = useState("");
+  const [metodoPago, setMetodoPago] = useState("efectivo");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (saving || !concepto.trim() || toNumber(importe) <= 0) return;
+    setSaving(true);
+    try {
+      await onSave?.({
+        concepto: concepto.trim(),
+        importe: toNumber(importe),
+        metodoPago,
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={saving ? undefined : onClose} title="Otro costo de actividad">
+      <div className="space-y-4">
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-bold text-white/55">Concepto</span>
+          <input
+            value={concepto}
+            onChange={(event) => setConcepto(event.target.value)}
+            maxLength={180}
+            placeholder="Ej: Flete, combustible, alquiler..."
+            className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-3.5 py-3 text-sm font-semibold text-white outline-none focus:border-[#FFC61A]"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-bold text-white/55">Importe</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={importe}
+            onChange={(event) => setImporte(event.target.value)}
+            className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-3.5 py-3 text-sm font-semibold text-white outline-none focus:border-[#FFC61A]"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-bold text-white/55">Medio de pago</span>
+          <select
+            value={metodoPago}
+            onChange={(event) => setMetodoPago(event.target.value)}
+            className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-3.5 py-3 text-sm font-bold text-white outline-none focus:border-[#FFC61A]"
+          >
+            <option value="efectivo">Efectivo</option>
+            <option value="transferencia">Transferencia</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={submit}
+          disabled={saving || !concepto.trim() || toNumber(importe) <= 0}
+          className="w-full rounded-2xl bg-[#FFC61A] px-4 py-3.5 text-sm font-extrabold text-black disabled:opacity-40"
+        >
+          {saving ? "Registrando..." : "Registrar costo"}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

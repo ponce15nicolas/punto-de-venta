@@ -142,6 +142,12 @@ const registrarPagoCuentaPorPagarFunction =
     "registrarPagoCuentaPorPagar"
   );
 
+const registrarOtroCostoActividadFunction =
+  httpsCallable(
+    functions,
+    "registrarOtroCostoActividad"
+  );
+
 const migrarGananciasHistoricasFunction =
   httpsCallable(
     functions,
@@ -3467,6 +3473,14 @@ export async function completeShoppingItemCloud(
           Boolean(
             payload?.generarCuentaPorPagar
           ),
+        metodoPago:
+          Boolean(
+            payload?.generarCuentaPorPagar
+          )
+            ? "cuenta"
+            : normalizePaymentMethod(
+                payload?.metodoPago
+              ),
         vencimiento:
           normalizeDateOnly(
             payload?.vencimiento
@@ -3624,6 +3638,92 @@ export async function registerPayablePaymentCloud(
         "register-payable-payment-failed",
       message:
         "No se pudo registrar el pago",
+    }
+  );
+}
+
+export async function createOtherCostCloud(
+  clienteId,
+  payload,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  const importe =
+    roundMoney(
+      toNumber(
+        payload?.importe,
+        NaN
+      )
+    );
+
+  if (
+    !Number.isFinite(importe) ||
+    importe <= 0
+  ) {
+    fail(
+      "invalid-amount",
+      "Ingresá un importe válido"
+    );
+  }
+
+  const metodoPago =
+    normalizePaymentMethod(
+      payload?.metodoPago
+    );
+
+  if (
+    ![
+      "efectivo",
+      "transferencia",
+    ].includes(metodoPago)
+  ) {
+    fail(
+      "invalid-payment-method",
+      "Elegí efectivo o transferencia"
+    );
+  }
+
+  return invokePurchasingCallable(
+    registrarOtroCostoActividadFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      costId:
+        requireString(
+          payload?.costId,
+          "costId"
+        ),
+      cost: {
+        concepto:
+          requireString(
+            payload?.concepto,
+            "concepto"
+          ).slice(0, 180),
+        categoria:
+          String(
+            payload?.categoria ||
+            ""
+          )
+            .trim()
+            .slice(0, 80),
+        importe,
+        metodoPago,
+      },
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "create-other-cost-failed",
+      message:
+        "No se pudo registrar el costo",
     }
   );
 }

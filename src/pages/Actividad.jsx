@@ -27,6 +27,7 @@ const ACTIONS = [
   { id: "cuenta-por-cobrar-saldada", label: "Saldadas" },
   { id: "alta-item-compra", label: "Lista compras" },
   { id: "compra-completada", label: "Compradas" },
+  { id: "otro-costo-actividad", label: "Otros costos" },
   { id: "alta-cuenta-por-pagar", label: "Ctas. pagar" },
   { id: "pago-cuenta-por-pagar", label: "Pagos deuda" },
   { id: "cuenta-por-pagar-saldada", label: "Deudas pagas" },
@@ -113,6 +114,11 @@ const ACTION_META = {
     title: "Compra registrada",
     eyebrow: "Compras",
     icon: PurchaseIcon,
+  },
+  "otro-costo-actividad": {
+    title: "Otro costo registrado",
+    eyebrow: "Actividad",
+    icon: WalletIcon,
   },
   "alta-cuenta-por-pagar": {
     title: "Cuenta por pagar creada",
@@ -1104,6 +1110,12 @@ function getEventDetails(event) {
           ),
         },
         {
+          label: "Forma de pago",
+          value: formatPaymentMethod(
+            d.metodoPago
+          ),
+        },
+        {
           label: "Producto",
           value: d.productoBarcode,
         },
@@ -1122,6 +1134,30 @@ function getEventDetails(event) {
         {
           label: "Cuenta por pagar",
           value: d.cuentaPorPagarId,
+        },
+      ]);
+
+    case "otro-costo-actividad":
+      return compactDetails([
+        {
+          label: "Concepto",
+          value: d.concepto,
+        },
+        {
+          label: "Categoría",
+          value: d.categoria,
+        },
+        {
+          label: "Importe",
+          value: formatMoney(
+            d.importe
+          ),
+        },
+        {
+          label: "Medio de pago",
+          value: formatPaymentMethod(
+            d.metodoPago
+          ),
         },
       ]);
 

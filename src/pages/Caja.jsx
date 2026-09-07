@@ -732,6 +732,38 @@ export default function Caja({
       ),
   };
 
+  const purchaseTotals =
+    openSession
+      ?.purchasePaymentTotals ||
+    {};
+
+  const otherCostTotals =
+    openSession
+      ?.otherCostTotals ||
+    {};
+
+  const safePurchaseTotals = {
+    efectivo:
+      roundMoney(
+        purchaseTotals.efectivo
+      ),
+    transferencia:
+      roundMoney(
+        purchaseTotals.transferencia
+      ),
+  };
+
+  const safeOtherCostTotals = {
+    efectivo:
+      roundMoney(
+        otherCostTotals.efectivo
+      ),
+    transferencia:
+      roundMoney(
+        otherCostTotals.transferencia
+      ),
+  };
+
   const safePayableTotals = {
     efectivo:
       roundMoney(
@@ -816,7 +848,9 @@ export default function Caja({
     roundMoney(
       openAmountNumber +
         safeTotals.efectivo -
-        safePayableTotals.efectivo +
+        safePayableTotals.efectivo -
+        safePurchaseTotals.efectivo -
+        safeOtherCostTotals.efectivo +
         safeFundConversionTotals.efectivo
     );
 
@@ -1941,7 +1975,7 @@ export default function Caja({
                 text-white/35
               "
             >
-              Incluye ventas y cobros de cuentas por cobrar en efectivo, menos los pagos de cuentas por pagar y el efecto neto de las conversiones de fondos. QR y tarjeta no modifican la caja física.
+              Incluye ventas y cobros en efectivo, menos compras pagadas, otros costos y pagos de cuentas por pagar, más el efecto neto de las conversiones de fondos. QR y tarjeta no modifican la caja física.
             </p>
           </div>
 

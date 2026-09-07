@@ -42,6 +42,7 @@ import {
   completeShoppingItemCloud,
   createManualPayableCloud,
   registerPayablePaymentCloud,
+  createOtherCostCloud,
   migrateHistoricalProfitsCloud,
   deleteCashSessionCloud,
   deleteProductCloud,
@@ -724,6 +725,16 @@ export function usePosData({
     accountsPayable,
     setAccountsPayable,
   ] = useState([]);
+
+  const [
+    otherCosts,
+    setOtherCosts,
+  ] = useState([]);
+
+  const [
+    activeActivity,
+    setActiveActivity,
+  ] = useState(null);
 
   const [
     promotions,
@@ -2372,6 +2383,22 @@ export function usePosData({
 
             setAccountsPayable(
               nextAccountsPayable
+            );
+
+            setOtherCosts(
+              Array.isArray(
+                data?.otherCosts
+              )
+                ? data.otherCosts
+                : []
+            );
+
+            setActiveActivity(
+              data?.activeActivity &&
+              typeof data.activeActivity ===
+                "object"
+                ? data.activeActivity
+                : null
             );
 
             accountsPayableRef.current =
@@ -7542,6 +7569,22 @@ export function usePosData({
             nextAccountsPayable
           );
 
+          setOtherCosts(
+            Array.isArray(
+              data?.otherCosts
+            )
+              ? data.otherCosts
+              : []
+          );
+
+          setActiveActivity(
+            data?.activeActivity &&
+            typeof data.activeActivity ===
+              "object"
+              ? data.activeActivity
+              : null
+          );
+
           accountsPayableRef.current =
             nextAccountsPayable;
 
@@ -7900,6 +7943,71 @@ export function usePosData({
       ]
     );
 
+  const createOtherCost =
+    useCallback(
+      async (payload) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para registrar el costo",
+            true
+          );
+
+          return false;
+        }
+
+        try {
+          await createOtherCostCloud(
+            cleanClienteId,
+            {
+              ...payload,
+              costId:
+                payload?.costId ||
+                uid(),
+            },
+            {
+              operadorSesion,
+              deviceId:
+                cleanDeviceId,
+            }
+          );
+
+          await refreshPurchasingData({
+            silent: true,
+          });
+
+          showToast(
+            "Costo registrado"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error registrando otro costo:",
+            error
+          );
+
+          showToast(
+            mapCloudError(
+              error
+            ),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        refreshPurchasingData,
+        showToast,
+      ]
+    );
+
   /* =========================================================
      CUENTAS POR COBRAR — ALTA MANUAL
   ========================================================= */
@@ -8200,6 +8308,8 @@ export function usePosData({
     accountsReceivable,
     shoppingList,
     accountsPayable,
+    otherCosts,
+    activeActivity,
     promotions,
 
     shopName,
@@ -8257,6 +8367,7 @@ export function usePosData({
     completeShoppingItem,
     createManualPayable,
     registerPayablePayment,
+    createOtherCost,
     migrateHistoricalProfits,
 
     paymentBreakdown,

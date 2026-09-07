@@ -1744,6 +1744,9 @@ const AUDIT_ACTIONS = Object.freeze({
     COMPRA_COMPLETADA:
         "compra-completada",
 
+    OTRO_COSTO_ACTIVIDAD:
+        "otro-costo-actividad",
+
     ALTA_CUENTA_POR_PAGAR:
         "alta-cuenta-por-pagar",
 
@@ -15569,6 +15572,12 @@ exports.registrarPagoCuentaPorCobrar =
                     }
                 );
 
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+
             const cuentaId =
                 validarId(
                     request.data
@@ -16087,6 +16096,9 @@ exports.registrarPagoCuentaPorCobrar =
 
                                 sessionId,
 
+                                activityId:
+                                    activeActivity.id,
+
                                 fecha,
 
                                 deviceId,
@@ -16566,6 +16578,117 @@ exports.registrarPagoCuentaPorCobrar =
     );
 
 /* =========================================================
+   ACTIVIDAD COMERCIAL — BASE
+========================================================= */
+
+async function asegurarActividadActual(
+    clienteRef,
+    operadorAutorizado = null
+) {
+    const configRef = clienteRef
+        .collection("configuracion")
+        .doc("pos");
+
+    const candidateRef = clienteRef
+        .collection("actividades")
+        .doc();
+
+    const startedAt =
+        admin.firestore.Timestamp.now();
+
+    return db.runTransaction(
+        async (transaction) => {
+            const configSnap =
+                await transaction.get(configRef);
+
+            const activeId =
+                normalizarIdDocumentoSeguro(
+                    configSnap.data()?.activeActivityId,
+                    180
+                );
+
+            if (activeId) {
+                const activeRef = clienteRef
+                    .collection("actividades")
+                    .doc(activeId);
+
+                const activeSnap =
+                    await transaction.get(activeRef);
+
+                if (
+                    activeSnap.exists &&
+                    activeSnap.data()?.status !== "closed"
+                ) {
+                    const data = activeSnap.data() || {};
+
+                    return {
+                        id: activeId,
+                        status: data.status || "open",
+                        startedAt: serializarFechaCompra(
+                            data.startedAt ||
+                            data.startedAtIso
+                        ),
+                        openingReplacementFund:
+                            redondearDineroCuentaPorCobrar(
+                                data.openingReplacementFund || 0
+                            ),
+                    };
+                }
+            }
+
+            const activityId = candidateRef.id;
+            const startedAtIso =
+                startedAt.toDate().toISOString();
+
+            transaction.set(candidateRef, {
+                id: activityId,
+                status: "open",
+                startedAt,
+                startedAtIso,
+                openingReplacementFund: 0,
+                creadoPor: operadorAutorizado
+                    ? {
+                        operadorId:
+                            operadorAutorizado.id,
+                        operadorNombre:
+                            textoSeguro(
+                                operadorAutorizado?.data?.nombre,
+                                80
+                            ),
+                        operadorRol:
+                            validarRolOperador(
+                                operadorAutorizado.rol
+                            ),
+                    }
+                    : null,
+                createdAt:
+                    admin.firestore.FieldValue.serverTimestamp(),
+                updatedAt:
+                    admin.firestore.FieldValue.serverTimestamp(),
+            });
+
+            transaction.set(
+                configRef,
+                {
+                    activeActivityId: activityId,
+                    activeActivityStartedAt: startedAt,
+                    updatedAt:
+                        admin.firestore.FieldValue.serverTimestamp(),
+                },
+                { merge: true }
+            );
+
+            return {
+                id: activityId,
+                status: "open",
+                startedAt: startedAtIso,
+                openingReplacementFund: 0,
+            };
+        }
+    );
+}
+
+/* =========================================================
    COMPRAS + CUENTAS POR PAGAR
 ========================================================= */
 
@@ -16668,6 +16791,21 @@ function serializarItemCompra(
             serializarFechaCompra(
                 data.compradoEn
             ),
+    };
+}
+
+function serializarOtroCostoActividad(
+    snapshot
+) {
+    const data = snapshot.data() || {};
+
+    return {
+        id: snapshot.id,
+        ...data,
+        creadoEn:
+            serializarFechaCompra(data.creadoEn),
+        actualizadoEn:
+            serializarFechaCompra(data.actualizadoEn),
     };
 }
 
@@ -16897,18 +17035,26 @@ exports.cargarCompras =
                     "deviceId"
                 );
 
-            await validarSesionOperadorInterna(
-                clienteRef,
-                request.data
-                    ?.operadorSesion,
-                {
-                    deviceId,
-                }
-            );
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data
+                        ?.operadorSesion,
+                    {
+                        deviceId,
+                    }
+                );
+
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
 
             const [
                 shoppingSnapshot,
                 payableSnapshot,
+                otherCostsSnapshot,
             ] =
                 await Promise.all([
                     clienteRef
@@ -16920,6 +17066,17 @@ exports.cargarCompras =
                     clienteRef
                         .collection(
                             "cuentasPorPagar"
+                        )
+                        .get(),
+
+                    clienteRef
+                        .collection(
+                            "otrosCostos"
+                        )
+                        .where(
+                            "activityId",
+                            "==",
+                            activeActivity.id
                         )
                         .get(),
                 ]);
@@ -16960,10 +17117,30 @@ exports.cargarCompras =
                             )
                     );
 
+            const otherCosts =
+                otherCostsSnapshot.docs
+                    .map(
+                        serializarOtroCostoActividad
+                    )
+                    .sort(
+                        (a, b) =>
+                            String(
+                                b.creadoEn ||
+                                ""
+                            ).localeCompare(
+                                String(
+                                    a.creadoEn ||
+                                    ""
+                                )
+                            )
+                    );
+
             return {
                 ok: true,
                 shoppingList,
                 accountsPayable,
+                activeActivity,
+                otherCosts,
             };
         }
     );
@@ -17178,6 +17355,12 @@ exports.marcarItemCompraComprado =
                     }
                 );
 
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+
             const compraId =
                 validarId(
                     request.data?.compraId,
@@ -17218,6 +17401,37 @@ exports.marcarItemCompraComprado =
                 Boolean(
                     payload.generarCuentaPorPagar
                 );
+
+            const metodoPagoCompra =
+                generarCuentaPorPagar
+                    ? "cuenta"
+                    : textoSeguro(
+                        payload.metodoPago,
+                        40
+                    ) || "efectivo";
+
+            if (
+                ![
+                    "efectivo",
+                    "transferencia",
+                    "cuenta",
+                ].includes(
+                    metodoPagoCompra
+                ) ||
+                (
+                    generarCuentaPorPagar &&
+                    metodoPagoCompra !== "cuenta"
+                ) ||
+                (
+                    !generarCuentaPorPagar &&
+                    metodoPagoCompra === "cuenta"
+                )
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Elegí una forma de pago válida para la compra."
+                );
+            }
 
             const conceptoCosto =
                 textoSeguro(
@@ -17549,6 +17763,9 @@ exports.marcarItemCompraComprado =
 
                                     compraId,
 
+                                    activityId:
+                                        activeActivity.id,
+
                                     totalPagado:
                                         0,
 
@@ -17622,6 +17839,22 @@ exports.marcarItemCompraComprado =
                                         ? cuentaRef.id
                                         : null,
 
+                                activityId:
+                                    activeActivity.id,
+
+                                metodoPago:
+                                    metodoPagoCompra,
+
+                                pagoEstado:
+                                    generarCuentaPorPagar
+                                        ? "pendiente"
+                                        : "pagado",
+
+                                importePagado:
+                                    generarCuentaPorPagar
+                                        ? 0
+                                        : costoReal,
+
                                 compradoEn:
                                     admin.firestore.FieldValue.serverTimestamp(),
 
@@ -17629,6 +17862,35 @@ exports.marcarItemCompraComprado =
                                     admin.firestore.FieldValue.serverTimestamp(),
                             }
                         );
+
+                        if (
+                            sessionId &&
+                            !generarCuentaPorPagar &&
+                            costoReal > 0
+                        ) {
+                            const sessionRef =
+                                clienteRef
+                                    .collection("cajas")
+                                    .doc(sessionId);
+
+                            transaction.update(
+                                sessionRef,
+                                {
+                                    [`purchasePaymentTotals.${metodoPagoCompra}`]:
+                                        admin.firestore.FieldValue.increment(
+                                            costoReal
+                                        ),
+                                    purchasePaymentsTotal:
+                                        admin.firestore.FieldValue.increment(
+                                            costoReal
+                                        ),
+                                    purchasePaymentsCount:
+                                        admin.firestore.FieldValue.increment(1),
+                                    updatedAt:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }
+                            );
+                        }
 
                         const eventoCompra =
                             crearEventoAuditoria({
@@ -17649,6 +17911,14 @@ exports.marcarItemCompraComprado =
                                         ),
                                     proveedor,
                                     costoReal,
+                                    activityId:
+                                        activeActivity.id,
+                                    metodoPago:
+                                        metodoPagoCompra,
+                                    pagoEstado:
+                                        generarCuentaPorPagar
+                                            ? "pendiente"
+                                            : "pagado",
                                     productoBarcode,
                                     cantidadStock:
                                         sumarStock
@@ -17710,6 +17980,10 @@ exports.marcarItemCompraComprado =
 
                             stockNuevo,
                             costoNuevo,
+                            activityId:
+                                activeActivity.id,
+                            metodoPago:
+                                metodoPagoCompra,
                         };
                     }
                 );
@@ -17717,6 +17991,276 @@ exports.marcarItemCompraComprado =
             return {
                 ok: true,
                 ...result,
+            };
+        }
+    );
+
+exports.registrarOtroCostoActividad =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(
+                clienteData
+            );
+
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data?.operadorSesion,
+                    {
+                        deviceId,
+                        requireRole:
+                            "administrador",
+                    }
+                );
+
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+
+            const costId =
+                validarId(
+                    request.data?.costId,
+                    "costId"
+                );
+
+            const rawCost =
+                esObjetoPlano(
+                    request.data?.cost
+                )
+                    ? request.data.cost
+                    : {};
+
+            const concepto =
+                textoSeguro(
+                    rawCost.concepto,
+                    180
+                );
+
+            const categoria =
+                textoSeguro(
+                    rawCost.categoria,
+                    80
+                );
+
+            const importe =
+                redondearDineroCuentaPorCobrar(
+                    rawCost.importe
+                );
+
+            const metodoPago =
+                textoSeguro(
+                    rawCost.metodoPago,
+                    40
+                ) || "efectivo";
+
+            if (!concepto) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El concepto del costo es obligatorio."
+                );
+            }
+
+            if (
+                !Number.isFinite(importe) ||
+                importe <= 0 ||
+                importe > 999999999999
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá un importe válido."
+                );
+            }
+
+            if (
+                ![
+                    "efectivo",
+                    "transferencia",
+                ].includes(metodoPago)
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El medio de pago del costo no es válido."
+                );
+            }
+
+            const costRef =
+                clienteRef
+                    .collection("otrosCostos")
+                    .doc(costId);
+
+            const result =
+                await db.runTransaction(
+                    async (transaction) => {
+                        const sessionId =
+                            await obtenerSessionIdCajaAbiertaEnTransaccion(
+                                transaction,
+                                clienteRef
+                            );
+
+                        const existingSnap =
+                            await transaction.get(
+                                costRef
+                            );
+
+                        if (existingSnap.exists) {
+                            const existing =
+                                existingSnap.data() || {};
+
+                            if (
+                                textoSeguro(
+                                    existing.activityId,
+                                    180
+                                ) !== activeActivity.id ||
+                                redondearDineroCuentaPorCobrar(
+                                    existing.importe
+                                ) !== importe ||
+                                textoSeguro(
+                                    existing.concepto,
+                                    180
+                                ) !== concepto
+                            ) {
+                                throw new HttpsError(
+                                    "already-exists",
+                                    "El identificador del costo ya fue utilizado."
+                                );
+                            }
+
+                            return {
+                                alreadyExists: true,
+                                sessionId:
+                                    existing.sessionId ||
+                                    null,
+                            };
+                        }
+
+                        const fecha =
+                            admin.firestore.Timestamp.now();
+
+                        transaction.set(
+                            costRef,
+                            {
+                                id: costId,
+                                activityId:
+                                    activeActivity.id,
+                                concepto,
+                                categoria,
+                                importe,
+                                metodoPago,
+                                sessionId,
+                                operadorId:
+                                    operadorAutorizado.id,
+                                operadorNombre:
+                                    textoSeguro(
+                                        operadorAutorizado?.data?.nombre,
+                                        80
+                                    ),
+                                operadorRol:
+                                    validarRolOperador(
+                                        operadorAutorizado.rol
+                                    ),
+                                creadoEn: fecha,
+                                actualizadoEn: fecha,
+                            }
+                        );
+
+                        if (sessionId) {
+                            const sessionRef =
+                                clienteRef
+                                    .collection("cajas")
+                                    .doc(sessionId);
+
+                            transaction.update(
+                                sessionRef,
+                                {
+                                    [`otherCostTotals.${metodoPago}`]:
+                                        admin.firestore.FieldValue.increment(
+                                            importe
+                                        ),
+                                    otherCostsTotal:
+                                        admin.firestore.FieldValue.increment(
+                                            importe
+                                        ),
+                                    otherCostsCount:
+                                        admin.firestore.FieldValue.increment(1),
+                                    updatedAt:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }
+                            );
+                        }
+
+                        const evento =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador:
+                                    operadorAutorizado,
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .OTRO_COSTO_ACTIVIDAD,
+                                sessionId,
+                                deviceId,
+                                detalle: {
+                                    costId,
+                                    activityId:
+                                        activeActivity.id,
+                                    concepto,
+                                    categoria,
+                                    importe,
+                                    metodoPago,
+                                },
+                            });
+
+                        transaction.set(
+                            evento.ref,
+                            evento.data
+                        );
+
+                        return {
+                            alreadyExists: false,
+                            sessionId,
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+                cost: {
+                    id: costId,
+                    activityId:
+                        activeActivity.id,
+                    concepto,
+                    categoria,
+                    importe,
+                    metodoPago,
+                    sessionId:
+                        result.sessionId,
+                },
+                alreadyExists:
+                    result.alreadyExists,
             };
         }
     );
@@ -17936,6 +18480,12 @@ exports.registrarPagoCuentaPorPagar =
                     {
                         deviceId,
                     }
+                );
+
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
                 );
 
             const cuentaId =
@@ -18158,6 +18708,8 @@ exports.registrarPagoCuentaPorPagar =
                             importe,
                             metodoPago,
                             sessionId,
+                            activityId:
+                                activeActivity.id,
                             fecha,
                             operadorId:
                                 operadorAutorizado.id,
@@ -21228,6 +21780,12 @@ exports.registrarVenta =
                     }
                 );
 
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+
             const saleId =
                 validarId(
                     request.data?.saleId,
@@ -22421,6 +22979,9 @@ exports.registrarVenta =
                                 "exact",
 
                             sessionId,
+
+                            activityId:
+                                activeActivity.id,
 
                             payment: {
                                 method:
