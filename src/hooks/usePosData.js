@@ -6868,6 +6868,17 @@ export function usePosData({
                   0,
               },
 
+              fundConversionTotals: {
+                efectivo:
+                  0,
+
+                transferencia:
+                  0,
+              },
+
+              fundConversionCount:
+                0,
+
               status:
                 "open",
             };
@@ -7066,6 +7077,11 @@ export function usePosData({
                 ) +
                   toNumber(
                     totals.efectivo
+                  ) +
+                  toNumber(
+                    currentOpenSession
+                      ?.fundConversionTotals
+                      ?.efectivo
                   )
               );
 

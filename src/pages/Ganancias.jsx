@@ -1070,6 +1070,9 @@ export default function Ganancias({ pos }) {
   const [otherCostOpen, setOtherCostOpen] =
     useState(false);
 
+  const [fundsOpen, setFundsOpen] =
+    useState(false);
+
   const sales = Array.isArray(
     pos?.sales
   )
@@ -2012,81 +2015,41 @@ export default function Ganancias({ pos }) {
         </div>
       </section>
 
-      <section className="mb-4 rounded-[24px] border border-white/10 bg-[#11151C] p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[9px] font-extrabold uppercase tracking-[0.14em] text-[#FFC61A]">
-              Actividad actual
-            </p>
-            <h3 className="mt-1 text-base font-black text-white">
-              Reposición y resultado disponible
-            </h3>
-            <p className="mt-1 text-[11px] leading-relaxed text-white/40">
-              Las compras de mercadería usan capital recuperado. Los otros costos reducen primero la ganancia disponible.
-            </p>
-          </div>
-
-          {esAdministrador && (
-            <button
-              type="button"
-              onClick={() => setOtherCostOpen(true)}
-              className="shrink-0 rounded-xl bg-[#FFC61A] px-3 py-2 text-xs font-extrabold text-black"
-            >
-              + Costo
-            </button>
-          )}
+      <button
+        type="button"
+        onClick={() => setFundsOpen(true)}
+        className="
+          mb-4 flex w-full items-center justify-between gap-3
+          rounded-[22px] border border-white/10 bg-[#11151C]
+          p-4 text-left transition
+          hover:border-[#FFC61A]/25 hover:bg-[#151A22]
+          active:scale-[0.995]
+        "
+      >
+        <div className="min-w-0">
+          <p className="text-[9px] font-extrabold uppercase tracking-[0.14em] text-[#FFC61A]">
+            Actividad actual
+          </p>
+          <h3 className="mt-1 text-base font-black text-white">
+            Fondos y reposición
+          </h3>
+          <p className="mt-1 text-[11px] leading-relaxed text-white/40">
+            Capital recuperado, pendientes y resultado disponible.
+          </p>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-          <ActivityStat
-            label="Fondo reposición"
-            value={money(activityFinancial.replacementFund)}
-          />
-          <ActivityStat
-            label="Compras pagadas"
-            value={money(activityFinancial.paidPurchases)}
-          />
-          <ActivityStat
-            label="Otros costos"
-            value={money(activityFinancial.otherCostsTotal)}
-          />
-          <ActivityStat
-            label="Ganancia disponible"
-            value={money(activityFinancial.availableProfit)}
-            highlight
-          />
-          <ActivityStat
-            label="Costo pend. de cobro"
-            value={money(activityFinancial.pendingCost)}
-          />
-          <ActivityStat
-            label="Costo recuperado disp."
-            value={money(activityFinancial.availableRecoveredCost)}
-          />
+        <div className="shrink-0 text-right">
+          <span className="block text-[9px] font-extrabold uppercase tracking-[0.1em] text-white/30">
+            Disponible
+          </span>
+          <strong className="mt-1 block text-sm font-black text-[#FFC61A]">
+            {money(activityFinancial.replacementFund)}
+          </strong>
+          <span className="mt-1 block text-[10px] font-bold text-white/35">
+            Ver detalle →
+          </span>
         </div>
-
-        {activityFinancial.purchaseExcess > 0 && (
-          <FinanceNotice
-            title="Compra sobre fondo de reposición"
-            text={`Las compras superan en ${money(activityFinancial.purchaseExcess)} el capital de reposición disponible. No se descuenta automáticamente de la ganancia.`}
-          />
-        )}
-
-        {activityFinancial.unreplacedMerchandise > 0 && (
-          <FinanceNotice
-            title="Mercadería no repuesta"
-            text={`${money(activityFinancial.unreplacedMerchandise)} del capital de reposición fue utilizado para cubrir otros costos. No es ganancia.`}
-          />
-        )}
-
-        {activityFinancial.externalDeficit > 0 && (
-          <FinanceNotice
-            title="Fondos externos / déficit"
-            text={`${money(activityFinancial.externalDeficit)} exceden la ganancia y el fondo de reposición generado.`}
-            danger
-          />
-        )}
-      </section>
+      </button>
 
       <section
         className="
@@ -2386,15 +2349,91 @@ export default function Ganancias({ pos }) {
       </section>
 
       <Modal
-        open={migrationOpen}
-        onClose={() => {
-          if (!migrationSaving) {
-            setMigrationOpen(false);
-          }
-        }}
-        title="Ganancias históricas"
+        open={fundsOpen}
+        onClose={() => setFundsOpen(false)}
+        title="Fondos y reposición"
       >
-        <OtherCostModal
+        <div className="space-y-3">
+          <div className="rounded-[20px] border border-white/10 bg-white/[0.035] p-3.5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[9px] font-extrabold uppercase tracking-[0.14em] text-[#FFC61A]">
+                  Actividad actual
+                </p>
+                <p className="mt-1 text-[11px] leading-relaxed text-white/40">
+                  El costo vendido puede ser mayor al capital recuperado cuando existen ventas pendientes de cobro.
+                </p>
+              </div>
+
+              {esAdministrador && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFundsOpen(false);
+                    setOtherCostOpen(true);
+                  }}
+                  className="shrink-0 rounded-xl bg-[#FFC61A] px-3 py-2 text-xs font-extrabold text-black"
+                >
+                  + Costo
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+            <ActivityStat
+              label="Capital recuperado"
+              value={money(activityFinancial.availableRecoveredCost)}
+            />
+            <ActivityStat
+              label="Pendiente de recuperar"
+              value={money(activityFinancial.pendingCost)}
+            />
+            <ActivityStat
+              label="Disponible reposición"
+              value={money(activityFinancial.replacementFund)}
+              highlight
+            />
+            <ActivityStat
+              label="Compras pagadas"
+              value={money(activityFinancial.paidPurchases)}
+            />
+            <ActivityStat
+              label="Otros costos"
+              value={money(activityFinancial.otherCostsTotal)}
+            />
+            <ActivityStat
+              label="Ganancia disponible"
+              value={money(activityFinancial.availableProfit)}
+              highlight
+            />
+          </div>
+
+          {activityFinancial.purchaseExcess > 0 && (
+            <FinanceNotice
+              title="Compra sobre fondo de reposición"
+              text={`Las compras superan en ${money(activityFinancial.purchaseExcess)} el capital de reposición disponible. No se descuenta automáticamente de la ganancia.`}
+            />
+          )}
+
+          {activityFinancial.unreplacedMerchandise > 0 && (
+            <FinanceNotice
+              title="Mercadería no repuesta"
+              text={`${money(activityFinancial.unreplacedMerchandise)} del capital de reposición fue utilizado para cubrir otros costos. No es ganancia.`}
+            />
+          )}
+
+          {activityFinancial.externalDeficit > 0 && (
+            <FinanceNotice
+              title="Fondos externos / déficit"
+              text={`${money(activityFinancial.externalDeficit)} exceden la ganancia y el fondo de reposición generado.`}
+              danger
+            />
+          )}
+        </div>
+      </Modal>
+
+      <OtherCostModal
         open={otherCostOpen}
         onClose={() => setOtherCostOpen(false)}
         onSave={async (payload) => {
@@ -2403,7 +2442,16 @@ export default function Ganancias({ pos }) {
         }}
       />
 
-      <HistoricalMigrationModal
+      <Modal
+        open={migrationOpen}
+        onClose={() => {
+          if (!migrationSaving) {
+            setMigrationOpen(false);
+          }
+        }}
+        title="Ganancias históricas"
+      >
+        <HistoricalMigrationModal
           historicalData={historicalData}
           draft={migrationDraft}
           config={migrationConfig}

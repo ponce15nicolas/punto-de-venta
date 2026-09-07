@@ -167,6 +167,136 @@ function roundMoney(value) {
   );
 }
 
+function getCashClosureMetrics(
+  session
+) {
+  const storedExpected =
+    roundMoney(
+      session?.expectedAmount
+    );
+
+  const storedDiff =
+    roundMoney(
+      session?.diff
+    );
+
+  const conversionCash =
+    roundMoney(
+      session
+        ?.fundConversionTotals
+        ?.efectivo
+    );
+
+  if (
+    !session ||
+    Math.abs(
+      conversionCash
+    ) < 0.005 ||
+    !Number.isFinite(
+      Number(
+        session?.expectedAmount
+      )
+    )
+  ) {
+    return {
+      expected:
+        storedExpected,
+      diff:
+        storedDiff,
+      adjusted:
+        false,
+    };
+  }
+
+  const expectedWithoutConversion =
+    roundMoney(
+      toNumber(
+        session?.openAmount
+      ) +
+      toNumber(
+        session
+          ?.paymentTotals
+          ?.efectivo
+      ) +
+      toNumber(
+        session
+          ?.receivablePaymentTotals
+          ?.efectivo
+      ) -
+      toNumber(
+        session
+          ?.payablePaymentTotals
+          ?.efectivo
+      )
+    );
+
+  const expectedWithConversion =
+    roundMoney(
+      expectedWithoutConversion +
+      conversionCash
+    );
+
+  const omittedConversion =
+    Math.abs(
+      storedExpected -
+      expectedWithoutConversion
+    ) <= 0.01 &&
+    Math.abs(
+      storedExpected -
+      expectedWithConversion
+    ) > 0.01;
+
+  if (!omittedConversion) {
+    return {
+      expected:
+        storedExpected,
+      diff:
+        storedDiff,
+      adjusted:
+        false,
+    };
+  }
+
+  const counted =
+    roundMoney(
+      session?.counted ??
+      session?.closeAmount
+    );
+
+  return {
+    expected:
+      expectedWithConversion,
+    diff:
+      roundMoney(
+        counted -
+        expectedWithConversion
+      ),
+    adjusted:
+      true,
+  };
+}
+
+function normalizeCashSessionForHistory(
+  session
+) {
+  const metrics =
+    getCashClosureMetrics(
+      session
+    );
+
+  if (!metrics.adjusted) {
+    return session;
+  }
+
+  return {
+    ...session,
+    expectedAmount:
+      metrics.expected,
+    diff:
+      metrics.diff,
+  };
+}
+
 function roundQuantity(value) {
   return (
     Math.round(
@@ -1628,7 +1758,10 @@ export default function Historial({
         );
 
       downloadSessionPdf({
-        session,
+        session:
+          normalizeCashSessionForHistory(
+            session
+          ),
 
         sales:
           sessionSales,
@@ -1927,9 +2060,9 @@ export default function Historial({
           session
         ) =>
           accumulator +
-          toNumber(
-            session?.diff
-          ),
+          getCashClosureMetrics(
+            session
+          ).diff,
         0
       )
     );
@@ -2335,9 +2468,9 @@ function SessionCard({
   onClick,
 }) {
   const diff =
-    roundMoney(
-      session?.diff
-    );
+    getCashClosureMetrics(
+      session
+    ).diff;
 
   const diffTone =
     diff > 0
@@ -2550,10 +2683,13 @@ function SessionDetail({
   ticketEnabled = false,
   onTicket,
 }) {
-  const diff =
-    roundMoney(
-      session?.diff
+  const cashClosure =
+    getCashClosureMetrics(
+      session
     );
+
+  const diff =
+    cashClosure.diff;
 
   const totals =
     getPaymentTotals(
@@ -2735,7 +2871,7 @@ function SessionDetail({
         <DarkStat
           label="Esperado"
           value={money(
-            session?.expectedAmount
+            cashClosure.expected
           )}
         />
 
