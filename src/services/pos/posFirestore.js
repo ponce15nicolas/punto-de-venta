@@ -3282,6 +3282,20 @@ export async function loadPurchasingDataCloud(
       )
         ? result.accountsPayable
         : [],
+
+    otherCosts:
+      Array.isArray(
+        result.otherCosts
+      )
+        ? result.otherCosts
+        : [],
+
+    activeActivity:
+      result.activeActivity &&
+      typeof result.activeActivity ===
+        "object"
+        ? result.activeActivity
+        : null,
   };
 }
 

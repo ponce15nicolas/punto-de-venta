@@ -7975,24 +7975,92 @@ export function usePosData({
         }
 
         try {
-          await createOtherCostCloud(
-            cleanClienteId,
-            {
-              ...payload,
-              costId:
-                payload?.costId ||
-                uid(),
-            },
-            {
-              operadorSesion,
-              deviceId:
-                cleanDeviceId,
+          const result =
+            await createOtherCostCloud(
+              cleanClienteId,
+              {
+                ...payload,
+                costId:
+                  payload?.costId ||
+                  uid(),
+              },
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
+
+          const createdCost =
+            result?.cost &&
+            typeof result.cost ===
+              "object"
+              ? {
+                  ...result.cost,
+                  creadoEn:
+                    result.cost.creadoEn ||
+                    new Date()
+                      .toISOString(),
+                }
+              : null;
+
+          const mergeCreatedCost = () => {
+            if (!createdCost?.id) {
+              return;
             }
-          );
+
+            setOtherCosts(
+              (current) => {
+                const list =
+                  Array.isArray(current)
+                    ? current
+                    : [];
+
+                const index =
+                  list.findIndex(
+                    (item) =>
+                      String(
+                        item?.id ||
+                        ""
+                      ) ===
+                      String(
+                        createdCost.id
+                      )
+                  );
+
+                if (index < 0) {
+                  return [
+                    createdCost,
+                    ...list,
+                  ];
+                }
+
+                const next =
+                  [...list];
+
+                next[index] = {
+                  ...next[index],
+                  ...createdCost,
+                };
+
+                return next;
+              }
+            );
+          };
+
+          /*
+           * El backend ya confirmó el movimiento. Lo reflejamos
+           * de inmediato y luego reconciliamos con la lectura
+           * autoritativa, evitando que un refresh tardío deje el
+           * panel financiero visualmente desactualizado.
+           */
+          mergeCreatedCost();
 
           await refreshPurchasingData({
             silent: true,
           });
+
+          mergeCreatedCost();
 
           showToast(
             "Costo registrado"

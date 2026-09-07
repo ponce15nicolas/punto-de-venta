@@ -32,6 +32,8 @@ function getSessionBalances(openSession) {
   const paymentTotals = openSession.paymentTotals || {};
   const receivableTotals = openSession.receivablePaymentTotals || {};
   const payableTotals = openSession.payablePaymentTotals || {};
+  const purchaseTotals = openSession.purchasePaymentTotals || {};
+  const otherCostTotals = openSession.otherCostTotals || {};
   const conversionTotals = openSession.fundConversionTotals || {};
 
   return {
@@ -39,13 +41,17 @@ function getSessionBalances(openSession) {
       toNumber(openSession.openAmount) +
       toNumber(paymentTotals.efectivo) +
       toNumber(receivableTotals.efectivo) -
-      toNumber(payableTotals.efectivo) +
+      toNumber(payableTotals.efectivo) -
+      toNumber(purchaseTotals.efectivo) -
+      toNumber(otherCostTotals.efectivo) +
       toNumber(conversionTotals.efectivo)
     ),
     transferenciaTurno: roundMoney(
       toNumber(paymentTotals.transferencia) +
       toNumber(receivableTotals.transferencia) -
-      toNumber(payableTotals.transferencia) +
+      toNumber(payableTotals.transferencia) -
+      toNumber(purchaseTotals.transferencia) -
+      toNumber(otherCostTotals.transferencia) +
       toNumber(conversionTotals.transferencia)
     ),
   };

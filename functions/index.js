@@ -18142,7 +18142,15 @@ exports.registrarOtroCostoActividad =
                                 textoSeguro(
                                     existing.concepto,
                                     180
-                                ) !== concepto
+                                ) !== concepto ||
+                                textoSeguro(
+                                    existing.categoria,
+                                    80
+                                ) !== categoria ||
+                                textoSeguro(
+                                    existing.metodoPago,
+                                    40
+                                ) !== metodoPago
                             ) {
                                 throw new HttpsError(
                                     "already-exists",
@@ -24599,6 +24607,18 @@ function totalMetodoSesion(
                 ?.payablePaymentTotals
                 ?.[method] ||
             0
+        ) -
+        Number(
+            session
+                ?.purchasePaymentTotals
+                ?.[method] ||
+            0
+        ) -
+        Number(
+            session
+                ?.otherCostTotals
+                ?.[method] ||
+            0
         ) +
         Number(
             session
@@ -25391,7 +25411,17 @@ exports.cerrarCaja =
                                 receivablePaymentTotals
                                     .efectivo -
                                 payablePaymentTotals
-                                    .efectivo +
+                                    .efectivo -
+                                roundMoney(
+                                    session
+                                        ?.purchasePaymentTotals
+                                        ?.efectivo
+                                ) -
+                                roundMoney(
+                                    session
+                                        ?.otherCostTotals
+                                        ?.efectivo
+                                ) +
                                 fundConversionTotals
                                     .efectivo
                             );
