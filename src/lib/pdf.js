@@ -3540,3 +3540,773 @@ export function downloadAuditPdf({
 
   return filename;
 }
+
+/* =========================================================
+   CIERRE DE ACTIVIDAD - PDF
+========================================================= */
+
+function activityClosurePdfNumber(
+  value,
+  fallback = 0
+) {
+  const result = Number(value);
+
+  return Number.isFinite(result)
+    ? result
+    : fallback;
+}
+
+function activityClosurePdfMoney(value) {
+  return `$${activityClosurePdfNumber(value).toLocaleString(
+    "es-AR",
+    {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }
+  )}`;
+}
+
+function activityClosurePdfDate(value) {
+  if (!value) {
+    return "Sin fecha";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Sin fecha";
+  }
+
+  return date.toLocaleString(
+    "es-AR",
+    {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }
+  );
+}
+
+function activityClosurePdfQuantity(value) {
+  return Math.max(
+    0,
+    activityClosurePdfNumber(value)
+  ).toLocaleString(
+    "es-AR",
+    {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 3,
+    }
+  );
+}
+
+function activityClosurePdfPercent(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ""
+  ) {
+    return "Sin estimar";
+  }
+
+  const result = Number(value);
+
+  if (!Number.isFinite(result)) {
+    return "Sin estimar";
+  }
+
+  return `${result.toLocaleString(
+    "es-AR",
+    {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 1,
+    }
+  )}%`;
+}
+
+function activityClosurePdfSequence(value) {
+  return String(
+    Math.max(
+      1,
+      Math.trunc(
+        activityClosurePdfNumber(
+          value,
+          1
+        )
+      ) || 1
+    )
+  ).padStart(3, "0");
+}
+
+function activityClosurePdfSafeName(value) {
+  return String(
+    value || "cierre-actividad"
+  )
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase() || "cierre-actividad";
+}
+
+export function downloadActivityClosurePdf({
+  closure,
+  shopName = "Full Bebidas",
+} = {}) {
+  if (
+    !closure ||
+    typeof closure !== "object"
+  ) {
+    throw new Error(
+      "No hay un cierre de actividad válido para descargar."
+    );
+  }
+
+  const doc = new jsPDF({
+    orientation: "portrait",
+    unit: "mm",
+    format: "a4",
+  });
+  const pageWidth =
+    doc.internal.pageSize.getWidth();
+  const pageHeight =
+    doc.internal.pageSize.getHeight();
+  const margin = 14;
+  const contentWidth =
+    pageWidth - margin * 2;
+  const sequence =
+    activityClosurePdfSequence(
+      closure?.activity?.sequence
+    );
+  const closedAt =
+    closure?.activity?.closedAt ||
+    closure?.activity?.closingPreviewAt ||
+    new Date().toISOString();
+  let y = margin;
+
+  const addPage = () => {
+    doc.addPage();
+    y = margin;
+  };
+
+  const ensureSpace = (needed = 12) => {
+    if (
+      y + needed >
+      pageHeight - 16
+    ) {
+      addPage();
+    }
+  };
+
+  const sectionTitle = (title) => {
+    ensureSpace(12);
+    doc.setFillColor(...COLORS.light);
+    doc.roundedRect(
+      margin,
+      y,
+      contentWidth,
+      9,
+      2.5,
+      2.5,
+      "F"
+    );
+    doc.setTextColor(...COLORS.yellowDark);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.text(
+      String(title || "").toUpperCase(),
+      margin + 3,
+      y + 5.8
+    );
+    y += 13;
+  };
+
+  const row = (
+    label,
+    value,
+    {
+      strong = false,
+      danger = false,
+    } = {}
+  ) => {
+    ensureSpace(8);
+    doc.setFont(
+      "helvetica",
+      strong ? "bold" : "normal"
+    );
+    doc.setFontSize(9);
+    doc.setTextColor(...COLORS.muted);
+    doc.text(
+      String(label || ""),
+      margin,
+      y
+    );
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(
+      ...(danger
+        ? COLORS.red
+        : COLORS.dark)
+    );
+    doc.text(
+      String(value ?? ""),
+      pageWidth - margin,
+      y,
+      { align: "right" }
+    );
+    y += 6.2;
+  };
+
+  const note = (
+    text,
+    { danger = false } = {}
+  ) => {
+    const safeText = String(text || "");
+    const lines = doc.splitTextToSize(
+      safeText,
+      contentWidth - 6
+    );
+    const height =
+      6 + lines.length * 4.2;
+
+    ensureSpace(height + 2);
+    doc.setFillColor(
+      ...(danger
+        ? [252, 240, 240]
+        : [255, 250, 232])
+    );
+    doc.setDrawColor(
+      ...(danger
+        ? [238, 190, 190]
+        : [237, 214, 145])
+    );
+    doc.roundedRect(
+      margin,
+      y,
+      contentWidth,
+      height,
+      2.5,
+      2.5,
+      "FD"
+    );
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(
+      ...(danger
+        ? COLORS.red
+        : COLORS.yellowDark)
+    );
+    doc.text(
+      lines,
+      margin + 3,
+      y + 5.5
+    );
+    y += height + 4;
+  };
+
+  doc.setFillColor(...COLORS.dark);
+  doc.roundedRect(
+    margin,
+    y,
+    contentWidth,
+    36,
+    4,
+    4,
+    "F"
+  );
+  doc.setTextColor(...COLORS.yellow);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.text(
+    String(shopName || "Full Bebidas").toUpperCase(),
+    margin + 5,
+    y + 8
+  );
+  doc.setTextColor(...COLORS.white);
+  doc.setFontSize(18);
+  doc.text(
+    `Cierre de Actividad #${sequence}`,
+    margin + 5,
+    y + 17
+  );
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8.5);
+  doc.setTextColor(205, 208, 214);
+  doc.text(
+    `Inicio financiero: ${activityClosurePdfDate(
+      closure?.activity?.financialStartAt ||
+      closure?.activity?.startedAt
+    )}`,
+    margin + 5,
+    y + 25
+  );
+  doc.text(
+    `Cierre: ${activityClosurePdfDate(closedAt)}`,
+    margin + 5,
+    y + 31
+  );
+  y += 43;
+
+  sectionTitle("Resultado económico");
+  row(
+    "Ventas",
+    activityClosurePdfMoney(
+      closure?.sales?.revenue
+    )
+  );
+  row(
+    "Costo de mercadería",
+    activityClosurePdfMoney(
+      closure?.sales?.cost
+    )
+  );
+  row(
+    "Ganancia bruta",
+    activityClosurePdfMoney(
+      closure?.sales?.grossProfit
+    ),
+    { strong: true }
+  );
+  row(
+    "Otros costos",
+    activityClosurePdfMoney(
+      closure?.funds?.otherCosts
+    )
+  );
+  row(
+    "Ganancia disponible",
+    activityClosurePdfMoney(
+      closure?.funds?.availableProfit
+    ),
+    { strong: true }
+  );
+
+  y += 2;
+  sectionTitle("Capital y reposición");
+  row(
+    "Capital a recuperar",
+    activityClosurePdfMoney(
+      closure?.funds?.capitalToRecover
+    )
+  );
+  row(
+    "Capital recuperado",
+    activityClosurePdfMoney(
+      closure?.funds?.capitalRecovered ??
+      closure?.funds?.recoveredCost
+    )
+  );
+  row(
+    "Pendiente de recuperar",
+    activityClosurePdfMoney(
+      Math.max(
+        0,
+        activityClosurePdfNumber(
+          closure?.funds?.pendingRecovery
+        )
+      )
+    ),
+    { strong: true }
+  );
+  row(
+    "Compras pagadas",
+    activityClosurePdfMoney(
+      closure?.funds?.paidPurchases
+    )
+  );
+  row(
+    "Fondo de reposición final",
+    activityClosurePdfMoney(
+      closure?.funds?.replacementFund
+    ),
+    { strong: true }
+  );
+  row(
+    "Mercadería no repuesta",
+    activityClosurePdfMoney(
+      closure?.funds?.unreplacedMerchandise
+    ),
+    {
+      danger:
+        activityClosurePdfNumber(
+          closure?.funds?.unreplacedMerchandise
+        ) > 0,
+    }
+  );
+  row(
+    "Déficit / fondos externos",
+    activityClosurePdfMoney(
+      closure?.funds?.externalDeficit
+    ),
+    {
+      danger:
+        activityClosurePdfNumber(
+          closure?.funds?.externalDeficit
+        ) > 0,
+    }
+  );
+  note(
+    "Pendiente de recuperar representa capital de costo que todavía no volvió al fondo de reposición. Es un concepto separado del saldo nominal de Cuentas por cobrar."
+  );
+
+  sectionTitle("Conciliación financiera");
+
+  const methods =
+    closure?.reconciliation?.methods || {};
+  const methodOrder = [
+    ["efectivo", "Efectivo"],
+    ["transferencia", "Transferencia"],
+    ["qr", "QR"],
+    ["tarjeta", "Tarjeta"],
+  ];
+
+  for (const [key, label] of methodOrder) {
+    const data = methods?.[key] || {};
+    const hasMovement = [
+      data?.opening,
+      data?.income,
+      data?.expenses,
+      data?.conversions,
+      data?.reconciliationAdjustment,
+      data?.balance,
+      data?.externalUsed,
+    ].some(
+      (value) =>
+        Math.abs(
+          activityClosurePdfNumber(value)
+        ) > 0.009
+    );
+
+    if (!hasMovement && key !== "efectivo" && key !== "transferencia") {
+      continue;
+    }
+
+    ensureSpace(34);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
+    doc.setTextColor(...COLORS.dark);
+    doc.text(label, margin, y);
+    y += 5.5;
+    row(
+      "  Saldo inicial",
+      activityClosurePdfMoney(
+        data?.opening
+      )
+    );
+    row(
+      "  Ingresos",
+      activityClosurePdfMoney(
+        data?.income
+      )
+    );
+    row(
+      "  Egresos",
+      activityClosurePdfMoney(
+        data?.expenses
+      )
+    );
+    row(
+      "  Conversiones",
+      activityClosurePdfMoney(
+        data?.conversions
+      )
+    );
+
+    if (
+      Math.abs(
+        activityClosurePdfNumber(
+          data?.reconciliationAdjustment
+        )
+      ) > 0.009
+    ) {
+      row(
+        "  Ajuste de conciliación",
+        activityClosurePdfMoney(
+          data?.reconciliationAdjustment
+        )
+      );
+    }
+
+    const declared =
+      closure?.reconciliation
+        ?.declaredBalances?.[key];
+
+    if (
+      declared &&
+      (key === "efectivo" ||
+        key === "transferencia")
+    ) {
+      row(
+        "  Saldo esperado",
+        activityClosurePdfMoney(
+          declared?.expected
+        ),
+        { strong: true }
+      );
+      row(
+        "  Saldo real",
+        activityClosurePdfMoney(
+          declared?.actual
+        ),
+        { strong: true }
+      );
+      row(
+        "  Diferencia final",
+        formatDifference(
+          declared?.difference
+        ),
+        {
+          danger:
+            activityClosurePdfNumber(
+              declared?.difference
+            ) < -0.009,
+        }
+      );
+    } else {
+      row(
+        "  Saldo final",
+        activityClosurePdfMoney(
+          data?.balance
+        ),
+        { strong: true }
+      );
+    }
+    y += 2;
+  }
+
+  note(
+    "Las diferencias entre saldo esperado y saldo real son ajustes de conciliación. No modifican ventas, costo de mercadería ni ganancia bruta."
+  );
+
+  row(
+    "Diferencia acumulada de cajas",
+    activityClosurePdfMoney(
+      closure?.reconciliation
+        ?.cashSessions?.difference
+    ),
+    {
+      danger:
+        Math.abs(
+          activityClosurePdfNumber(
+            closure?.reconciliation
+              ?.cashSessions?.difference
+          )
+        ) > 0.009,
+    }
+  );
+
+  sectionTitle("Cuentas pendientes");
+  row(
+    "Cuentas por cobrar",
+    activityClosurePdfMoney(
+      closure?.receivables?.pendingAmount
+    )
+  );
+  row(
+    "Cuentas por pagar",
+    activityClosurePdfMoney(
+      closure?.payables?.pendingAmount
+    )
+  );
+  row(
+    "Deuda de mercadería",
+    activityClosurePdfMoney(
+      closure?.payables?.pendingPurchaseAmount
+    )
+  );
+
+  sectionTitle("Reposición pendiente");
+  const pendingRestock =
+    closure?.pendingRestock || {};
+  row(
+    "Productos pendientes",
+    String(
+      Math.max(
+        0,
+        Math.trunc(
+          activityClosurePdfNumber(
+            pendingRestock?.pendingCount
+          )
+        )
+      )
+    )
+  );
+  row(
+    "Cantidad total",
+    activityClosurePdfQuantity(
+      pendingRestock?.totalQuantity
+    )
+  );
+  row(
+    "Monto estimado",
+    activityClosurePdfMoney(
+      pendingRestock?.estimatedTotal
+    )
+  );
+  row(
+    "Cobertura estimada",
+    activityClosurePdfPercent(
+      pendingRestock?.coverage
+    )
+  );
+
+  const items = Array.isArray(
+    pendingRestock?.items
+  )
+    ? pendingRestock.items
+    : [];
+
+  if (items.length === 0) {
+    note(
+      "No quedaron productos pendientes en la lista de compras."
+    );
+  } else {
+    for (const item of items) {
+      const title =
+        String(
+          item?.concepto ||
+          "Compra pendiente"
+        ).trim() ||
+        "Compra pendiente";
+      const provider = String(
+        item?.proveedor || ""
+      ).trim();
+      const costConcept = String(
+        item?.conceptoCosto || ""
+      ).trim();
+      const detailParts = [
+        `Cantidad: ${activityClosurePdfQuantity(
+          item?.cantidad
+        )}`,
+      ];
+
+      if (provider) {
+        detailParts.push(
+          `Proveedor: ${provider}`
+        );
+      }
+
+      if (costConcept) {
+        detailParts.push(costConcept);
+      }
+
+      const titleLines = doc.splitTextToSize(
+        title,
+        contentWidth - 50
+      );
+      const detailLines = doc.splitTextToSize(
+        detailParts.join(" | "),
+        contentWidth - 6
+      );
+      const blockHeight =
+        7 +
+        titleLines.length * 4.2 +
+        detailLines.length * 3.8;
+
+      ensureSpace(blockHeight + 2);
+      doc.setDrawColor(...COLORS.line);
+      doc.setFillColor(250, 250, 251);
+      doc.roundedRect(
+        margin,
+        y,
+        contentWidth,
+        blockHeight,
+        2.5,
+        2.5,
+        "FD"
+      );
+      doc.setTextColor(...COLORS.dark);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.text(
+        titleLines,
+        margin + 3,
+        y + 5.3
+      );
+      doc.setTextColor(...COLORS.yellowDark);
+      doc.text(
+        item?.hasEstimate
+          ? activityClosurePdfMoney(
+              item?.costoEstimado
+            )
+          : "Sin estimar",
+        pageWidth - margin - 3,
+        y + 5.3,
+        { align: "right" }
+      );
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(...COLORS.muted);
+      doc.text(
+        detailLines,
+        margin + 3,
+        y + 5.3 +
+          titleLines.length * 4.2 +
+          1.5
+      );
+      y += blockHeight + 3;
+    }
+  }
+
+  const warnings = Array.isArray(
+    closure?.warnings
+  )
+    ? closure.warnings
+    : [];
+
+  if (warnings.length > 0) {
+    sectionTitle("Observaciones");
+
+    for (const warning of warnings) {
+      note(
+        warning?.message ||
+        "Observación del cierre."
+      );
+    }
+  }
+
+  const pageCount =
+    doc.getNumberOfPages();
+
+  for (
+    let page = 1;
+    page <= pageCount;
+    page += 1
+  ) {
+    doc.setPage(page);
+    doc.setDrawColor(...COLORS.line);
+    doc.line(
+      margin,
+      pageHeight - 11,
+      pageWidth - margin,
+      pageHeight - 11
+    );
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(...COLORS.muted);
+    doc.text(
+      `Cierre de Actividad #${sequence} - ${shopName}`,
+      margin,
+      pageHeight - 6.5
+    );
+    doc.text(
+      `Página ${page} de ${pageCount}`,
+      pageWidth - margin,
+      pageHeight - 6.5,
+      { align: "right" }
+    );
+  }
+
+  const fileName = [
+    activityClosurePdfSafeName(
+      shopName || "full-bebidas"
+    ),
+    `actividad-${sequence}`,
+    "cierre.pdf",
+  ].join("-");
+
+  doc.save(fileName);
+
+  return fileName;
+}

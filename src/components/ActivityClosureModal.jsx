@@ -9,6 +9,9 @@ import {
   money,
   uid,
 } from "../lib/format";
+import {
+  downloadActivityClosurePdf,
+} from "../lib/pdf";
 
 function toNumber(
   value,
@@ -19,6 +22,34 @@ function toNumber(
   return Number.isFinite(number)
     ? number
     : fallback;
+}
+
+function parseMoneyInput(value) {
+  const raw = String(value ?? "")
+    .trim()
+    .replace(/\s+/g, "");
+
+  if (!raw) {
+    return Number.NaN;
+  }
+
+  let normalized = raw;
+
+  if (raw.includes(",") && raw.includes(".")) {
+    normalized = raw
+      .replace(/\./g, "")
+      .replace(",", ".");
+  } else if (raw.includes(",")) {
+    normalized = raw.replace(",", ".");
+  } else if (/^\d{1,3}(?:\.\d{3})+$/.test(raw)) {
+    normalized = raw.replace(/\./g, "");
+  }
+
+  const number = Number(normalized);
+
+  return Number.isFinite(number)
+    ? Math.round((number + Number.EPSILON) * 100) / 100
+    : Number.NaN;
 }
 
 function formatActivityNumber(value) {
@@ -196,6 +227,82 @@ function FlowCard({
   );
 }
 
+function ReconciliationBalanceCard({
+  title,
+  expected,
+  inputValue,
+  onChange,
+  actual,
+  difference,
+  closed = false,
+}) {
+  const validDifference =
+    Number.isFinite(difference);
+  const isMissing =
+    validDifference && difference < -0.009;
+  const isSurplus =
+    validDifference && difference > 0.009;
+
+  return (
+    <div className="rounded-[20px] border border-white/10 bg-black/10 p-3.5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-black text-white/85">
+            {title}
+          </p>
+          <p className="mt-1 text-[9px] text-white/30">
+            Esperado por sistema {money(expected)}
+          </p>
+        </div>
+        {closed && (
+          <strong className="text-sm font-black text-white/85">
+            {money(actual)}
+          </strong>
+        )}
+      </div>
+
+      {!closed && (
+        <label className="mt-3 block">
+          <span className="text-[9px] font-extrabold uppercase tracking-[0.08em] text-white/35">
+            Saldo real
+          </span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={inputValue}
+            onChange={(event) =>
+              onChange(event.target.value)
+            }
+            placeholder="0,00"
+            className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm font-bold text-white outline-none transition placeholder:text-white/20 focus:border-[#FFC61A]/45"
+          />
+        </label>
+      )}
+
+      <div
+        className={
+          "mt-3 rounded-xl border px-3 py-2 text-[10px] font-extrabold " +
+          (!validDifference
+            ? "border-white/10 bg-white/[0.025] text-white/35"
+            : isMissing
+              ? "border-red-400/20 bg-red-400/[0.07] text-red-200"
+              : isSurplus
+                ? "border-emerald-400/20 bg-emerald-400/[0.07] text-emerald-200"
+                : "border-emerald-400/20 bg-emerald-400/[0.07] text-emerald-200")
+        }
+      >
+        {!validDifference
+          ? "Ingresá el saldo real"
+          : isMissing
+            ? `Faltante ${money(Math.abs(difference))}`
+            : isSurplus
+              ? `Sobrante ${money(difference)}`
+              : "Sin diferencia"}
+      </div>
+    </div>
+  );
+}
+
 function Notice({
   children,
   danger = false,
@@ -232,6 +339,14 @@ export default function ActivityClosureModal({
     useState(false);
   const [closeRequestId, setCloseRequestId] =
     useState("");
+  const [closedClosure, setClosedClosure] =
+    useState(null);
+  const [pdfDownloaded, setPdfDownloaded] =
+    useState(false);
+  const [actualCashInput, setActualCashInput] =
+    useState("");
+  const [actualTransferInput, setActualTransferInput] =
+    useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -243,6 +358,10 @@ export default function ActivityClosureModal({
       setConfirmed(false);
       setShowRestock(false);
       setCloseRequestId("");
+      setClosedClosure(null);
+      setPdfDownloaded(false);
+      setActualCashInput("");
+      setActualTransferInput("");
       return undefined;
     }
 
@@ -251,6 +370,10 @@ export default function ActivityClosureModal({
     setLoading(true);
     setConfirmed(false);
     setShowRestock(false);
+    setClosedClosure(null);
+    setPdfDownloaded(false);
+    setActualCashInput("");
+    setActualTransferInput("");
 
     Promise.resolve(
       pos?.previewActivityClosure?.()
@@ -269,7 +392,10 @@ export default function ActivityClosureModal({
     return () => {
       cancelled = true;
     };
-  }, [open, pos]);
+  }, [
+    open,
+    pos?.previewActivityClosure,
+  ]);
 
   const blockers =
     Array.isArray(
@@ -304,9 +430,50 @@ export default function ActivityClosureModal({
         ?.cashSessions
         ?.difference
     );
+  const expectedCash = toNumber(
+    preview?.reconciliation
+      ?.methods?.efectivo?.balance
+  );
+  const expectedTransfer = toNumber(
+    preview?.reconciliation
+      ?.methods?.transferencia?.balance
+  );
+  const storedCashActual =
+    preview?.reconciliation
+      ?.declaredBalances?.efectivo
+      ?.actual;
+  const storedTransferActual =
+    preview?.reconciliation
+      ?.declaredBalances
+      ?.transferencia?.actual;
+  const actualCash = closedClosure
+    ? toNumber(storedCashActual)
+    : parseMoneyInput(actualCashInput);
+  const actualTransfer = closedClosure
+    ? toNumber(storedTransferActual)
+    : parseMoneyInput(actualTransferInput);
+  const actualBalancesValid =
+    Number.isFinite(actualCash) &&
+    actualCash >= 0 &&
+    Number.isFinite(actualTransfer) &&
+    actualTransfer >= 0;
+  const cashFinalDifference =
+    actualBalancesValid
+      ? Math.round(
+          (actualCash - expectedCash + Number.EPSILON) * 100
+        ) / 100
+      : Number.NaN;
+  const transferFinalDifference =
+    actualBalancesValid
+      ? Math.round(
+          (actualTransfer - expectedTransfer + Number.EPSILON) * 100
+        ) / 100
+      : Number.NaN;
   const canClose = Boolean(
     preview &&
+    !closedClosure &&
     blockers.length === 0 &&
+    actualBalancesValid &&
     confirmed &&
     !closing
   );
@@ -321,10 +488,15 @@ export default function ActivityClosureModal({
         ),
       },
       {
-        label: "Costo pendiente de recuperar",
+        label: "Capital pendiente de recuperar",
         value: money(
-          preview?.receivables
-            ?.pendingCostBasisTotal
+          Math.max(
+            0,
+            toNumber(
+              preview?.funds
+                ?.pendingRecovery
+            )
+          )
         ),
       },
       {
@@ -344,6 +516,35 @@ export default function ActivityClosureModal({
     ],
     [preview]
   );
+
+  function downloadClosurePdf(
+    closureData = closedClosure
+  ) {
+    if (!closureData) {
+      return false;
+    }
+
+    try {
+      downloadActivityClosurePdf({
+        closure: closureData,
+        shopName:
+          pos?.shopName ||
+          "Full Bebidas",
+      });
+      setPdfDownloaded(true);
+      return true;
+    } catch (error) {
+      console.error(
+        "Error descargando cierre de actividad en PDF:",
+        error
+      );
+      pos?.showToast?.(
+        "No se pudo generar el PDF del cierre",
+        true
+      );
+      return false;
+    }
+  }
 
   async function refreshPreview() {
     if (loading || closing) {
@@ -377,12 +578,46 @@ export default function ActivityClosureModal({
       const result =
         await pos?.closeActivity?.(
           preview.activity.id,
-          closeRequestId
+          closeRequestId,
+          {
+            efectivo: actualCash,
+            transferencia: actualTransfer,
+          }
         );
 
       if (result) {
+        const finalClosure =
+          result?.closure &&
+          typeof result.closure ===
+            "object"
+            ? result.closure
+            : preview;
+
+        setPreview(finalClosure);
+        setClosedClosure(finalClosure);
+        setConfirmed(false);
         onClosed?.(result);
-        onClose?.();
+
+        if (finalClosure) {
+          try {
+            downloadActivityClosurePdf({
+              closure: finalClosure,
+              shopName:
+                pos?.shopName ||
+                "Full Bebidas",
+            });
+            setPdfDownloaded(true);
+          } catch (error) {
+            console.error(
+              "No se pudo descargar automáticamente el PDF del cierre:",
+              error
+            );
+            pos?.showToast?.(
+              "Actividad cerrada. Podés descargar el PDF manualmente.",
+              false
+            );
+          }
+        }
       }
     } finally {
       setClosing(false);
@@ -419,6 +654,21 @@ export default function ActivityClosureModal({
         </div>
       ) : (
         <div className="space-y-3">
+          {closedClosure && (
+            <div className="rounded-[22px] border border-emerald-400/20 bg-emerald-400/[0.07] p-3.5">
+              <p className="text-[9px] font-extrabold uppercase tracking-[0.12em] text-emerald-300">
+                Actividad cerrada correctamente
+              </p>
+              <p className="mt-1 text-xs font-black text-white/85">
+                El snapshot definitivo quedó guardado.
+              </p>
+              <p className="mt-1 text-[10px] leading-relaxed text-white/40">
+                {pdfDownloaded
+                  ? "El PDF del cierre fue generado. Podés descargarlo nuevamente cuando quieras antes de salir."
+                  : "Descargá el PDF del cierre antes de salir."}
+              </p>
+            </div>
+          )}
           <div className="rounded-[22px] border border-[#FFC61A]/20 bg-[#FFC61A]/[0.06] p-4">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -436,21 +686,25 @@ export default function ActivityClosureModal({
                   {" → "}
                   {formatDate(
                     preview.activity
+                      ?.closedAt ||
+                    preview.activity
                       ?.closingPreviewAt
                   )}
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={refreshPreview}
-                disabled={loading || closing}
-                className="shrink-0 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-extrabold text-white/55 disabled:opacity-40"
-              >
-                {loading
-                  ? "Actualizando..."
-                  : "Actualizar"}
-              </button>
+              {!closedClosure && (
+                <button
+                  type="button"
+                  onClick={refreshPreview}
+                  disabled={loading || closing}
+                  className="shrink-0 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-extrabold text-white/55 disabled:opacity-40"
+                >
+                  {loading
+                    ? "Actualizando..."
+                    : "Actualizar"}
+                </button>
+              )}
             </div>
           </div>
 
@@ -517,6 +771,27 @@ export default function ActivityClosureModal({
                     ?.replacementFund
                 )}
                 highlight
+              />
+              <Stat
+                label="Capital recuperado"
+                value={money(
+                  preview.funds
+                    ?.capitalRecovered ??
+                  preview.funds
+                    ?.recoveredCost
+                )}
+              />
+              <Stat
+                label="Pendiente de recuperar"
+                value={money(
+                  Math.max(
+                    0,
+                    toNumber(
+                      preview.funds
+                        ?.pendingRecovery
+                    )
+                  )
+                )}
               />
             </div>
 
@@ -599,6 +874,35 @@ export default function ActivityClosureModal({
               />
             </div>
 
+            <div className="mt-3">
+              <p className="text-[9px] font-extrabold uppercase tracking-[0.1em] text-[#FFC61A]">
+                Saldo real al cierre
+              </p>
+              <p className="mt-1 text-[9px] leading-relaxed text-white/30">
+                Ingresá cuánto dinero existe realmente. La diferencia queda guardada como conciliación y no modifica la ganancia.
+              </p>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <ReconciliationBalanceCard
+                  title="Efectivo real"
+                  expected={expectedCash}
+                  inputValue={actualCashInput}
+                  onChange={setActualCashInput}
+                  actual={actualCash}
+                  difference={cashFinalDifference}
+                  closed={Boolean(closedClosure)}
+                />
+                <ReconciliationBalanceCard
+                  title="Transferencia real"
+                  expected={expectedTransfer}
+                  inputValue={actualTransferInput}
+                  onChange={setActualTransferInput}
+                  actual={actualTransfer}
+                  difference={transferFinalDifference}
+                  closed={Boolean(closedClosure)}
+                />
+              </div>
+            </div>
+
             {(Math.abs(
               toNumber(
                 preview.reconciliation
@@ -632,7 +936,7 @@ export default function ActivityClosureModal({
             )}
 
             <p className="mt-3 text-[9px] leading-relaxed text-white/25">
-              Transferencia refleja movimientos registrados en el POS. No compara automáticamente el saldo de una cuenta bancaria externa.
+              El saldo real de transferencia debe coincidir con el importe disponible que verificás en la cuenta utilizada por el negocio. Faltantes o sobrantes se registran aparte de la rentabilidad.
             </p>
           </div>
 
@@ -657,13 +961,6 @@ export default function ActivityClosureModal({
                 )}
               />
               <Stat
-                label="Costo pendiente recuperar"
-                value={money(
-                  preview.receivables
-                    ?.pendingCostBasisTotal
-                )}
-              />
-              <Stat
                 label="Deuda de mercadería"
                 value={money(
                   preview.payables
@@ -671,6 +968,10 @@ export default function ActivityClosureModal({
                 )}
               />
             </div>
+
+            <p className="mt-3 text-[9px] leading-relaxed text-white/25">
+              Cuentas por cobrar y por pagar son saldos nominales pendientes. El capital pendiente de recuperar se muestra arriba dentro de Capital y reposición.
+            </p>
           </div>
 
           <div className="rounded-[22px] border border-white/10 bg-white/[0.025] p-3.5">
@@ -810,37 +1111,68 @@ export default function ActivityClosureModal({
             </p>
           </div>
 
-          {blockers.length === 0 && (
-            <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.025] p-3.5">
-              <input
-                type="checkbox"
-                checked={confirmed}
-                onChange={(event) =>
-                  setConfirmed(
-                    event.target.checked
-                  )
+          {closedClosure ? (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() =>
+                  downloadClosurePdf()
                 }
-                disabled={closing}
-                className="mt-0.5 h-4 w-4 accent-[#FFC61A]"
-              />
-              <span className="text-[10px] leading-relaxed text-white/50">
-                Confirmo que revisé la conciliación. El cierre guardará un snapshot definitivo de la actividad y abrirá automáticamente la Actividad #{nextActivityNumber}.
-              </span>
-            </label>
-          )}
+                className="w-full rounded-2xl bg-[#FFC61A] px-4 py-3.5 text-sm font-extrabold text-black transition hover:bg-[#FFD248]"
+              >
+                Descargar cierre PDF
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3.5 text-sm font-extrabold text-white/70 transition hover:bg-white/[0.07]"
+              >
+                Finalizar
+              </button>
+            </div>
+          ) : (
+            <>
+              {blockers.length === 0 && !actualBalancesValid && (
+                <Notice>
+                  Ingresá el efectivo real y el saldo real de transferencia para completar la conciliación final.
+                </Notice>
+              )}
 
-          <button
-            type="button"
-            onClick={submitClose}
-            disabled={!canClose}
-            className="w-full rounded-2xl bg-[#FFC61A] px-4 py-3.5 text-sm font-extrabold text-black transition disabled:cursor-not-allowed disabled:opacity-35"
-          >
-            {closing
-              ? "Cerrando actividad..."
-              : blockers.length > 0
-                ? "Resolvé los pendientes para cerrar"
-                : `Cerrar Actividad #${activityNumber}`}
-          </button>
+              {blockers.length === 0 && actualBalancesValid && (
+                <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.025] p-3.5">
+                  <input
+                    type="checkbox"
+                    checked={confirmed}
+                    onChange={(event) =>
+                      setConfirmed(
+                        event.target.checked
+                      )
+                    }
+                    disabled={closing}
+                    className="mt-0.5 h-4 w-4 accent-[#FFC61A]"
+                  />
+                  <span className="text-[10px] leading-relaxed text-white/50">
+                    Confirmo que revisé los saldos reales y sus diferencias. El cierre guardará la conciliación definitiva y abrirá automáticamente la Actividad #{nextActivityNumber}.
+                  </span>
+                </label>
+              )}
+
+              <button
+                type="button"
+                onClick={submitClose}
+                disabled={!canClose}
+                className="w-full rounded-2xl bg-[#FFC61A] px-4 py-3.5 text-sm font-extrabold text-black transition disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                {closing
+                  ? "Cerrando actividad..."
+                  : blockers.length > 0
+                    ? "Resolvé los pendientes para cerrar"
+                    : !actualBalancesValid
+                      ? "Ingresá los saldos reales"
+                      : `Cerrar Actividad #${activityNumber}`}
+              </button>
+            </>
+          )}
         </div>
       )}
     </Modal>

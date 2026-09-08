@@ -2197,12 +2197,14 @@ export default function Ganancias({ pos }) {
           )
         : 0
     );
-    const openingPendingCost =
+    const openingPendingRecovery =
       financialPeriod === "activity"
         ? roundMoney(
             Math.max(
               0,
               toNumber(
+                activeActivity
+                  ?.openingPendingRecovery ??
                 activeActivity
                   ?.openingPendingRecoveredCost
               )
@@ -2214,7 +2216,7 @@ export default function Ganancias({ pos }) {
         ? roundMoney(
             Math.max(
               0,
-              openingPendingCost -
+              openingPendingRecovery -
               pendingCostPrior
             )
           )
@@ -2226,17 +2228,33 @@ export default function Ganancias({ pos }) {
           cost - pendingCostCurrent
         )
       );
+    const capitalToRecover =
+      roundMoney(
+        Math.max(
+          0,
+          openingPendingRecovery +
+          cost
+        )
+      );
     const availableRecoveredCost =
       roundMoney(
-        currentRecoveredCost +
-        carriedRecoveredCost
+        Math.max(
+          0,
+          Math.min(
+            capitalToRecover,
+            currentRecoveredCost +
+            carriedRecoveredCost
+          )
+        )
       );
-    const pendingCost = roundMoney(
-      pendingCostCurrent +
-      (financialPeriod === "activity"
-        ? pendingCostPrior
-        : 0)
-    );
+    const pendingRecovery =
+      roundMoney(
+        Math.max(
+          0,
+          capitalToRecover -
+          availableRecoveredCost
+        )
+      );
 
     const replacementBeforeExpenses = roundMoney(
       openingFund +
@@ -2299,12 +2317,18 @@ export default function Ganancias({ pos }) {
       revenue: roundMoney(revenue),
       cost: roundMoney(cost),
       profit: roundMoney(profit),
-      pendingCost,
+      pendingRecovery,
+      // Detalle interno usado para determinar cuánto capital ya volvió.
       pendingCostCurrent:
-        roundMoney(pendingCostCurrent),
+        roundMoney(
+          Math.max(0, pendingCostCurrent)
+        ),
       pendingCostPrior:
-        roundMoney(pendingCostPrior),
-      openingPendingCost,
+        roundMoney(
+          Math.max(0, pendingCostPrior)
+        ),
+      openingPendingRecovery,
+      capitalToRecover,
       currentRecoveredCost,
       carriedRecoveredCost,
       availableRecoveredCost,
@@ -3121,7 +3145,7 @@ export default function Ganancias({ pos }) {
             />
             <ActivityStat
               label="Pendiente de recuperar"
-              value={money(activityFinancial.pendingCost)}
+              value={money(activityFinancial.pendingRecovery)}
             />
             <ActivityStat
               label="Disponible reposición"
@@ -3142,6 +3166,10 @@ export default function Ganancias({ pos }) {
               highlight
             />
           </div>
+
+          <p className="text-[9px] leading-relaxed text-white/25">
+            Pendiente de recuperar representa capital de costo que todavía no volvió al fondo de reposición. Es un concepto separado del saldo nominal de Cuentas por cobrar.
+          </p>
 
           {activityFinancial.purchaseExcess > 0 && (
             <FinanceNotice

@@ -16698,9 +16698,23 @@ async function asegurarActividadActual(
                                     redondearDineroCuentaPorCobrar(
                                         data.openingReplacementFund || 0
                                     ),
+                                openingPendingRecovery:
+                                    Math.max(
+                                        0,
+                                        redondearDineroCuentaPorCobrar(
+                                            data.openingPendingRecovery ??
+                                            data.openingPendingRecoveredCost ??
+                                            0
+                                        )
+                                    ),
                                 openingPendingRecoveredCost:
-                                    redondearDineroCuentaPorCobrar(
-                                        data.openingPendingRecoveredCost || 0
+                                    Math.max(
+                                        0,
+                                        redondearDineroCuentaPorCobrar(
+                                            data.openingPendingRecovery ??
+                                            data.openingPendingRecoveredCost ??
+                                            0
+                                        )
                                     ),
                                 openingFundBalances:
                                     data.openingFundBalances &&
@@ -16749,9 +16763,23 @@ async function asegurarActividadActual(
                                 redondearDineroCuentaPorCobrar(
                                     data.openingReplacementFund || 0
                                 ),
+                            openingPendingRecovery:
+                                Math.max(
+                                    0,
+                                    redondearDineroCuentaPorCobrar(
+                                        data.openingPendingRecovery ??
+                                        data.openingPendingRecoveredCost ??
+                                        0
+                                    )
+                                ),
                             openingPendingRecoveredCost:
-                                redondearDineroCuentaPorCobrar(
-                                    data.openingPendingRecoveredCost || 0
+                                Math.max(
+                                    0,
+                                    redondearDineroCuentaPorCobrar(
+                                        data.openingPendingRecovery ??
+                                        data.openingPendingRecoveredCost ??
+                                        0
+                                    )
                                 ),
                             openingFundBalances:
                                 data.openingFundBalances &&
@@ -16792,6 +16820,8 @@ async function asegurarActividadActual(
                 financialStartLocked:
                     sequence > 1,
                 openingReplacementFund: 0,
+                openingPendingRecovery: 0,
+                // Alias legado: se conserva para datos/clientes anteriores.
                 openingPendingRecoveredCost: 0,
                 openingFundBalances: {
                     efectivo: 0,
@@ -16842,6 +16872,8 @@ async function asegurarActividadActual(
                 financialStartLocked:
                     sequence > 1,
                 openingReplacementFund: 0,
+                openingPendingRecovery: 0,
+                // Alias legado: se conserva para datos/clientes anteriores.
                 openingPendingRecoveredCost: 0,
                 openingFundBalances: {
                     efectivo: 0,
@@ -18407,18 +18439,20 @@ async function construirResumenCierreActividad(
                 activityData?.openingReplacementFund || 0
             )
         );
-    const openingPendingRecoveredCost =
+    const openingPendingRecovery =
         Math.max(
             0,
             redondearDineroCuentaPorCobrar(
-                activityData?.openingPendingRecoveredCost || 0
+                activityData?.openingPendingRecovery ??
+                activityData?.openingPendingRecoveredCost ??
+                0
             )
         );
     const carriedRecoveredCost =
         redondearDineroCuentaPorCobrar(
             Math.max(
                 0,
-                openingPendingRecoveredCost -
+                openingPendingRecovery -
                 pendingCostPrior
             )
         );
@@ -18491,12 +18525,37 @@ async function construirResumenCierreActividad(
                 replacementBase
             )
         );
-    const pendingCostBasisTotal =
+    /*
+     * Capital pendiente de recuperar es un concepto de fondos,
+     * no un saldo de cuentas por cobrar. La deuda del cliente
+     * permanece en receivables; aquí sólo medimos cuánto costo
+     * de mercadería todavía no volvió al capital de reposición.
+     */
+    const currentCapitalToRecover =
+        redondearDineroCuentaPorCobrar(
+            Math.max(0, cost)
+        );
+    const capitalToRecover =
+        redondearDineroCuentaPorCobrar(
+            openingPendingRecovery +
+            currentCapitalToRecover
+        );
+    const capitalRecovered =
         redondearDineroCuentaPorCobrar(
             Math.max(
                 0,
-                pendingCostCurrent +
-                pendingCostPrior
+                Math.min(
+                    capitalToRecover,
+                    availableRecoveredCost
+                )
+            )
+        );
+    const pendingRecovery =
+        redondearDineroCuentaPorCobrar(
+            Math.max(
+                0,
+                capitalToRecover -
+                capitalRecovered
             )
         );
 
@@ -18738,14 +18797,19 @@ async function construirResumenCierreActividad(
             unknownCostSales,
             pendingReceivableAmount:
                 pendingReceivableCurrent,
-            pendingCost:
-                pendingCostCurrent,
         },
         funds: {
             openingReplacementFund,
-            openingPendingRecoveredCost,
+            openingPendingRecovery,
+            // Alias legado para snapshots anteriores.
+            openingPendingRecoveredCost:
+                openingPendingRecovery,
+            currentCapitalToRecover,
+            capitalToRecover,
+            capitalRecovered,
+            pendingRecovery,
             recoveredCost:
-                availableRecoveredCost,
+                capitalRecovered,
             currentRecoveredCost,
             carriedRecoveredCost,
             paidPurchases,
@@ -18767,11 +18831,6 @@ async function construirResumenCierreActividad(
                 pendingReceivableCount,
             pendingCurrentActivityAmount:
                 pendingReceivableCurrent,
-            pendingCurrentActivityCost:
-                pendingCostCurrent,
-            pendingPreviousCost:
-                pendingCostPrior,
-            pendingCostBasisTotal,
         },
         payables: {
             pendingAmount:
@@ -18994,6 +19053,45 @@ exports.cerrarActividad =
                 request.data?.closeRequestId,
                 "closeRequestId"
             );
+            const rawActualBalances =
+                esObjetoPlano(
+                    request.data?.actualBalances
+                )
+                    ? request.data.actualBalances
+                    : {};
+            const actualCash =
+                redondearDineroCuentaPorCobrar(
+                    rawActualBalances.efectivo
+                );
+            const actualTransfer =
+                redondearDineroCuentaPorCobrar(
+                    rawActualBalances.transferencia
+                );
+
+            if (
+                rawActualBalances.efectivo === null ||
+                rawActualBalances.efectivo === undefined ||
+                String(rawActualBalances.efectivo).trim() === "" ||
+                rawActualBalances.transferencia === null ||
+                rawActualBalances.transferencia === undefined ||
+                String(rawActualBalances.transferencia).trim() === "" ||
+                !Number.isFinite(
+                    Number(rawActualBalances.efectivo)
+                ) ||
+                Number(rawActualBalances.efectivo) < 0 ||
+                Number(rawActualBalances.efectivo) > 999999999999 ||
+                !Number.isFinite(
+                    Number(rawActualBalances.transferencia)
+                ) ||
+                Number(rawActualBalances.transferencia) < 0 ||
+                Number(rawActualBalances.transferencia) > 999999999999
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá saldos reales válidos de efectivo y transferencia."
+                );
+            }
+
             const configRef = clienteRef
                 .collection("configuracion")
                 .doc("pos");
@@ -19178,10 +19276,40 @@ exports.cerrarActividad =
                                 redondearDineroCuentaPorCobrar(
                                     data.openingReplacementFund || 0
                                 ),
-                            openingPendingRecoveredCost:
-                                redondearDineroCuentaPorCobrar(
-                                    data.openingPendingRecoveredCost || 0
+                            openingPendingRecovery:
+                                Math.max(
+                                    0,
+                                    redondearDineroCuentaPorCobrar(
+                                        data.openingPendingRecovery ??
+                                        data.openingPendingRecoveredCost ??
+                                        0
+                                    )
                                 ),
+                            openingPendingRecoveredCost:
+                                Math.max(
+                                    0,
+                                    redondearDineroCuentaPorCobrar(
+                                        data.openingPendingRecovery ??
+                                        data.openingPendingRecoveredCost ??
+                                        0
+                                    )
+                                ),
+                            openingFundBalances:
+                                esObjetoPlano(data.openingFundBalances)
+                                    ? Object.fromEntries(
+                                        ACTIVITY_FLOW_METHODS.map(
+                                            (method) => [
+                                                method,
+                                                redondearDineroCuentaPorCobrar(
+                                                    Math.max(
+                                                        0,
+                                                        data.openingFundBalances?.[method] || 0
+                                                    )
+                                                ),
+                                            ]
+                                        )
+                                    )
+                                    : {},
                         };
                     }
                 }
@@ -19246,24 +19374,73 @@ exports.cerrarActividad =
                         preview.funds.replacementFund
                     );
                 const nextOpeningPendingCost =
-                    redondearDineroCuentaPorCobrar(
-                        preview.receivables
-                            .pendingCostBasisTotal
+                    Math.max(
+                        0,
+                        redondearDineroCuentaPorCobrar(
+                            preview.funds
+                                .pendingRecovery
+                        )
                     );
+                const expectedCash =
+                    redondearDineroCuentaPorCobrar(
+                        Math.max(
+                            0,
+                            preview.reconciliation
+                                ?.methods
+                                ?.efectivo
+                                ?.balance || 0
+                        )
+                    );
+                const expectedTransfer =
+                    redondearDineroCuentaPorCobrar(
+                        Math.max(
+                            0,
+                            preview.reconciliation
+                                ?.methods
+                                ?.transferencia
+                                ?.balance || 0
+                        )
+                    );
+                const cashReconciliationDifference =
+                    redondearDineroCuentaPorCobrar(
+                        actualCash - expectedCash
+                    );
+                const transferReconciliationDifference =
+                    redondearDineroCuentaPorCobrar(
+                        actualTransfer - expectedTransfer
+                    );
+                const declaredBalances = {
+                    efectivo: {
+                        expected: expectedCash,
+                        actual: actualCash,
+                        difference:
+                            cashReconciliationDifference,
+                    },
+                    transferencia: {
+                        expected: expectedTransfer,
+                        actual: actualTransfer,
+                        difference:
+                            transferReconciliationDifference,
+                    },
+                };
                 const nextOpeningFundBalances =
                     Object.fromEntries(
                         ACTIVITY_FLOW_METHODS.map(
                             (method) => [
                                 method,
-                                redondearDineroCuentaPorCobrar(
-                                    Math.max(
-                                        0,
-                                        preview.reconciliation
-                                            ?.methods
-                                            ?.[method]
-                                            ?.balance || 0
-                                    )
-                                ),
+                                method === "efectivo"
+                                    ? actualCash
+                                    : method === "transferencia"
+                                        ? actualTransfer
+                                        : redondearDineroCuentaPorCobrar(
+                                            Math.max(
+                                                0,
+                                                preview.reconciliation
+                                                    ?.methods
+                                                    ?.[method]
+                                                    ?.balance || 0
+                                            )
+                                        ),
                             ]
                         )
                     );
@@ -19274,6 +19451,10 @@ exports.cerrarActividad =
                         status: "closed",
                         closedAt:
                             closedAtIso,
+                    },
+                    reconciliation: {
+                        ...preview.reconciliation,
+                        declaredBalances,
                     },
                     blockingReasons: [],
                 };
@@ -19419,6 +19600,9 @@ exports.cerrarActividad =
                                     true,
                                 openingReplacementFund:
                                     nextOpeningFund,
+                                openingPendingRecovery:
+                                    nextOpeningPendingCost,
+                                // Alias legado: evita romper actividades ya existentes.
                                 openingPendingRecoveredCost:
                                     nextOpeningPendingCost,
                                 openingFundBalances:
@@ -19501,8 +19685,8 @@ exports.cerrarActividad =
                                     fondoReposicionFinal:
                                         preview.funds.replacementFund,
                                     costoPendienteRecuperar:
-                                        preview.receivables
-                                            .pendingCostBasisTotal,
+                                        preview.funds
+                                            .pendingRecovery,
                                     cuentasPorCobrar:
                                         preview.receivables
                                             .pendingAmount,
@@ -19516,6 +19700,18 @@ exports.cerrarActividad =
                                         preview.reconciliation
                                             .cashSessions
                                             .difference,
+                                    efectivoEsperado:
+                                        expectedCash,
+                                    efectivoReal:
+                                        actualCash,
+                                    diferenciaEfectivoActividad:
+                                        cashReconciliationDifference,
+                                    transferenciaEsperada:
+                                        expectedTransfer,
+                                    transferenciaReal:
+                                        actualTransfer,
+                                    diferenciaTransferenciaActividad:
+                                        transferReconciliationDifference,
                                 },
                             });
 
@@ -19558,8 +19754,12 @@ exports.cerrarActividad =
                             true,
                         openingReplacementFund:
                             nextOpeningFund,
+                        openingPendingRecovery:
+                            nextOpeningPendingCost,
                         openingPendingRecoveredCost:
                             nextOpeningPendingCost,
+                        openingFundBalances:
+                            nextOpeningFundBalances,
                     },
                 };
             } catch (error) {

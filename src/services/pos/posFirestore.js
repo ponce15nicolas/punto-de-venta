@@ -3956,6 +3956,33 @@ export async function closeActivityCloud(
       payload?.closeRequestId,
       "closeRequestId"
     );
+  const rawActualCash =
+    payload?.actualBalances?.efectivo;
+  const rawActualTransfer =
+    payload?.actualBalances
+      ?.transferencia;
+  const actualCash = Number(rawActualCash);
+  const actualTransfer = Number(
+    rawActualTransfer
+  );
+
+  if (
+    rawActualCash === null ||
+    rawActualCash === undefined ||
+    String(rawActualCash).trim() === "" ||
+    rawActualTransfer === null ||
+    rawActualTransfer === undefined ||
+    String(rawActualTransfer).trim() === "" ||
+    !Number.isFinite(actualCash) ||
+    actualCash < 0 ||
+    !Number.isFinite(actualTransfer) ||
+    actualTransfer < 0
+  ) {
+    fail(
+      "invalid-argument",
+      "Ingresá saldos reales válidos de efectivo y transferencia"
+    );
+  }
 
   return invokePurchasingCallable(
     cerrarActividadFunction,
@@ -3964,6 +3991,11 @@ export async function closeActivityCloud(
         context.cleanClienteId,
       activityId,
       closeRequestId,
+      actualBalances: {
+        efectivo: roundMoney(actualCash),
+        transferencia:
+          roundMoney(actualTransfer),
+      },
       operadorSesion:
         context.operadorSesion,
       deviceId:

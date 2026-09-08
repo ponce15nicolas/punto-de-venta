@@ -8281,7 +8281,8 @@ export function usePosData({
     useCallback(
       async (
         activityId,
-        closeRequestId = uid()
+        closeRequestId = uid(),
+        actualBalances = {}
       ) => {
         if (
           !cloudActiveRef
@@ -8327,6 +8328,15 @@ export function usePosData({
                   cleanActivityId,
                 closeRequestId:
                   cleanRequestId,
+                actualBalances: {
+                  efectivo: Number(
+                    actualBalances?.efectivo
+                  ),
+                  transferencia: Number(
+                    actualBalances
+                      ?.transferencia
+                  ),
+                },
               },
               {
                 operadorSesion,
