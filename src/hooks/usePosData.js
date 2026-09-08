@@ -45,6 +45,8 @@ import {
   createOtherCostCloud,
   updateOtherCostCloud,
   voidOtherCostCloud,
+  previewActivityClosureCloud,
+  closeActivityCloud,
   migrateHistoricalProfitsCloud,
   deleteCashSessionCloud,
   deleteProductCloud,
@@ -82,6 +84,7 @@ import {
 
 import {
   convertFundsCloud,
+  getActivityFundsCloud,
 } from "../services/pos/fundsFirestore";
 
 /* =========================================================
@@ -7195,8 +7198,58 @@ export function usePosData({
     );
 
   /* =========================================================
-     CONVERSIÓN DE FONDOS
+     CONVERSIÓN DE FONDOS — ACTIVIDAD
   ========================================================= */
+
+  const getActivityFunds =
+    useCallback(
+      async () => {
+        if (!operadorEsAdministrador) {
+          return null;
+        }
+
+        if (!cloudActiveRef.current) {
+          showToast(
+            "Necesitás conexión con la nube para consultar fondos",
+            true
+          );
+
+          return null;
+        }
+
+        try {
+          return await getActivityFundsCloud(
+            cleanClienteId,
+            {
+              operadorSesion,
+              deviceId: cleanDeviceId,
+            }
+          );
+        } catch (error) {
+          console.error(
+            "Error cargando fondos de actividad:",
+            error
+          );
+
+          showToast(
+            String(
+              error?.message ||
+                mapCloudError(error)
+            ),
+            true
+          );
+
+          return null;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorEsAdministrador,
+        operadorSesion,
+        showToast,
+      ]
+    );
 
   const convertFunds =
     useCallback(
@@ -7213,24 +7266,6 @@ export function usePosData({
         if (!operadorEsAdministrador) {
           showToast(
             "Esta operación requiere un administrador",
-            true
-          );
-
-          return false;
-        }
-
-        const currentOpenSession =
-          cashSessionsRef.current
-            .find(
-              (session) =>
-                session?.status ===
-                "open"
-            ) ||
-          null;
-
-        if (!currentOpenSession) {
-          showToast(
-            "Abrí una caja antes de convertir fondos",
             true
           );
 
@@ -7293,7 +7328,6 @@ export function usePosData({
               cleanClienteId,
               {
                 conversionId,
-                cashSessionId: currentOpenSession.id,
                 origen: from,
                 destino: to,
                 importe: amount,
@@ -7305,28 +7339,11 @@ export function usePosData({
               }
             );
 
-          if (
-            result?.session &&
-            result.session.id === currentOpenSession.id
-          ) {
-            persistCashSessions(
-              cashSessionsRef.current.map(
-                (session) =>
-                  session.id === currentOpenSession.id
-                    ? {
-                        ...session,
-                        ...result.session,
-                      }
-                    : session
-              )
-            );
-          }
-
           showToast(
             "Conversión de fondos registrada"
           );
 
-          return result?.conversion || result;
+          return result;
         } catch (error) {
           console.error(
             "Error convirtiendo fondos:",
@@ -7351,7 +7368,6 @@ export function usePosData({
         cleanDeviceId,
         operadorEsAdministrador,
         operadorSesion,
-        persistCashSessions,
         showToast,
       ]
     );
@@ -8212,6 +8228,171 @@ export function usePosData({
     );
 
   /* =========================================================
+     ACTIVIDAD — CIERRE Y CONCILIACIÓN
+  ========================================================= */
+
+  const previewActivityClosure =
+    useCallback(
+      async () => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para preparar el cierre",
+            true
+          );
+
+          return null;
+        }
+
+        try {
+          return await previewActivityClosureCloud(
+            cleanClienteId,
+            {
+              operadorSesion,
+              deviceId:
+                cleanDeviceId,
+            }
+          );
+        } catch (error) {
+          console.error(
+            "Error preparando cierre de actividad:",
+            error
+          );
+
+          showToast(
+            mapCloudError(error),
+            true
+          );
+
+          return null;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        showToast,
+      ]
+    );
+
+  const closeActivity =
+    useCallback(
+      async (
+        activityId,
+        closeRequestId = uid()
+      ) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para cerrar la actividad",
+            true
+          );
+
+          return null;
+        }
+
+        const cleanActivityId =
+          String(
+            activityId ||
+            ""
+          ).trim();
+        const cleanRequestId =
+          String(
+            closeRequestId ||
+            ""
+          ).trim();
+
+        if (
+          !cleanActivityId ||
+          !cleanRequestId
+        ) {
+          showToast(
+            "No se pudo identificar la actividad a cerrar",
+            true
+          );
+
+          return null;
+        }
+
+        try {
+          const result =
+            await closeActivityCloud(
+              cleanClienteId,
+              {
+                activityId:
+                  cleanActivityId,
+                closeRequestId:
+                  cleanRequestId,
+              },
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
+
+          if (
+            result?.nextActivity &&
+            typeof result.nextActivity ===
+              "object"
+          ) {
+            setActiveActivity(
+              result.nextActivity
+            );
+          }
+
+          await refreshPurchasingData({
+            silent: true,
+          });
+
+          const closedNumber =
+            Math.max(
+              1,
+              Math.trunc(
+                Number(
+                  result?.closure
+                    ?.activity
+                    ?.sequence ||
+                  1
+                )
+              ) || 1
+            );
+
+          showToast(
+            `Actividad #${String(
+              closedNumber
+            ).padStart(3, "0")} cerrada`
+          );
+
+          return result;
+        } catch (error) {
+          console.error(
+            "Error cerrando actividad:",
+            error
+          );
+
+          showToast(
+            mapCloudError(error),
+            true
+          );
+
+          return null;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        refreshPurchasingData,
+        showToast,
+      ]
+    );
+
+  /* =========================================================
      CUENTAS POR COBRAR — ALTA MANUAL
   ========================================================= */
 
@@ -8559,6 +8740,7 @@ export function usePosData({
 
     openCashSession,
     closeCashSession,
+    getActivityFunds,
     convertFunds,
     deleteCashSession,
 
@@ -8573,6 +8755,8 @@ export function usePosData({
     createOtherCost,
     updateOtherCost,
     voidOtherCost,
+    previewActivityClosure,
+    closeActivity,
     migrateHistoricalProfits,
 
     paymentBreakdown,

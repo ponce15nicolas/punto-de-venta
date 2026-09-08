@@ -160,6 +160,18 @@ const anularOtroCostoActividadFunction =
     "anularOtroCostoActividad"
   );
 
+const previsualizarCierreActividadFunction =
+  httpsCallable(
+    functions,
+    "previsualizarCierreActividad"
+  );
+
+const cerrarActividadFunction =
+  httpsCallable(
+    functions,
+    "cerrarActividad"
+  );
+
 const migrarGananciasHistoricasFunction =
   httpsCallable(
     functions,
@@ -3881,6 +3893,87 @@ export async function voidOtherCostCloud(
         "void-other-cost-failed",
       message:
         "No se pudo anular el costo",
+    }
+  );
+}
+
+/* =========================================================
+   CIERRE DE ACTIVIDAD
+========================================================= */
+
+export async function previewActivityClosureCloud(
+  clienteId,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  const result =
+    await invokePurchasingCallable(
+      previsualizarCierreActividadFunction,
+      {
+        clienteId:
+          context.cleanClienteId,
+        operadorSesion:
+          context.operadorSesion,
+        deviceId:
+          context.cleanDeviceId,
+      },
+      {
+        code:
+          "preview-activity-close-failed",
+        message:
+          "No se pudo preparar el cierre de actividad",
+      }
+    );
+
+  return result?.preview &&
+    typeof result.preview === "object"
+      ? result.preview
+      : null;
+}
+
+export async function closeActivityCloud(
+  clienteId,
+  payload,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+  const activityId =
+    requireString(
+      payload?.activityId,
+      "activityId"
+    );
+  const closeRequestId =
+    requireString(
+      payload?.closeRequestId,
+      "closeRequestId"
+    );
+
+  return invokePurchasingCallable(
+    cerrarActividadFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      activityId,
+      closeRequestId,
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "close-activity-failed",
+      message:
+        "No se pudo cerrar la actividad",
     }
   );
 }

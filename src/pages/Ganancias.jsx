@@ -14,6 +14,7 @@ import { motion } from "motion/react";
 
 import { money } from "../lib/format";
 import Modal from "../components/Modal";
+import ActivityClosureModal from "../components/ActivityClosureModal";
 import { useOperator } from "../components/OperatorGate";
 
 const PERIODS = [
@@ -363,10 +364,18 @@ function getActivityFinancialStart(
     getDateValue(
       activeActivity?.financialStartAt
     );
-
-  if (configured) {
-    return configured;
-  }
+  const sequence = Math.max(
+    1,
+    Math.trunc(
+      toNumber(
+        activeActivity?.sequence,
+        1
+      )
+    ) || 1
+  );
+  const locked =
+    activeActivity?.financialStartLocked ===
+      true || sequence > 1;
 
   let earliestSale = null;
 
@@ -380,6 +389,21 @@ function getActivityFinancialStart(
     ) {
       earliestSale = date;
     }
+  }
+
+  if (
+    !locked &&
+    earliestSale &&
+    (
+      !configured ||
+      earliestSale < configured
+    )
+  ) {
+    return earliestSale;
+  }
+
+  if (configured) {
+    return configured;
   }
 
   if (earliestSale) {
@@ -448,6 +472,213 @@ function paymentMethodLabel(value) {
   return value === "transferencia"
     ? "Transferencia"
     : "Efectivo";
+}
+
+function buildReceivablePendingState(
+  accountsReceivable
+) {
+  const accountById = new Map();
+  const pendingBySaleId = new Map();
+
+  for (const account of accountsReceivable) {
+    const accountId = String(
+      account?.id || ""
+    ).trim();
+    const saldoPendiente = Math.max(
+      0,
+      roundMoney(
+        toNumber(
+          account?.saldoPendiente
+        )
+      )
+    );
+    const importeOriginal = Math.max(
+      0,
+      roundMoney(
+        toNumber(
+          account?.importeOriginal
+        )
+      )
+    );
+    const fallbackRatio =
+      importeOriginal > 0
+        ? Math.min(
+            1,
+            saldoPendiente /
+              importeOriginal
+          )
+        : saldoPendiente > 0
+          ? 1
+          : 0;
+    const operations = Array.isArray(
+      account?.operaciones
+    )
+      ? account.operaciones
+          .map((operation, index) => ({
+            operation,
+            index,
+            amount: Math.max(
+              0,
+              roundMoney(
+                toNumber(
+                  operation?.importe
+                )
+              )
+            ),
+            date: getDateValue(
+              operation?.creadoEn ||
+              operation?.fechaOrigen
+            ),
+          }))
+          .filter(
+            (item) => item.amount > 0
+          )
+          .sort((a, b) => {
+            const aTime =
+              a.date?.getTime?.() ??
+              Number.MAX_SAFE_INTEGER;
+            const bTime =
+              b.date?.getTime?.() ??
+              Number.MAX_SAFE_INTEGER;
+
+            if (aTime !== bTime) {
+              return aTime - bTime;
+            }
+
+            return a.index - b.index;
+          })
+      : [];
+
+    if (operations.length > 0) {
+      const operationsTotal =
+        roundMoney(
+          operations.reduce(
+            (sum, item) =>
+              sum + item.amount,
+            0
+          )
+        );
+      let applied = Math.max(
+        0,
+        roundMoney(
+          operationsTotal -
+            saldoPendiente
+        )
+      );
+
+      for (const item of operations) {
+        const appliedHere = Math.min(
+          item.amount,
+          applied
+        );
+        const remaining = roundMoney(
+          Math.max(
+            0,
+            item.amount - appliedHere
+          )
+        );
+        applied = roundMoney(
+          Math.max(
+            0,
+            applied - appliedHere
+          )
+        );
+        const saleId = String(
+          item.operation?.ventaId ||
+          ""
+        ).trim();
+
+        if (saleId) {
+          pendingBySaleId.set(
+            saleId,
+            {
+              originalAmount:
+                item.amount,
+              pendingAmount:
+                remaining,
+            }
+          );
+        }
+      }
+    }
+
+    if (accountId) {
+      accountById.set(
+        accountId,
+        {
+          fallbackRatio,
+        }
+      );
+    }
+  }
+
+  return {
+    accountById,
+    pendingBySaleId,
+  };
+}
+
+function getSalePendingState(
+  sale,
+  revenue,
+  receivableState
+) {
+  const saleId = String(
+    sale?.id || ""
+  ).trim();
+  const direct = saleId
+    ? receivableState
+        .pendingBySaleId
+        .get(saleId)
+    : null;
+
+  if (direct) {
+    const original = Math.max(
+      0,
+      toNumber(
+        direct.originalAmount
+      )
+    );
+    const pending = Math.max(
+      0,
+      toNumber(
+        direct.pendingAmount
+      )
+    );
+
+    return {
+      pendingAmount:
+        roundMoney(pending),
+      ratio:
+        original > 0
+          ? Math.min(
+              1,
+              pending / original
+            )
+          : 0,
+    };
+  }
+
+  const accountId = String(
+    sale?.cuentaPorCobrarId ||
+    ""
+  ).trim();
+  const account = accountId
+    ? receivableState
+        .accountById
+        .get(accountId)
+    : null;
+  const ratio =
+    account?.fallbackRatio ?? 0;
+
+  return {
+    pendingAmount:
+      roundMoney(
+        Math.max(0, revenue) *
+          ratio
+      ),
+    ratio,
+  };
 }
 
 function formatPercent(value) {
@@ -1231,6 +1462,9 @@ export default function Ganancias({ pos }) {
   const [fundsOpen, setFundsOpen] =
     useState(false);
 
+  const [closureOpen, setClosureOpen] =
+    useState(false);
+
   const [financialPeriod, setFinancialPeriod] =
     useState("30d");
 
@@ -1739,80 +1973,135 @@ export default function Ganancias({ pos }) {
       );
     };
 
-    const activitySales = sales.filter(
-      (sale) => {
-        const date = getSaleDate(sale);
-
-        return date
-          ? inFinancialRange(date)
-          : false;
+    const belongsToActivity = (
+      activityId,
+      dateValue
+    ) => {
+      if (
+        financialPeriod !==
+        "activity"
+      ) {
+        return inFinancialRange(
+          dateValue
+        );
       }
+
+      const storedActivityId =
+        String(
+          activityId || ""
+        ).trim();
+      const activeId = String(
+        activeActivity?.id || ""
+      ).trim();
+
+      if (storedActivityId) {
+        return Boolean(
+          activeId &&
+          storedActivityId ===
+            activeId
+        );
+      }
+
+      return inFinancialRange(
+        dateValue
+      );
+    };
+
+    const receivableState =
+      buildReceivablePendingState(
+        accountsReceivable
+      );
+
+    const activitySales = sales.filter(
+      (sale) =>
+        belongsToActivity(
+          sale?.activityId,
+          getSaleDate(sale)
+        )
     );
+    const activitySaleSet =
+      new Set(activitySales);
 
     let revenue = 0;
     let cost = 0;
     let profit = 0;
-    let pendingCost = 0;
+    let pendingCostCurrent = 0;
+    let pendingCostPrior = 0;
 
-    const receivableMap = new Map();
-
-    for (const account of accountsReceivable) {
-      const ids = [
-        account?.id,
-        ...(Array.isArray(account?.cuentaIds)
-          ? account.cuentaIds
-          : []),
-        ...(Array.isArray(account?.cuentasOrigen)
-          ? account.cuentasOrigen.map(
-              (source) => source?.id
-            )
-          : []),
-      ];
-
-      for (const id of ids) {
-        if (id) {
-          receivableMap.set(
-            String(id),
-            account
-          );
-        }
-      }
-    }
-
-    for (const sale of activitySales) {
+    for (const sale of sales) {
       const snapshot =
         getSaleProfitSnapshot(sale);
+      const isReceivable =
+        sale?.payment?.method ===
+          "cuenta" &&
+        Boolean(
+          sale?.cuentaPorCobrarId
+        );
+      const pending =
+        isReceivable
+          ? getSalePendingState(
+              sale,
+              snapshot.revenue,
+              receivableState
+            )
+          : {
+              pendingAmount: 0,
+              ratio: 0,
+            };
+      const inCurrentRange =
+        activitySaleSet.has(sale);
 
-      revenue += snapshot.revenue;
+      if (inCurrentRange) {
+        revenue += snapshot.revenue;
 
-      if (!snapshot.known) {
+        if (!snapshot.known) {
+          continue;
+        }
+
+        cost += snapshot.cost;
+        profit += snapshot.profit;
+
+        if (isReceivable) {
+          pendingCostCurrent +=
+            snapshot.cost *
+            pending.ratio;
+        }
+
         continue;
       }
 
-      cost += snapshot.cost;
-      profit += snapshot.profit;
-
       if (
-        sale?.payment?.method === "cuenta" &&
-        sale?.cuentaPorCobrarId
+        financialPeriod ===
+          "activity" &&
+        snapshot.known &&
+        isReceivable
       ) {
-        const account = receivableMap.get(
-          String(sale.cuentaPorCobrarId)
-        );
-        const original = Math.max(
-          0,
-          toNumber(account?.importeOriginal)
-        );
-        const pending = Math.max(
-          0,
-          toNumber(account?.saldoPendiente)
-        );
-        const pendingRatio = original > 0
-          ? Math.min(1, pending / original)
-          : 1;
+        const saleDate =
+          getSaleDate(sale);
+        const saleActivityId =
+          String(
+            sale?.activityId || ""
+          ).trim();
+        const activeId = String(
+          activeActivity?.id || ""
+        ).trim();
+        const priorByActivity =
+          saleActivityId &&
+          activeId &&
+          saleActivityId !== activeId;
+        const priorByDate =
+          saleDate &&
+          Number.isFinite(startMs) &&
+          saleDate.getTime() < startMs;
 
-        pendingCost +=
-          snapshot.cost * pendingRatio;
+        if (
+          priorByActivity ||
+          priorByDate
+        ) {
+          pendingCostPrior +=
+            snapshot.cost *
+            pending.ratio;
+        }
       }
     }
 
@@ -1823,7 +2112,8 @@ export default function Ganancias({ pos }) {
         ["efectivo", "transferencia"].includes(
           item?.metodoPago
         ) &&
-        inFinancialRange(
+        belongsToActivity(
+          item?.activityId,
           item?.compradoEn
         )
       )
@@ -1850,7 +2140,8 @@ export default function Ganancias({ pos }) {
           : []
       )
       .filter((payment) =>
-        inFinancialRange(
+        belongsToActivity(
+          payment?.activityId,
           payment?.fecha
         )
       )
@@ -1870,7 +2161,8 @@ export default function Ganancias({ pos }) {
 
     const periodOtherCosts =
       otherCosts.filter((costItem) =>
-        inFinancialRange(
+        belongsToActivity(
+          costItem?.activityId,
           costItem?.creadoEn ||
           costItem?.actualizadoEn
         )
@@ -1905,9 +2197,45 @@ export default function Ganancias({ pos }) {
           )
         : 0
     );
-
-    const availableRecoveredCost = roundMoney(
-      Math.max(0, cost - pendingCost)
+    const openingPendingCost =
+      financialPeriod === "activity"
+        ? roundMoney(
+            Math.max(
+              0,
+              toNumber(
+                activeActivity
+                  ?.openingPendingRecoveredCost
+              )
+            )
+          )
+        : 0;
+    const carriedRecoveredCost =
+      financialPeriod === "activity"
+        ? roundMoney(
+            Math.max(
+              0,
+              openingPendingCost -
+              pendingCostPrior
+            )
+          )
+        : 0;
+    const currentRecoveredCost =
+      roundMoney(
+        Math.max(
+          0,
+          cost - pendingCostCurrent
+        )
+      );
+    const availableRecoveredCost =
+      roundMoney(
+        currentRecoveredCost +
+        carriedRecoveredCost
+      );
+    const pendingCost = roundMoney(
+      pendingCostCurrent +
+      (financialPeriod === "activity"
+        ? pendingCostPrior
+        : 0)
     );
 
     const replacementBeforeExpenses = roundMoney(
@@ -1971,8 +2299,14 @@ export default function Ganancias({ pos }) {
       revenue: roundMoney(revenue),
       cost: roundMoney(cost),
       profit: roundMoney(profit),
-      pendingCost:
-        roundMoney(pendingCost),
+      pendingCost,
+      pendingCostCurrent:
+        roundMoney(pendingCostCurrent),
+      pendingCostPrior:
+        roundMoney(pendingCostPrior),
+      openingPendingCost,
+      currentRecoveredCost,
+      carriedRecoveredCost,
       availableRecoveredCost,
       openingFund,
       paidPurchases,
@@ -1997,6 +2331,7 @@ export default function Ganancias({ pos }) {
     sales,
     shoppingList,
   ]);
+
 
   const pendingRestock = useMemo(() => {
     const items = shoppingList
@@ -3106,8 +3441,49 @@ export default function Ganancias({ pos }) {
               Los costos de una caja cerrada quedan bloqueados para preservar la conciliación histórica.
             </p>
           </div>
+
+          {esAdministrador && (
+            <div className="rounded-[20px] border border-[#FFC61A]/20 bg-[#FFC61A]/[0.055] p-3.5">
+              <div className="flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[9px] font-extrabold uppercase tracking-[0.12em] text-[#FFC61A]">
+                    Cierre de actividad
+                  </p>
+                  <p className="mt-1 text-xs font-black text-white/80">
+                    Conciliación y snapshot definitivo
+                  </p>
+                  <p className="mt-1 text-[10px] leading-relaxed text-white/35">
+                    Revisa ventas, fondos, cajas, deudas y reposición pendiente antes de iniciar la siguiente actividad.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setFundsOpen(false);
+                  setClosureOpen(true);
+                }}
+                className="mt-3 w-full rounded-2xl bg-[#FFC61A] px-4 py-3 text-xs font-extrabold text-black transition hover:bg-[#FFD248] active:scale-[0.99]"
+              >
+                Preparar cierre y conciliación
+              </button>
+            </div>
+          )}
         </div>
       </Modal>
+
+      <ActivityClosureModal
+        open={closureOpen}
+        pos={pos}
+        onClose={() => {
+          setClosureOpen(false);
+          setFundsOpen(true);
+        }}
+        onClosed={() => {
+          setFinancialPeriod("activity");
+        }}
+      />
 
       <OtherCostModal
         open={otherCostOpen}

@@ -28,6 +28,7 @@ const ACTIONS = [
   { id: "alta-item-compra", label: "Lista compras" },
   { id: "compra-completada", label: "Compradas" },
   { id: "otro-costo-actividad", label: "Otros costos" },
+  { id: "cierre-actividad", label: "Cierre actividad" },
   { id: "alta-cuenta-por-pagar", label: "Ctas. pagar" },
   { id: "pago-cuenta-por-pagar", label: "Pagos deuda" },
   { id: "cuenta-por-pagar-saldada", label: "Deudas pagas" },
@@ -129,6 +130,11 @@ const ACTION_META = {
     title: "Costo anulado",
     eyebrow: "Actividad",
     icon: TrashIcon,
+  },
+  "cierre-actividad": {
+    title: "Actividad cerrada",
+    eyebrow: "Actividad",
+    icon: CheckCircleIcon,
   },
   "alta-cuenta-por-pagar": {
     title: "Cuenta por pagar creada",
@@ -628,20 +634,43 @@ function getEventDetails(event) {
           label: "Importe",
           value: formatMoney(d.importe),
         },
-        {
-          label: "Efectivo",
-          value: formatMoneyTransition(
-            d.efectivoAnterior,
-            d.efectivoNuevo
-          ),
-        },
-        {
-          label: "Transferencia del turno",
-          value: formatMoneyTransition(
-            d.transferenciaTurnoAnterior,
-            d.transferenciaTurnoNueva
-          ),
-        },
+        ...(d.scope === "activity"
+          ? [
+              {
+                label: "Ámbito",
+                value: "Actividad completa",
+              },
+              {
+                label: "Efectivo actividad",
+                value: formatMoneyTransition(
+                  d.fundsBefore?.efectivo,
+                  d.fundsAfter?.efectivo
+                ),
+              },
+              {
+                label: "Transferencia actividad",
+                value: formatMoneyTransition(
+                  d.fundsBefore?.transferencia,
+                  d.fundsAfter?.transferencia
+                ),
+              },
+            ]
+          : [
+              {
+                label: "Efectivo",
+                value: formatMoneyTransition(
+                  d.efectivoAnterior,
+                  d.efectivoNuevo
+                ),
+              },
+              {
+                label: "Transferencia del turno",
+                value: formatMoneyTransition(
+                  d.transferenciaTurnoAnterior,
+                  d.transferenciaTurnoNueva
+                ),
+              },
+            ]),
         {
           label: "Motivo",
           value: d.motivo,
@@ -1233,6 +1262,66 @@ function getEventDetails(event) {
         {
           label: "Motivo",
           value: d.motivo,
+        },
+      ]);
+
+    case "cierre-actividad":
+      return compactDetails([
+        {
+          label: "Actividad",
+          value: d.numeroActividad
+            ? `#${String(
+                d.numeroActividad
+              ).padStart(3, "0")}`
+            : d.activityId,
+        },
+        {
+          label: "Ventas",
+          value: formatMoney(
+            d.ventas
+          ),
+        },
+        {
+          label: "Costo mercadería",
+          value: formatMoney(
+            d.costoMercaderia
+          ),
+        },
+        {
+          label: "Ganancia bruta",
+          value: formatMoney(
+            d.gananciaBruta
+          ),
+        },
+        {
+          label: "Ganancia disponible",
+          value: formatMoney(
+            d.gananciaDisponible
+          ),
+        },
+        {
+          label: "Fondo reposición",
+          value: formatMoney(
+            d.fondoReposicionFinal
+          ),
+        },
+        {
+          label: "Cuentas por cobrar",
+          value: formatMoney(
+            d.cuentasPorCobrar
+          ),
+        },
+        {
+          label: "Cuentas por pagar",
+          value: formatMoney(
+            d.cuentasPorPagar
+          ),
+        },
+        {
+          label: "Diferencia cajas",
+          value: formatMoney(
+            d.diferenciaCajas
+          ),
         },
       ]);
 

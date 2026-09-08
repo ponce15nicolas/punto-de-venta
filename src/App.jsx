@@ -810,6 +810,7 @@ function PosApp({ license }) {
         onNavigate={setTab}
         currentTab={tab}
         openSession={pos.openSession}
+        activeActivity={pos.activeActivity}
         allowOperatorChangeWithOpenSession={pos.migrationNeedsAdmin}
         pendingOfflineCount={pos.pendingOfflineCount}
         offlineAttentionCount={pos.offlineAttentionCount}
@@ -838,8 +839,9 @@ function PosApp({ license }) {
 
       <FundConversionModal
         open={fundConversionOpen}
-        openSession={pos.openSession}
+        activeActivity={pos.activeActivity}
         isOnline={pos.isOnline}
+        onLoadFunds={pos.getActivityFunds}
         onConvert={pos.convertFunds}
         onClose={() => setFundConversionOpen(false)}
       />

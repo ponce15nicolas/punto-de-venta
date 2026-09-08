@@ -1753,6 +1753,9 @@ const AUDIT_ACTIONS = Object.freeze({
     ANULACION_OTRO_COSTO_ACTIVIDAD:
         "anulacion-otro-costo-actividad",
 
+    CIERRE_ACTIVIDAD:
+        "cierre-actividad",
+
     ALTA_CUENTA_POR_PAGAR:
         "alta-cuenta-por-pagar",
 
@@ -15346,6 +15349,12 @@ exports.crearCuentaPorCobrarManual =
                 { deviceId }
             );
 
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+
             const cuenta = normalizarCuentaPorCobrarManual(request.data?.cuenta);
             const nuevaCuentaRef = clienteRef.collection("cuentasPorCobrar").doc();
             const operacionId = `manual_${crypto.randomUUID()}`;
@@ -15385,6 +15394,7 @@ exports.crearCuentaPorCobrarManual =
                     notas: cuenta.notas,
                     ventaId: null,
                     sessionIdOrigen: sessionId || null,
+                    activityId: activeActivity.id,
                     creadoEn: admin.firestore.Timestamp.now(),
                 };
 
@@ -15484,6 +15494,7 @@ exports.crearCuentaPorCobrarManual =
                         fechaOrigen: cuenta.fechaOrigen,
                         vencimiento: cuenta.vencimiento,
                         origen: "manual",
+                        activityId: activeActivity.id,
                         agrupadaEnCuentaExistente: agrupada,
                         saldoAnterior,
                         saldoPendiente,
@@ -16587,6 +16598,9 @@ exports.registrarPagoCuentaPorCobrar =
    ACTIVIDAD COMERCIAL — BASE
 ========================================================= */
 
+const ACTIVITY_CLOSING_STALE_MS =
+    5 * 60 * 1000;
+
 async function asegurarActividadActual(
     clienteRef,
     operadorAutorizado = null
@@ -16621,32 +16635,148 @@ async function asegurarActividadActual(
                 const activeSnap =
                     await transaction.get(activeRef);
 
-                if (
-                    activeSnap.exists &&
-                    activeSnap.data()?.status !== "closed"
-                ) {
+                if (activeSnap.exists) {
                     const data = activeSnap.data() || {};
+                    const status = data.status || "open";
 
-                    return {
-                        id: activeId,
-                        status: data.status || "open",
-                        startedAt: serializarFechaCompra(
-                            data.startedAt ||
-                            data.startedAtIso
-                        ),
-                        financialStartAt:
-                            serializarFechaCompra(
-                                data.financialStartAt ||
-                                data.financialStartAtIso
+                    if (status === "closing") {
+                        const rawClosingStartedAt =
+                            data.closingStartedAt;
+                        const closingStartedMs =
+                            typeof rawClosingStartedAt?.toMillis ===
+                                "function"
+                                ? rawClosingStartedAt.toMillis()
+                                : actividadMillis(
+                                    rawClosingStartedAt
+                                );
+                        const closingIsStale =
+                            !Number.isFinite(
+                                closingStartedMs
+                            ) ||
+                            Date.now() - closingStartedMs >=
+                                ACTIVITY_CLOSING_STALE_MS;
+
+                        if (closingIsStale) {
+                            transaction.update(
+                                activeRef,
+                                {
+                                    status: "open",
+                                    closingRequestId:
+                                        admin.firestore.FieldValue.delete(),
+                                    closingStartedAt:
+                                        admin.firestore.FieldValue.delete(),
+                                    updatedAt:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }
+                            );
+
+                            return {
+                                id: activeId,
+                                status: "open",
+                                sequence:
+                                    Math.max(
+                                        1,
+                                        Math.trunc(
+                                            Number(
+                                                data.sequence ||
+                                                1
+                                            )
+                                        ) || 1
+                                    ),
+                                startedAt: serializarFechaCompra(
+                                    data.startedAt ||
+                                    data.startedAtIso
+                                ),
+                                financialStartAt:
+                                    serializarFechaCompra(
+                                        data.financialStartAt ||
+                                        data.financialStartAtIso
+                                    ),
+                                financialStartLocked:
+                                    data.financialStartLocked === true,
+                                openingReplacementFund:
+                                    redondearDineroCuentaPorCobrar(
+                                        data.openingReplacementFund || 0
+                                    ),
+                                openingPendingRecoveredCost:
+                                    redondearDineroCuentaPorCobrar(
+                                        data.openingPendingRecoveredCost || 0
+                                    ),
+                                openingFundBalances:
+                                    data.openingFundBalances &&
+                                    typeof data.openingFundBalances === "object"
+                                        ? data.openingFundBalances
+                                        : {},
+                            };
+                        }
+
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "La actividad se está cerrando. Esperá unos segundos e intentá nuevamente.",
+                            {
+                                motivo:
+                                    "activity-closing",
+                            }
+                        );
+                    }
+
+                    if (status !== "closed") {
+                        return {
+                            id: activeId,
+                            status,
+                            sequence:
+                                Math.max(
+                                    1,
+                                    Math.trunc(
+                                        Number(
+                                            data.sequence ||
+                                            1
+                                        )
+                                    ) || 1
+                                ),
+                            startedAt: serializarFechaCompra(
+                                data.startedAt ||
+                                data.startedAtIso
                             ),
-                        openingReplacementFund:
-                            redondearDineroCuentaPorCobrar(
-                                data.openingReplacementFund || 0
-                            ),
-                    };
+                            financialStartAt:
+                                serializarFechaCompra(
+                                    data.financialStartAt ||
+                                    data.financialStartAtIso
+                                ),
+                            financialStartLocked:
+                                data.financialStartLocked === true,
+                            openingReplacementFund:
+                                redondearDineroCuentaPorCobrar(
+                                    data.openingReplacementFund || 0
+                                ),
+                            openingPendingRecoveredCost:
+                                redondearDineroCuentaPorCobrar(
+                                    data.openingPendingRecoveredCost || 0
+                                ),
+                            openingFundBalances:
+                                data.openingFundBalances &&
+                                typeof data.openingFundBalances === "object"
+                                    ? data.openingFundBalances
+                                    : {},
+                        };
+                    }
                 }
             }
 
+            const configuredSequence =
+                Math.max(
+                    0,
+                    Math.trunc(
+                        Number(
+                            configSnap.data()?.activitySequence ||
+                            0
+                        )
+                    ) || 0
+                );
+            const sequence =
+                configuredSequence > 0
+                    ? configuredSequence + 1
+                    : 1;
             const activityId = candidateRef.id;
             const startedAtIso =
                 startedAt.toDate().toISOString();
@@ -16654,11 +16784,22 @@ async function asegurarActividadActual(
             transaction.set(candidateRef, {
                 id: activityId,
                 status: "open",
+                sequence,
                 startedAt,
                 startedAtIso,
                 financialStartAt: startedAt,
                 financialStartAtIso: startedAtIso,
+                financialStartLocked:
+                    sequence > 1,
                 openingReplacementFund: 0,
+                openingPendingRecoveredCost: 0,
+                openingFundBalances: {
+                    efectivo: 0,
+                    transferencia: 0,
+                    qr: 0,
+                    tarjeta: 0,
+                },
+                fundConversionRevision: 0,
                 creadoPor: operadorAutorizado
                     ? {
                         operadorId:
@@ -16685,6 +16826,7 @@ async function asegurarActividadActual(
                 {
                     activeActivityId: activityId,
                     activeActivityStartedAt: startedAt,
+                    activitySequence: sequence,
                     updatedAt:
                         admin.firestore.FieldValue.serverTimestamp(),
                 },
@@ -16694,9 +16836,19 @@ async function asegurarActividadActual(
             return {
                 id: activityId,
                 status: "open",
+                sequence,
                 startedAt: startedAtIso,
                 financialStartAt: startedAtIso,
+                financialStartLocked:
+                    sequence > 1,
                 openingReplacementFund: 0,
+                openingPendingRecoveredCost: 0,
+                openingFundBalances: {
+                    efectivo: 0,
+                    transferencia: 0,
+                    qr: 0,
+                    tarjeta: 0,
+                },
             };
         }
     );
@@ -17194,6 +17346,2234 @@ exports.cargarCompras =
         }
     );
 
+/* =========================================================
+   CIERRE DE ACTIVIDAD — RESUMEN Y CONCILIACIÓN
+========================================================= */
+
+const ACTIVITY_FLOW_METHODS = Object.freeze([
+    "efectivo",
+    "transferencia",
+    "qr",
+    "tarjeta",
+]);
+
+function actividadMillis(value) {
+    if (!value) {
+        return Number.NaN;
+    }
+
+    if (typeof value?.toMillis === "function") {
+        return value.toMillis();
+    }
+
+    if (typeof value?.toDate === "function") {
+        return value.toDate().getTime();
+    }
+
+    if (value instanceof Date) {
+        return value.getTime();
+    }
+
+    if (typeof value === "number") {
+        return Number.isFinite(value)
+            ? value
+            : Number.NaN;
+    }
+
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime())
+        ? Number.NaN
+        : date.getTime();
+}
+
+function actividadIso(value) {
+    const millis = actividadMillis(value);
+
+    return Number.isFinite(millis)
+        ? new Date(millis).toISOString()
+        : null;
+}
+
+function actividadVentaFechaMillis(sale) {
+    return actividadMillis(
+        sale?.timestamp ||
+        sale?.createdAt
+    );
+}
+
+function actividadVentaIngreso(item) {
+    const subtotal = Number(item?.subtotal);
+
+    if (Number.isFinite(subtotal)) {
+        return redondearDineroCuentaPorCobrar(subtotal);
+    }
+
+    return redondearDineroCuentaPorCobrar(
+        Number(item?.qty || 0) *
+        Number(item?.price || 0)
+    );
+}
+
+function actividadCostoItem(item) {
+    const subtotal = Number(item?.costSubtotal);
+
+    if (Number.isFinite(subtotal)) {
+        return {
+            known: true,
+            value:
+                redondearDineroCuentaPorCobrar(
+                    Math.max(0, subtotal)
+                ),
+        };
+    }
+
+    const unitCost = Number(item?.cost);
+
+    if (Number.isFinite(unitCost)) {
+        return {
+            known: true,
+            value:
+                redondearDineroCuentaPorCobrar(
+                    Math.max(0, unitCost) *
+                    Math.max(0, Number(item?.qty || 0))
+                ),
+        };
+    }
+
+    return {
+        known: false,
+        value: 0,
+    };
+}
+
+function actividadSnapshotVenta(sale) {
+    const storedTotal = Number(sale?.total);
+    const revenue = Number.isFinite(storedTotal)
+        ? redondearDineroCuentaPorCobrar(storedTotal)
+        : redondearDineroCuentaPorCobrar(
+            (Array.isArray(sale?.items)
+                ? sale.items
+                : []
+            ).reduce(
+                (sum, item) =>
+                    sum + actividadVentaIngreso(item),
+                0
+            )
+        );
+
+    const storedCost = Number(sale?.totalCost);
+
+    if (Number.isFinite(storedCost)) {
+        const cost =
+            redondearDineroCuentaPorCobrar(
+                Math.max(0, storedCost)
+            );
+
+        return {
+            known: true,
+            revenue,
+            cost,
+            profit:
+                redondearDineroCuentaPorCobrar(
+                    revenue - cost
+                ),
+        };
+    }
+
+    const storedProfit = Number(sale?.grossProfit);
+
+    if (Number.isFinite(storedProfit)) {
+        const profit =
+            redondearDineroCuentaPorCobrar(
+                storedProfit
+            );
+
+        return {
+            known: true,
+            revenue,
+            cost:
+                redondearDineroCuentaPorCobrar(
+                    revenue - profit
+                ),
+            profit,
+        };
+    }
+
+    const items = Array.isArray(sale?.items)
+        ? sale.items
+        : [];
+
+    if (items.length === 0) {
+        return {
+            known: false,
+            revenue,
+            cost: 0,
+            profit: 0,
+        };
+    }
+
+    let cost = 0;
+
+    for (const item of items) {
+        const snapshot = actividadCostoItem(item);
+
+        if (!snapshot.known) {
+            return {
+                known: false,
+                revenue,
+                cost: 0,
+                profit: 0,
+            };
+        }
+
+        cost += snapshot.value;
+    }
+
+    cost = redondearDineroCuentaPorCobrar(cost);
+
+    return {
+        known: true,
+        revenue,
+        cost,
+        profit:
+            redondearDineroCuentaPorCobrar(
+                revenue - cost
+            ),
+    };
+}
+
+function resolverInicioFinancieroCierreActividad(
+    activity,
+    salesDocs
+) {
+    const configured = actividadMillis(
+        activity?.financialStartAt ||
+        activity?.financialStartAtIso
+    );
+    const started = actividadMillis(
+        activity?.startedAt ||
+        activity?.startedAtIso
+    );
+    const sequence = Math.max(
+        1,
+        Math.trunc(Number(activity?.sequence || 1)) || 1
+    );
+    const locked =
+        activity?.financialStartLocked === true ||
+        sequence > 1;
+
+    let earliestSale = Number.NaN;
+
+    for (const doc of salesDocs) {
+        const millis = actividadVentaFechaMillis(
+            doc.data() || {}
+        );
+
+        if (
+            Number.isFinite(millis) &&
+            (
+                !Number.isFinite(earliestSale) ||
+                millis < earliestSale
+            )
+        ) {
+            earliestSale = millis;
+        }
+    }
+
+    if (
+        !locked &&
+        Number.isFinite(earliestSale) &&
+        (
+            !Number.isFinite(configured) ||
+            earliestSale < configured
+        )
+    ) {
+        return earliestSale;
+    }
+
+    if (Number.isFinite(configured)) {
+        return configured;
+    }
+
+    if (Number.isFinite(started)) {
+        return started;
+    }
+
+    if (Number.isFinite(earliestSale)) {
+        return earliestSale;
+    }
+
+    return Date.now();
+}
+
+function perteneceMovimientoActividad(
+    data,
+    activityId,
+    startMs,
+    dateFields = []
+) {
+    const storedActivityId =
+        normalizarIdDocumentoSeguro(
+            data?.activityId,
+            180
+        );
+
+    if (storedActivityId) {
+        return storedActivityId === activityId;
+    }
+
+    for (const field of dateFields) {
+        const millis = actividadMillis(data?.[field]);
+
+        if (Number.isFinite(millis)) {
+            return millis >= startMs;
+        }
+    }
+
+    return false;
+}
+
+function construirPendienteVentasActividad(
+    receivableDocs
+) {
+    const accountById = new Map();
+    const pendingBySaleId = new Map();
+
+    for (const doc of receivableDocs) {
+        const data = doc.data() || {};
+        const saldoPendiente =
+            Math.max(
+                0,
+                redondearDineroCuentaPorCobrar(
+                    data.saldoPendiente || 0
+                )
+            );
+        const importeOriginal =
+            Math.max(
+                0,
+                redondearDineroCuentaPorCobrar(
+                    data.importeOriginal || 0
+                )
+            );
+        const fallbackRatio =
+            importeOriginal > 0
+                ? Math.min(
+                    1,
+                    saldoPendiente /
+                    importeOriginal
+                )
+                : saldoPendiente > 0
+                    ? 1
+                    : 0;
+        const operations = Array.isArray(data.operaciones)
+            ? data.operaciones
+                .map((operation, index) => ({
+                    operation,
+                    index,
+                    amount:
+                        Math.max(
+                            0,
+                            redondearDineroCuentaPorCobrar(
+                                operation?.importe || 0
+                            )
+                        ),
+                    millis:
+                        actividadMillis(
+                            operation?.creadoEn ||
+                            operation?.fechaOrigen
+                        ),
+                }))
+                .filter((item) => item.amount > 0)
+                .sort((a, b) => {
+                    const aTime = Number.isFinite(a.millis)
+                        ? a.millis
+                        : Number.MAX_SAFE_INTEGER;
+                    const bTime = Number.isFinite(b.millis)
+                        ? b.millis
+                        : Number.MAX_SAFE_INTEGER;
+
+                    if (aTime !== bTime) {
+                        return aTime - bTime;
+                    }
+
+                    return a.index - b.index;
+                })
+            : [];
+
+        if (operations.length > 0) {
+            const operationsTotal =
+                redondearDineroCuentaPorCobrar(
+                    operations.reduce(
+                        (sum, item) =>
+                            sum + item.amount,
+                        0
+                    )
+                );
+            let applied =
+                Math.max(
+                    0,
+                    redondearDineroCuentaPorCobrar(
+                        operationsTotal -
+                        saldoPendiente
+                    )
+                );
+
+            for (const item of operations) {
+                const appliedHere =
+                    Math.min(
+                        item.amount,
+                        applied
+                    );
+                const remaining =
+                    redondearDineroCuentaPorCobrar(
+                        Math.max(
+                            0,
+                            item.amount -
+                            appliedHere
+                        )
+                    );
+                applied =
+                    redondearDineroCuentaPorCobrar(
+                        Math.max(
+                            0,
+                            applied -
+                            appliedHere
+                        )
+                    );
+
+                const saleId =
+                    normalizarIdDocumentoSeguro(
+                        item.operation?.ventaId,
+                        180
+                    );
+
+                if (saleId) {
+                    pendingBySaleId.set(
+                        saleId,
+                        {
+                            accountId: doc.id,
+                            originalAmount:
+                                item.amount,
+                            pendingAmount:
+                                remaining,
+                        }
+                    );
+                }
+            }
+        }
+
+        accountById.set(doc.id, {
+            data,
+            saldoPendiente,
+            importeOriginal,
+            fallbackRatio,
+        });
+    }
+
+    return {
+        accountById,
+        pendingBySaleId,
+    };
+}
+
+function pendienteVentaActividad(
+    saleId,
+    sale,
+    revenue,
+    receivableState
+) {
+    const direct =
+        saleId
+            ? receivableState.pendingBySaleId.get(saleId)
+            : null;
+
+    if (direct) {
+        const original = Math.max(
+            0,
+            Number(direct.originalAmount || 0)
+        );
+        const pending = Math.max(
+            0,
+            Number(direct.pendingAmount || 0)
+        );
+
+        return {
+            pendingAmount:
+                redondearDineroCuentaPorCobrar(pending),
+            ratio:
+                original > 0
+                    ? Math.min(1, pending / original)
+                    : 0,
+        };
+    }
+
+    const accountId =
+        normalizarIdDocumentoSeguro(
+            sale?.cuentaPorCobrarId,
+            180
+        );
+    const account = accountId
+        ? receivableState.accountById.get(accountId)
+        : null;
+
+    if (!account) {
+        return {
+            pendingAmount: 0,
+            ratio: 0,
+        };
+    }
+
+    const ratio = account.fallbackRatio;
+
+    return {
+        pendingAmount:
+            redondearDineroCuentaPorCobrar(
+                Math.max(0, revenue) * ratio
+            ),
+        ratio,
+    };
+}
+
+function crearFlujoActividad() {
+    const methods = {};
+
+    for (const method of ACTIVITY_FLOW_METHODS) {
+        methods[method] = {
+            sales: 0,
+            receivables: 0,
+            purchases: 0,
+            payables: 0,
+            otherCosts: 0,
+            conversions: 0,
+            income: 0,
+            expenses: 0,
+            net: 0,
+        };
+    }
+
+    return methods;
+}
+
+function sumarFlujoActividad(
+    flow,
+    method,
+    field,
+    amount
+) {
+    if (!flow[method]) {
+        return;
+    }
+
+    flow[method][field] =
+        redondearDineroCuentaPorCobrar(
+            flow[method][field] +
+            Number(amount || 0)
+        );
+}
+
+function finalizarFlujoActividad(
+    flow,
+    openingBalances = {}
+) {
+    for (const method of ACTIVITY_FLOW_METHODS) {
+        const entry = flow[method];
+        entry.opening =
+            redondearDineroCuentaPorCobrar(
+                openingBalances?.[method] || 0
+            );
+        entry.income =
+            redondearDineroCuentaPorCobrar(
+                entry.sales +
+                entry.receivables
+            );
+        entry.expenses =
+            redondearDineroCuentaPorCobrar(
+                entry.purchases +
+                entry.payables +
+                entry.otherCosts
+            );
+        entry.net =
+            redondearDineroCuentaPorCobrar(
+                entry.income -
+                entry.expenses +
+                entry.conversions
+            );
+        entry.rawBalance =
+            redondearDineroCuentaPorCobrar(
+                entry.opening +
+                entry.net
+            );
+        entry.balance =
+            redondearDineroCuentaPorCobrar(
+                Math.max(0, entry.rawBalance)
+            );
+        entry.externalUsed =
+            redondearDineroCuentaPorCobrar(
+                Math.max(0, -entry.rawBalance)
+            );
+    }
+
+    return flow;
+}
+
+function agregarVentaAFlujoActividad(
+    flow,
+    sale,
+    revenue
+) {
+    const method = textoSeguro(
+        sale?.payment?.method,
+        40
+    );
+
+    if (method === "mixto") {
+        const parts = Array.isArray(sale?.payment?.parts)
+            ? sale.payment.parts
+            : [];
+
+        for (const part of parts) {
+            const partMethod = textoSeguro(
+                part?.method,
+                40
+            );
+            const amount =
+                redondearDineroCuentaPorCobrar(
+                    part?.amount || 0
+                );
+
+            if (amount > 0) {
+                sumarFlujoActividad(
+                    flow,
+                    partMethod,
+                    "sales",
+                    amount
+                );
+            }
+        }
+
+        return;
+    }
+
+    if (
+        method !== "cuenta" &&
+        flow[method]
+    ) {
+        sumarFlujoActividad(
+            flow,
+            method,
+            "sales",
+            revenue
+        );
+    }
+}
+
+async function construirResumenCierreActividad(
+    clienteRef,
+    activityId,
+    activityData
+) {
+    const [
+        configSnap,
+        salesSnap,
+        shoppingSnap,
+        payableSnap,
+        receivableSnap,
+        otherCostsSnap,
+        cashSnap,
+        conversionSnap,
+    ] = await Promise.all([
+        clienteRef
+            .collection("configuracion")
+            .doc("pos")
+            .get(),
+        clienteRef.collection("ventas").get(),
+        clienteRef.collection("listaCompras").get(),
+        clienteRef.collection("cuentasPorPagar").get(),
+        clienteRef.collection("cuentasPorCobrar").get(),
+        clienteRef.collection("otrosCostos").get(),
+        clienteRef.collection("cajas").get(),
+        clienteRef.collection("conversionesFondos").get(),
+    ]);
+
+    const sequence = Math.max(
+        1,
+        Math.trunc(Number(activityData?.sequence || 1)) || 1
+    );
+    const startMs =
+        resolverInicioFinancieroCierreActividad(
+            activityData,
+            salesSnap.docs
+        );
+    const endMs = Date.now();
+    const startIso = new Date(startMs).toISOString();
+    const endIso = new Date(endMs).toISOString();
+    const flow = crearFlujoActividad();
+    const receivableState =
+        construirPendienteVentasActividad(
+            receivableSnap.docs
+        );
+
+    const activitySales = [];
+    let revenue = 0;
+    let cost = 0;
+    let profit = 0;
+    let pendingCostCurrent = 0;
+    let pendingReceivableCurrent = 0;
+    let pendingCostPrior = 0;
+    let unknownCostSales = 0;
+    let exactCostSales = 0;
+
+    for (const doc of salesSnap.docs) {
+        const sale = doc.data() || {};
+        const saleId = doc.id;
+        const saleActivityId =
+            normalizarIdDocumentoSeguro(
+                sale.activityId,
+                180
+            );
+        const saleMs = actividadVentaFechaMillis(sale);
+        const belongs = saleActivityId
+            ? saleActivityId === activityId
+            : Number.isFinite(saleMs) &&
+                saleMs >= startMs &&
+                saleMs <= endMs;
+        const snapshot = actividadSnapshotVenta(sale);
+        const isReceivable =
+            textoSeguro(
+                sale?.payment?.method,
+                40
+            ) === "cuenta" &&
+            Boolean(
+                normalizarIdDocumentoSeguro(
+                    sale?.cuentaPorCobrarId,
+                    180
+                )
+            );
+        let pending = {
+            pendingAmount: 0,
+            ratio: 0,
+        };
+
+        if (isReceivable) {
+            pending = pendienteVentaActividad(
+                saleId,
+                sale,
+                snapshot.revenue,
+                receivableState
+            );
+        }
+
+        if (belongs) {
+            activitySales.push({
+                id: saleId,
+                data: sale,
+                snapshot,
+            });
+            revenue += snapshot.revenue;
+
+            if (!snapshot.known) {
+                unknownCostSales += 1;
+            } else {
+                cost += snapshot.cost;
+                profit += snapshot.profit;
+                exactCostSales += 1;
+
+                if (isReceivable) {
+                    pendingCostCurrent +=
+                        snapshot.cost *
+                        pending.ratio;
+                }
+            }
+
+            if (isReceivable) {
+                pendingReceivableCurrent +=
+                    pending.pendingAmount;
+            }
+
+            agregarVentaAFlujoActividad(
+                flow,
+                sale,
+                snapshot.revenue
+            );
+        } else if (
+            snapshot.known &&
+            isReceivable &&
+            (
+                !Number.isFinite(saleMs) ||
+                saleMs < startMs ||
+                saleActivityId !== activityId
+            )
+        ) {
+            pendingCostPrior +=
+                snapshot.cost *
+                pending.ratio;
+        }
+    }
+
+    revenue = redondearDineroCuentaPorCobrar(revenue);
+    cost = redondearDineroCuentaPorCobrar(cost);
+    profit = redondearDineroCuentaPorCobrar(profit);
+    pendingCostCurrent =
+        redondearDineroCuentaPorCobrar(
+            pendingCostCurrent
+        );
+    pendingReceivableCurrent =
+        redondearDineroCuentaPorCobrar(
+            pendingReceivableCurrent
+        );
+    pendingCostPrior =
+        redondearDineroCuentaPorCobrar(
+            pendingCostPrior
+        );
+
+    let directPurchases = 0;
+
+    for (const doc of shoppingSnap.docs) {
+        const item = doc.data() || {};
+
+        if (
+            item.estado !== "comprado" ||
+            item.pagoEstado !== "pagado" ||
+            ![
+                "efectivo",
+                "transferencia",
+            ].includes(item.metodoPago) ||
+            !perteneceMovimientoActividad(
+                item,
+                activityId,
+                startMs,
+                ["compradoEn", "actualizadoEn"]
+            )
+        ) {
+            continue;
+        }
+
+        const amount =
+            redondearDineroCuentaPorCobrar(
+                item.importePagado ??
+                item.costoReal ??
+                0
+            );
+
+        if (amount <= 0) {
+            continue;
+        }
+
+        directPurchases =
+            redondearDineroCuentaPorCobrar(
+                directPurchases + amount
+            );
+        sumarFlujoActividad(
+            flow,
+            item.metodoPago,
+            "purchases",
+            amount
+        );
+    }
+
+    let payablePurchasePayments = 0;
+    let pendingPayables = 0;
+    let pendingPurchasePayables = 0;
+    let pendingPayableCount = 0;
+
+    for (const doc of payableSnap.docs) {
+        const account = doc.data() || {};
+        const saldo = Math.max(
+            0,
+            redondearDineroCuentaPorCobrar(
+                account.saldoPendiente || 0
+            )
+        );
+        const isPurchasePayable =
+            account.origen === "compra" ||
+            Boolean(account.compraId);
+
+        if (saldo > 0) {
+            pendingPayables =
+                redondearDineroCuentaPorCobrar(
+                    pendingPayables + saldo
+                );
+            pendingPayableCount += 1;
+
+            if (isPurchasePayable) {
+                pendingPurchasePayables =
+                    redondearDineroCuentaPorCobrar(
+                        pendingPurchasePayables + saldo
+                    );
+            }
+        }
+
+        const payments = Array.isArray(account.pagos)
+            ? account.pagos
+            : [];
+
+        for (const payment of payments) {
+            if (
+                !perteneceMovimientoActividad(
+                    payment,
+                    activityId,
+                    startMs,
+                    ["fecha"]
+                )
+            ) {
+                continue;
+            }
+
+            const method = textoSeguro(
+                payment?.metodoPago,
+                40
+            );
+            const amount =
+                redondearDineroCuentaPorCobrar(
+                    payment?.importe || 0
+                );
+
+            if (amount <= 0) {
+                continue;
+            }
+
+            sumarFlujoActividad(
+                flow,
+                method,
+                "payables",
+                amount
+            );
+
+            if (isPurchasePayable) {
+                payablePurchasePayments =
+                    redondearDineroCuentaPorCobrar(
+                        payablePurchasePayments +
+                        amount
+                    );
+            }
+        }
+    }
+
+    let pendingReceivables = 0;
+    let pendingReceivableCount = 0;
+
+    for (const doc of receivableSnap.docs) {
+        const account = doc.data() || {};
+        const saldo = Math.max(
+            0,
+            redondearDineroCuentaPorCobrar(
+                account.saldoPendiente || 0
+            )
+        );
+
+        if (saldo > 0) {
+            pendingReceivables =
+                redondearDineroCuentaPorCobrar(
+                    pendingReceivables + saldo
+                );
+            pendingReceivableCount += 1;
+        }
+
+        const payments = Array.isArray(account.pagos)
+            ? account.pagos
+            : [];
+
+        for (const payment of payments) {
+            if (
+                !perteneceMovimientoActividad(
+                    payment,
+                    activityId,
+                    startMs,
+                    ["fecha"]
+                )
+            ) {
+                continue;
+            }
+
+            const method = textoSeguro(
+                payment?.metodoPago,
+                40
+            );
+            const amount =
+                redondearDineroCuentaPorCobrar(
+                    payment?.importe || 0
+                );
+
+            if (amount > 0) {
+                sumarFlujoActividad(
+                    flow,
+                    method,
+                    "receivables",
+                    amount
+                );
+            }
+        }
+    }
+
+    let otherCostsTotal = 0;
+    let otherCostsCount = 0;
+
+    for (const doc of otherCostsSnap.docs) {
+        const item = doc.data() || {};
+
+        if (
+            item.estado === "anulado" ||
+            !perteneceMovimientoActividad(
+                item,
+                activityId,
+                startMs,
+                ["creadoEn", "actualizadoEn"]
+            )
+        ) {
+            continue;
+        }
+
+        const amount =
+            redondearDineroCuentaPorCobrar(
+                item.importe || 0
+            );
+        const method = textoSeguro(
+            item.metodoPago,
+            40
+        );
+
+        if (amount <= 0) {
+            continue;
+        }
+
+        otherCostsTotal =
+            redondearDineroCuentaPorCobrar(
+                otherCostsTotal + amount
+            );
+        otherCostsCount += 1;
+        sumarFlujoActividad(
+            flow,
+            method,
+            "otherCosts",
+            amount
+        );
+    }
+
+    for (const doc of conversionSnap.docs) {
+        const conversion = doc.data() || {};
+
+        if (
+            !perteneceMovimientoActividad(
+                conversion,
+                activityId,
+                startMs,
+                ["fecha", "createdAt"]
+            )
+        ) {
+            continue;
+        }
+
+        const origin = textoSeguro(
+            conversion.origen,
+            40
+        );
+        const destination = textoSeguro(
+            conversion.destino,
+            40
+        );
+        const amount =
+            redondearDineroCuentaPorCobrar(
+                conversion.importe || 0
+            );
+
+        if (amount <= 0) {
+            continue;
+        }
+
+        sumarFlujoActividad(
+            flow,
+            origin,
+            "conversions",
+            -amount
+        );
+        sumarFlujoActividad(
+            flow,
+            destination,
+            "conversions",
+            amount
+        );
+    }
+
+    const paidPurchases =
+        redondearDineroCuentaPorCobrar(
+            directPurchases +
+            payablePurchasePayments
+        );
+    const openingReplacementFund =
+        Math.max(
+            0,
+            redondearDineroCuentaPorCobrar(
+                activityData?.openingReplacementFund || 0
+            )
+        );
+    const openingPendingRecoveredCost =
+        Math.max(
+            0,
+            redondearDineroCuentaPorCobrar(
+                activityData?.openingPendingRecoveredCost || 0
+            )
+        );
+    const carriedRecoveredCost =
+        redondearDineroCuentaPorCobrar(
+            Math.max(
+                0,
+                openingPendingRecoveredCost -
+                pendingCostPrior
+            )
+        );
+    const currentRecoveredCost =
+        redondearDineroCuentaPorCobrar(
+            Math.max(
+                0,
+                cost - pendingCostCurrent
+            )
+        );
+    const availableRecoveredCost =
+        redondearDineroCuentaPorCobrar(
+            currentRecoveredCost +
+            carriedRecoveredCost
+        );
+    const replacementBeforeExpenses =
+        redondearDineroCuentaPorCobrar(
+            openingReplacementFund +
+            availableRecoveredCost -
+            paidPurchases
+        );
+    const purchaseExcess =
+        redondearDineroCuentaPorCobrar(
+            Math.max(
+                0,
+                -replacementBeforeExpenses
+            )
+        );
+    const replacementBase =
+        redondearDineroCuentaPorCobrar(
+            Math.max(
+                0,
+                replacementBeforeExpenses
+            )
+        );
+    const availableProfit =
+        redondearDineroCuentaPorCobrar(
+            Math.max(
+                0,
+                profit - otherCostsTotal
+            )
+        );
+    const expensesBeyondProfit =
+        redondearDineroCuentaPorCobrar(
+            Math.max(
+                0,
+                otherCostsTotal - profit
+            )
+        );
+    const unreplacedMerchandise =
+        redondearDineroCuentaPorCobrar(
+            Math.min(
+                replacementBase,
+                expensesBeyondProfit
+            )
+        );
+    const replacementFund =
+        redondearDineroCuentaPorCobrar(
+            Math.max(
+                0,
+                replacementBase -
+                expensesBeyondProfit
+            )
+        );
+    const externalDeficit =
+        redondearDineroCuentaPorCobrar(
+            Math.max(
+                0,
+                expensesBeyondProfit -
+                replacementBase
+            )
+        );
+    const pendingCostBasisTotal =
+        redondearDineroCuentaPorCobrar(
+            Math.max(
+                0,
+                pendingCostCurrent +
+                pendingCostPrior
+            )
+        );
+
+    const pendingRestockItems = [];
+    let pendingRestockEstimatedTotal = 0;
+    let pendingRestockQuantity = 0;
+    let pendingRestockMissingEstimate = 0;
+
+    for (const doc of shoppingSnap.docs) {
+        const item = doc.data() || {};
+
+        if (item.estado === "comprado") {
+            continue;
+        }
+
+        const quantity = Math.max(
+            0,
+            Number(item.cantidad || 0)
+        );
+        const estimatedAmount = Math.max(
+            0,
+            redondearDineroCuentaPorCobrar(
+                item.costoEstimado || 0
+            )
+        );
+        const hasEstimate = estimatedAmount > 0;
+
+        pendingRestockQuantity += quantity;
+
+        if (hasEstimate) {
+            pendingRestockEstimatedTotal =
+                redondearDineroCuentaPorCobrar(
+                    pendingRestockEstimatedTotal +
+                    estimatedAmount
+                );
+        } else {
+            pendingRestockMissingEstimate += 1;
+        }
+
+        pendingRestockItems.push({
+            id: doc.id,
+            concepto:
+                textoSeguro(
+                    item.concepto,
+                    180
+                ) || "Compra pendiente",
+            proveedor:
+                textoSeguro(
+                    item.proveedor,
+                    120
+                ),
+            conceptoCosto:
+                textoSeguro(
+                    item.conceptoCosto,
+                    180
+                ),
+            cantidad:
+                Math.round(
+                    (quantity + Number.EPSILON) * 1000
+                ) / 1000,
+            costoEstimado:
+                estimatedAmount,
+            hasEstimate,
+        });
+    }
+
+    const activitySessions = [];
+    let cashDifference = 0;
+    let unbalancedCashSessions = 0;
+    let openCashSessions = 0;
+
+    for (const doc of cashSnap.docs) {
+        const session = doc.data() || {};
+        const status = textoSeguro(
+            session.status,
+            40
+        );
+
+        if (status === "open") {
+            openCashSessions += 1;
+        }
+
+        if (
+            !perteneceMovimientoActividad(
+                session,
+                activityId,
+                startMs,
+                ["openTime", "createdAt"]
+            )
+        ) {
+            continue;
+        }
+
+        if (status !== "closed") {
+            continue;
+        }
+
+        const difference =
+            redondearDineroCuentaPorCobrar(
+                session.diff || 0
+            );
+
+        cashDifference =
+            redondearDineroCuentaPorCobrar(
+                cashDifference +
+                difference
+            );
+
+        if (Math.abs(difference) > 0.009) {
+            unbalancedCashSessions += 1;
+        }
+
+        activitySessions.push({
+            id: doc.id,
+            openTime:
+                actividadIso(session.openTime),
+            closeTime:
+                actividadIso(session.closeTime),
+            difference,
+        });
+    }
+
+    finalizarFlujoActividad(
+        flow,
+        activityData?.openingFundBalances || {}
+    );
+
+    if (
+        Math.abs(cashDifference) > 0.009 &&
+        flow.efectivo
+    ) {
+        flow.efectivo.reconciliationAdjustment =
+            redondearDineroCuentaPorCobrar(
+                cashDifference
+            );
+        flow.efectivo.rawBalance =
+            redondearDineroCuentaPorCobrar(
+                flow.efectivo.rawBalance +
+                cashDifference
+            );
+        flow.efectivo.balance =
+            redondearDineroCuentaPorCobrar(
+                Math.max(
+                    0,
+                    flow.efectivo.rawBalance
+                )
+            );
+        flow.efectivo.externalUsed =
+            redondearDineroCuentaPorCobrar(
+                Math.max(
+                    0,
+                    -flow.efectivo.rawBalance
+                )
+            );
+    }
+
+    const blockingReasons = [];
+    const warnings = [];
+    const configuredOpenCashId =
+        normalizarIdDocumentoSeguro(
+            configSnap.data()?.openCashSessionId,
+            180
+        );
+
+    if (
+        configuredOpenCashId ||
+        openCashSessions > 0
+    ) {
+        blockingReasons.push({
+            code: "cash-open",
+            message:
+                "Cerrá la caja abierta antes de cerrar la actividad.",
+        });
+    }
+
+    if (unknownCostSales > 0) {
+        blockingReasons.push({
+            code: "unknown-sale-costs",
+            message:
+                `${unknownCostSales} ${unknownCostSales === 1 ? "venta no tiene" : "ventas no tienen"} costo histórico completo. Completalo antes del cierre.`,
+        });
+    }
+
+    if (Math.abs(cashDifference) > 0.009) {
+        warnings.push({
+            code: "cash-difference",
+            message:
+                `Los cierres de caja acumulan una diferencia de ${cashDifference.toFixed(2)}. Quedará registrada en la conciliación.`,
+        });
+    }
+
+    if (pendingReceivables > 0) {
+        warnings.push({
+            code: "receivables-pending",
+            message:
+                "Las cuentas por cobrar pendientes se conservarán para la siguiente actividad.",
+        });
+    }
+
+    if (pendingPayables > 0) {
+        warnings.push({
+            code: "payables-pending",
+            message:
+                "Las cuentas por pagar pendientes se conservarán para la siguiente actividad.",
+        });
+    }
+
+    if (pendingRestockMissingEstimate > 0) {
+        warnings.push({
+            code: "restock-without-estimate",
+            message:
+                `${pendingRestockMissingEstimate} ${pendingRestockMissingEstimate === 1 ? "compra pendiente no tiene" : "compras pendientes no tienen"} monto estimado.`,
+        });
+    }
+
+    return {
+        activity: {
+            id: activityId,
+            sequence,
+            status:
+                textoSeguro(
+                    activityData?.status,
+                    40
+                ) || "open",
+            startedAt:
+                actividadIso(
+                    activityData?.startedAt ||
+                    activityData?.startedAtIso
+                ),
+            financialStartAt: startIso,
+            closingPreviewAt: endIso,
+        },
+        sales: {
+            revenue,
+            cost,
+            grossProfit: profit,
+            count: activitySales.length,
+            knownCostSales: exactCostSales,
+            unknownCostSales,
+            pendingReceivableAmount:
+                pendingReceivableCurrent,
+            pendingCost:
+                pendingCostCurrent,
+        },
+        funds: {
+            openingReplacementFund,
+            openingPendingRecoveredCost,
+            recoveredCost:
+                availableRecoveredCost,
+            currentRecoveredCost,
+            carriedRecoveredCost,
+            paidPurchases,
+            directPurchases,
+            payablePurchasePayments,
+            purchaseExcess,
+            otherCosts:
+                otherCostsTotal,
+            otherCostsCount,
+            availableProfit,
+            unreplacedMerchandise,
+            replacementFund,
+            externalDeficit,
+        },
+        receivables: {
+            pendingAmount:
+                pendingReceivables,
+            pendingCount:
+                pendingReceivableCount,
+            pendingCurrentActivityAmount:
+                pendingReceivableCurrent,
+            pendingCurrentActivityCost:
+                pendingCostCurrent,
+            pendingPreviousCost:
+                pendingCostPrior,
+            pendingCostBasisTotal,
+        },
+        payables: {
+            pendingAmount:
+                pendingPayables,
+            pendingCount:
+                pendingPayableCount,
+            pendingPurchaseAmount:
+                pendingPurchasePayables,
+        },
+        reconciliation: {
+            methods: flow,
+            cashSessions: {
+                count:
+                    activitySessions.length,
+                difference:
+                    cashDifference,
+                unbalancedCount:
+                    unbalancedCashSessions,
+                sessions:
+                    activitySessions,
+            },
+        },
+        pendingRestock: {
+            items:
+                pendingRestockItems,
+            pendingCount:
+                pendingRestockItems.length,
+            totalQuantity:
+                Math.round(
+                    (
+                        pendingRestockQuantity +
+                        Number.EPSILON
+                    ) * 1000
+                ) / 1000,
+            estimatedTotal:
+                pendingRestockEstimatedTotal,
+            missingEstimateCount:
+                pendingRestockMissingEstimate,
+            replacementAfterEstimate:
+                redondearDineroCuentaPorCobrar(
+                    replacementFund -
+                    pendingRestockEstimatedTotal
+                ),
+            coverage:
+                pendingRestockEstimatedTotal > 0
+                    ? Math.round(
+                        (
+                            replacementFund /
+                            pendingRestockEstimatedTotal
+                        ) * 10000
+                    ) / 100
+                    : null,
+        },
+        blockingReasons,
+        warnings,
+    };
+}
+
+async function desbloquearCierreActividad(
+    activityRef,
+    closeRequestId
+) {
+    try {
+        await db.runTransaction(
+            async (transaction) => {
+                const snap =
+                    await transaction.get(activityRef);
+
+                if (!snap.exists) {
+                    return;
+                }
+
+                const data = snap.data() || {};
+
+                if (
+                    data.status === "closing" &&
+                    textoSeguro(
+                        data.closingRequestId,
+                        180
+                    ) === closeRequestId
+                ) {
+                    transaction.update(
+                        activityRef,
+                        {
+                            status: "open",
+                            closingRequestId:
+                                admin.firestore.FieldValue.delete(),
+                            closingStartedAt:
+                                admin.firestore.FieldValue.delete(),
+                            updatedAt:
+                                admin.firestore.FieldValue.serverTimestamp(),
+                        }
+                    );
+                }
+            }
+        );
+    } catch (error) {
+        console.error(
+            "No se pudo liberar el bloqueo de cierre de actividad:",
+            error
+        );
+    }
+}
+
+exports.previsualizarCierreActividad =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(clienteData);
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+            validarClienteIdSolicitado(
+                request.data,
+                clienteRef
+            );
+
+            const deviceId = validarId(
+                request.data?.deviceId,
+                "deviceId"
+            );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data?.operadorSesion,
+                    {
+                        deviceId,
+                        requireRole:
+                            "administrador",
+                    }
+                );
+
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+            const activityRef = clienteRef
+                .collection("actividades")
+                .doc(activeActivity.id);
+            const activitySnap =
+                await activityRef.get();
+            const activityData =
+                activitySnap.exists
+                    ? activitySnap.data() || {}
+                    : activeActivity;
+            const preview =
+                await construirResumenCierreActividad(
+                    clienteRef,
+                    activeActivity.id,
+                    activityData
+                );
+
+            return {
+                ok: true,
+                preview,
+            };
+        }
+    );
+
+exports.cerrarActividad =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(clienteData);
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+            validarClienteIdSolicitado(
+                request.data,
+                clienteRef
+            );
+
+            const deviceId = validarId(
+                request.data?.deviceId,
+                "deviceId"
+            );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data?.operadorSesion,
+                    {
+                        deviceId,
+                        requireRole:
+                            "administrador",
+                    }
+                );
+
+            const activityId = validarId(
+                request.data?.activityId,
+                "activityId"
+            );
+            const closeRequestId = validarId(
+                request.data?.closeRequestId,
+                "closeRequestId"
+            );
+            const configRef = clienteRef
+                .collection("configuracion")
+                .doc("pos");
+            const activityRef = clienteRef
+                .collection("actividades")
+                .doc(activityId);
+
+            const lockResult =
+                await db.runTransaction(
+                    async (transaction) => {
+                        const [
+                            configSnap,
+                            activitySnap,
+                        ] = await transaction.getAll(
+                            configRef,
+                            activityRef
+                        );
+
+                        if (!activitySnap.exists) {
+                            throw new HttpsError(
+                                "not-found",
+                                "La actividad ya no existe."
+                            );
+                        }
+
+                        const activity =
+                            activitySnap.data() || {};
+                        const status =
+                            textoSeguro(
+                                activity.status,
+                                40
+                            ) || "open";
+
+                        if (status === "closed") {
+                            if (
+                                textoSeguro(
+                                    activity.closureRequestId,
+                                    180
+                                ) === closeRequestId
+                            ) {
+                                return {
+                                    alreadyClosed: true,
+                                    closure:
+                                        activity.closure || null,
+                                    nextActivityId:
+                                        textoSeguro(
+                                            activity.nextActivityId,
+                                            180
+                                        ) || null,
+                                };
+                            }
+
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La actividad ya fue cerrada."
+                            );
+                        }
+
+                        const activeId =
+                            normalizarIdDocumentoSeguro(
+                                configSnap.data()?.activeActivityId,
+                                180
+                            );
+
+                        if (activeId !== activityId) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La actividad activa cambió. Actualizá e intentá nuevamente.",
+                                {
+                                    motivo:
+                                        "activity-changed",
+                                }
+                            );
+                        }
+
+                        if (
+                            normalizarIdDocumentoSeguro(
+                                configSnap.data()?.openCashSessionId,
+                                180
+                            )
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Cerrá la caja abierta antes de cerrar la actividad.",
+                                {
+                                    motivo:
+                                        "cash-open",
+                                }
+                            );
+                        }
+
+                        if (status === "closing") {
+                            if (
+                                textoSeguro(
+                                    activity.closingRequestId,
+                                    180
+                                ) !== closeRequestId
+                            ) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    "La actividad ya está siendo cerrada desde otra operación.",
+                                    {
+                                        motivo:
+                                            "activity-closing",
+                                    }
+                                );
+                            }
+
+                            return {
+                                alreadyClosed: false,
+                                alreadyLocked: true,
+                                activity,
+                            };
+                        }
+
+                        if (status !== "open") {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La actividad no está disponible para cierre."
+                            );
+                        }
+
+                        transaction.update(
+                            activityRef,
+                            {
+                                status: "closing",
+                                closingRequestId:
+                                    closeRequestId,
+                                closingStartedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        return {
+                            alreadyClosed: false,
+                            alreadyLocked: false,
+                            activity,
+                        };
+                    }
+                );
+
+            if (lockResult.alreadyClosed) {
+                let nextActivity = null;
+
+                if (lockResult.nextActivityId) {
+                    const nextSnap =
+                        await clienteRef
+                            .collection("actividades")
+                            .doc(lockResult.nextActivityId)
+                            .get();
+
+                    if (nextSnap.exists) {
+                        const data = nextSnap.data() || {};
+                        nextActivity = {
+                            id: nextSnap.id,
+                            status:
+                                data.status || "open",
+                            sequence:
+                                Math.max(
+                                    1,
+                                    Math.trunc(
+                                        Number(
+                                            data.sequence || 1
+                                        )
+                                    ) || 1
+                                ),
+                            startedAt:
+                                serializarFechaCompra(
+                                    data.startedAt ||
+                                    data.startedAtIso
+                                ),
+                            financialStartAt:
+                                serializarFechaCompra(
+                                    data.financialStartAt ||
+                                    data.financialStartAtIso
+                                ),
+                            financialStartLocked:
+                                data.financialStartLocked === true,
+                            openingReplacementFund:
+                                redondearDineroCuentaPorCobrar(
+                                    data.openingReplacementFund || 0
+                                ),
+                            openingPendingRecoveredCost:
+                                redondearDineroCuentaPorCobrar(
+                                    data.openingPendingRecoveredCost || 0
+                                ),
+                        };
+                    }
+                }
+
+                return {
+                    ok: true,
+                    alreadyClosed: true,
+                    closure:
+                        lockResult.closure,
+                    nextActivity,
+                };
+            }
+
+            try {
+                const freshActivitySnap =
+                    await activityRef.get();
+                const freshActivityData =
+                    freshActivitySnap.data() ||
+                    lockResult.activity || {};
+                const preview =
+                    await construirResumenCierreActividad(
+                        clienteRef,
+                        activityId,
+                        freshActivityData
+                    );
+
+                if (preview.blockingReasons.length > 0) {
+                    const first =
+                        preview.blockingReasons[0];
+
+                    await desbloquearCierreActividad(
+                        activityRef,
+                        closeRequestId
+                    );
+
+                    throw new HttpsError(
+                        "failed-precondition",
+                        first.message,
+                        {
+                            motivo: first.code,
+                            blockingReasons:
+                                preview.blockingReasons,
+                        }
+                    );
+                }
+
+                const nextActivityRef =
+                    clienteRef
+                        .collection("actividades")
+                        .doc();
+                const closedAt =
+                    admin.firestore.Timestamp.now();
+                const closedAtIso =
+                    closedAt.toDate().toISOString();
+                const nextSequence =
+                    Math.max(
+                        1,
+                        preview.activity.sequence
+                    ) + 1;
+                const nextOpeningFund =
+                    redondearDineroCuentaPorCobrar(
+                        preview.funds.replacementFund
+                    );
+                const nextOpeningPendingCost =
+                    redondearDineroCuentaPorCobrar(
+                        preview.receivables
+                            .pendingCostBasisTotal
+                    );
+                const nextOpeningFundBalances =
+                    Object.fromEntries(
+                        ACTIVITY_FLOW_METHODS.map(
+                            (method) => [
+                                method,
+                                redondearDineroCuentaPorCobrar(
+                                    Math.max(
+                                        0,
+                                        preview.reconciliation
+                                            ?.methods
+                                            ?.[method]
+                                            ?.balance || 0
+                                    )
+                                ),
+                            ]
+                        )
+                    );
+                const closure = {
+                    ...preview,
+                    activity: {
+                        ...preview.activity,
+                        status: "closed",
+                        closedAt:
+                            closedAtIso,
+                    },
+                    blockingReasons: [],
+                };
+
+                const finalResult =
+                    await db.runTransaction(
+                    async (transaction) => {
+                        const [
+                            configSnap,
+                            activitySnap,
+                        ] = await transaction.getAll(
+                            configRef,
+                            activityRef
+                        );
+
+                        if (!activitySnap.exists) {
+                            throw new HttpsError(
+                                "not-found",
+                                "La actividad ya no existe."
+                            );
+                        }
+
+                        const activity =
+                            activitySnap.data() || {};
+
+                        if (
+                            activity.status === "closed" &&
+                            textoSeguro(
+                                activity.closureRequestId,
+                                180
+                            ) === closeRequestId
+                        ) {
+                            return {
+                                alreadyClosed: true,
+                                closure:
+                                    activity.closure || null,
+                            };
+                        }
+
+                        if (
+                            activity.status !== "closing" ||
+                            textoSeguro(
+                                activity.closingRequestId,
+                                180
+                            ) !== closeRequestId
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "El cierre de actividad perdió vigencia. Actualizá e intentá nuevamente.",
+                                {
+                                    motivo:
+                                        "activity-close-stale",
+                                }
+                            );
+                        }
+
+                        if (
+                            normalizarIdDocumentoSeguro(
+                                configSnap.data()?.activeActivityId,
+                                180
+                            ) !== activityId
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La actividad activa cambió durante el cierre.",
+                                {
+                                    motivo:
+                                        "activity-changed",
+                                }
+                            );
+                        }
+
+                        if (
+                            normalizarIdDocumentoSeguro(
+                                configSnap.data()?.openCashSessionId,
+                                180
+                            )
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Se abrió una caja durante el cierre. Cerrala e intentá nuevamente.",
+                                {
+                                    motivo:
+                                        "cash-open",
+                                }
+                            );
+                        }
+
+                        const financialStart =
+                            admin.firestore.Timestamp.fromDate(
+                                new Date(
+                                    preview.activity
+                                        .financialStartAt
+                                )
+                            );
+
+                        transaction.update(
+                            activityRef,
+                            {
+                                status: "closed",
+                                sequence:
+                                    preview.activity.sequence,
+                                financialStartAt:
+                                    financialStart,
+                                financialStartAtIso:
+                                    preview.activity
+                                        .financialStartAt,
+                                financialStartLocked:
+                                    true,
+                                closedAt,
+                                closedAtIso,
+                                closure,
+                                closureRequestId:
+                                    closeRequestId,
+                                nextActivityId:
+                                    nextActivityRef.id,
+                                closingRequestId:
+                                    admin.firestore.FieldValue.delete(),
+                                closingStartedAt:
+                                    admin.firestore.FieldValue.delete(),
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        transaction.set(
+                            nextActivityRef,
+                            {
+                                id:
+                                    nextActivityRef.id,
+                                status: "open",
+                                sequence:
+                                    nextSequence,
+                                startedAt:
+                                    closedAt,
+                                startedAtIso:
+                                    closedAtIso,
+                                financialStartAt:
+                                    closedAt,
+                                financialStartAtIso:
+                                    closedAtIso,
+                                financialStartLocked:
+                                    true,
+                                openingReplacementFund:
+                                    nextOpeningFund,
+                                openingPendingRecoveredCost:
+                                    nextOpeningPendingCost,
+                                openingFundBalances:
+                                    nextOpeningFundBalances,
+                                fundConversionRevision: 0,
+                                openingReceivableAmount:
+                                    redondearDineroCuentaPorCobrar(
+                                        preview.receivables
+                                            .pendingAmount
+                                    ),
+                                previousActivityId:
+                                    activityId,
+                                creadoPor: {
+                                    operadorId:
+                                        operadorAutorizado.id,
+                                    operadorNombre:
+                                        textoSeguro(
+                                            operadorAutorizado?.data?.nombre,
+                                            80
+                                        ),
+                                    operadorRol:
+                                        validarRolOperador(
+                                            operadorAutorizado.rol
+                                        ),
+                                },
+                                createdAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        transaction.set(
+                            configRef,
+                            {
+                                activeActivityId:
+                                    nextActivityRef.id,
+                                activeActivityStartedAt:
+                                    closedAt,
+                                activitySequence:
+                                    nextSequence,
+                                lastClosedActivityId:
+                                    activityId,
+                                lastActivityClosedAt:
+                                    closedAt,
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            },
+                            {
+                                merge: true,
+                            }
+                        );
+
+                        const auditEvent =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador:
+                                    operadorAutorizado,
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .CIERRE_ACTIVIDAD,
+                                sessionId: null,
+                                deviceId,
+                                detalle: {
+                                    activityId,
+                                    numeroActividad:
+                                        preview.activity.sequence,
+                                    nextActivityId:
+                                        nextActivityRef.id,
+                                    ventas:
+                                        preview.sales.revenue,
+                                    costoMercaderia:
+                                        preview.sales.cost,
+                                    gananciaBruta:
+                                        preview.sales.grossProfit,
+                                    otrosCostos:
+                                        preview.funds.otherCosts,
+                                    gananciaDisponible:
+                                        preview.funds.availableProfit,
+                                    fondoReposicionFinal:
+                                        preview.funds.replacementFund,
+                                    costoPendienteRecuperar:
+                                        preview.receivables
+                                            .pendingCostBasisTotal,
+                                    cuentasPorCobrar:
+                                        preview.receivables
+                                            .pendingAmount,
+                                    cuentasPorPagar:
+                                        preview.payables
+                                            .pendingAmount,
+                                    reposicionPendienteEstimada:
+                                        preview.pendingRestock
+                                            .estimatedTotal,
+                                    diferenciaCajas:
+                                        preview.reconciliation
+                                            .cashSessions
+                                            .difference,
+                                },
+                            });
+
+                        transaction.set(
+                            auditEvent.ref,
+                            auditEvent.data
+                        );
+
+                        return {
+                            alreadyClosed: false,
+                        };
+                    }
+                );
+
+                if (finalResult?.alreadyClosed) {
+                    return {
+                        ok: true,
+                        alreadyClosed: true,
+                        closure:
+                            finalResult.closure,
+                        nextActivity: null,
+                    };
+                }
+
+                return {
+                    ok: true,
+                    alreadyClosed: false,
+                    closure,
+                    nextActivity: {
+                        id:
+                            nextActivityRef.id,
+                        status: "open",
+                        sequence:
+                            nextSequence,
+                        startedAt:
+                            closedAtIso,
+                        financialStartAt:
+                            closedAtIso,
+                        financialStartLocked:
+                            true,
+                        openingReplacementFund:
+                            nextOpeningFund,
+                        openingPendingRecoveredCost:
+                            nextOpeningPendingCost,
+                    },
+                };
+            } catch (error) {
+                await desbloquearCierreActividad(
+                    activityRef,
+                    closeRequestId
+                );
+
+                throw error;
+            }
+        }
+    );
+
+
 exports.crearItemCompra =
     onCall(
         CALLABLE_OPTIONS,
@@ -17234,6 +19614,12 @@ exports.crearItemCompra =
                     }
                 );
 
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+
             const item =
                 normalizarItemCompra(
                     request.data?.item
@@ -17264,6 +19650,9 @@ exports.crearItemCompra =
 
                                 estado:
                                     "pendiente",
+
+                                activityIdCreated:
+                                    activeActivity.id,
 
                                 costoReal:
                                     null,
@@ -17316,6 +19705,8 @@ exports.crearItemCompra =
                                 detalle: {
                                     compraId:
                                         itemRef.id,
+                                    activityId:
+                                        activeActivity.id,
                                     concepto:
                                         item.concepto,
                                     proveedor:
@@ -19109,6 +21500,12 @@ exports.crearCuentaPorPagarManual =
                     }
                 );
 
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+
             const cuenta =
                 normalizarCuentaPorPagar(
                     request.data?.cuenta
@@ -19139,6 +21536,9 @@ exports.crearCuentaPorPagarManual =
 
                                 origen:
                                     "manual",
+
+                                activityId:
+                                    activeActivity.id,
 
                                 compraId:
                                     null,
@@ -19206,6 +21606,8 @@ exports.crearCuentaPorPagarManual =
                                         cuenta.vencimiento,
                                     origen:
                                         "manual",
+                                    activityId:
+                                        activeActivity.id,
                                 },
                             });
 
@@ -25047,6 +27449,12 @@ exports.abrirCaja =
                     }
                 );
 
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+
             const sessionId =
                 validarId(
                     request.data?.sessionId,
@@ -25230,6 +27638,9 @@ exports.abrirCaja =
                             id:
                                 sessionId,
 
+                            activityId:
+                                activeActivity.id,
+
                             openTime,
 
                             openAmount,
@@ -25332,6 +27743,9 @@ exports.abrirCaja =
                                     cajaId:
                                         sessionId,
 
+                                    activityId:
+                                        activeActivity.id,
+
                                     montoInicial:
                                         openAmount,
                                 },
@@ -25373,7 +27787,7 @@ exports.abrirCaja =
 
 
 /* =========================================================
-   CONVERSIÓN DE FONDOS
+   CONVERSIÓN DE FONDOS — ACTIVIDAD
 ========================================================= */
 
 const FUND_CONVERSION_METHODS = new Set([
@@ -25381,49 +27795,168 @@ const FUND_CONVERSION_METHODS = new Set([
     "transferencia",
 ]);
 
-function totalMetodoSesion(
-    session,
-    method
+function fondosActividadDesdePreview(
+    preview
 ) {
-    return redondearDineroVenta(
-        Number(
-            session
-                ?.paymentTotals
-                ?.[method] ||
-            0
-        ) +
-        Number(
-            session
-                ?.receivablePaymentTotals
-                ?.[method] ||
-            0
-        ) -
-        Number(
-            session
-                ?.payablePaymentTotals
-                ?.[method] ||
-            0
-        ) -
-        Number(
-            session
-                ?.purchasePaymentTotals
-                ?.[method] ||
-            0
-        ) -
-        Number(
-            session
-                ?.otherCostTotals
-                ?.[method] ||
-            0
-        ) +
-        Number(
-            session
-                ?.fundConversionTotals
-                ?.[method] ||
-            0
-        )
-    );
+    const methods =
+        preview?.reconciliation?.methods || {};
+
+    const balances = {};
+    const rawBalances = {};
+
+    for (const method of FUND_CONVERSION_METHODS) {
+        const entry = methods?.[method] || {};
+        const rawBalance =
+            redondearDineroVenta(
+                entry.rawBalance ??
+                entry.balance ??
+                entry.net ??
+                0
+            );
+
+        rawBalances[method] = rawBalance;
+        balances[method] =
+            redondearDineroVenta(
+                Math.max(0, rawBalance)
+            );
+    }
+
+    return {
+        balances,
+        rawBalances,
+        financialStartAt:
+            preview?.activity?.financialStartAt ||
+            null,
+        sequence:
+            Math.max(
+                1,
+                Math.trunc(
+                    Number(
+                        preview?.activity?.sequence ||
+                        1
+                    )
+                ) || 1
+            ),
+    };
 }
+
+async function obtenerEstadoFondosActividad(
+    clienteRef,
+    operadorAutorizado
+) {
+    const activeActivity =
+        await asegurarActividadActual(
+            clienteRef,
+            operadorAutorizado
+        );
+    const activityRef = clienteRef
+        .collection("actividades")
+        .doc(activeActivity.id);
+    const activitySnap =
+        await activityRef.get();
+    const activityData =
+        activitySnap.exists
+            ? activitySnap.data() || {}
+            : activeActivity;
+    const preview =
+        await construirResumenCierreActividad(
+            clienteRef,
+            activeActivity.id,
+            activityData
+        );
+    const funds =
+        fondosActividadDesdePreview(
+            preview
+        );
+
+    return {
+        activeActivity,
+        activityRef,
+        activityData,
+        preview,
+        funds,
+        revision:
+            Math.max(
+                0,
+                Math.trunc(
+                    Number(
+                        activityData
+                            ?.fundConversionRevision ||
+                        0
+                    )
+                ) || 0
+            ),
+    };
+}
+
+exports.obtenerFondosActividad =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } = await resolverClienteAutenticado(
+                request.auth
+            );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(clienteData);
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+            validarClienteIdSolicitado(
+                request.data,
+                clienteRef
+            );
+
+            const deviceId = validarId(
+                request.data?.deviceId,
+                "deviceId"
+            );
+
+            const operador =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data?.operadorSesion,
+                    {
+                        requireRole:
+                            "administrador",
+                        deviceId,
+                    }
+                );
+
+            const state =
+                await obtenerEstadoFondosActividad(
+                    clienteRef,
+                    operador
+                );
+
+            return {
+                ok: true,
+                activity: {
+                    id:
+                        state.activeActivity.id,
+                    sequence:
+                        state.funds.sequence,
+                    financialStartAt:
+                        state.funds
+                            .financialStartAt,
+                },
+                balances:
+                    state.funds.balances,
+                rawBalances:
+                    state.funds.rawBalances,
+                methods:
+                    state.preview
+                        ?.reconciliation
+                        ?.methods || {},
+            };
+        }
+    );
 
 exports.convertirFondos =
     onCall(
@@ -25469,10 +28002,6 @@ exports.convertirFondos =
                 request.data?.conversionId,
                 "conversionId"
             );
-            const cashSessionId = validarId(
-                request.data?.cashSessionId,
-                "cashSessionId"
-            );
             const origen = textoSeguro(
                 request.data?.origen,
                 40
@@ -25516,331 +28045,313 @@ exports.convertirFondos =
                 );
             }
 
+            const state =
+                await obtenerEstadoFondosActividad(
+                    clienteRef,
+                    operador
+                );
+            const activityId =
+                state.activeActivity.id;
+            const activityRef =
+                state.activityRef;
             const configRef = clienteRef
                 .collection("configuracion")
                 .doc("pos");
-            const sessionRef = clienteRef
-                .collection("cajas")
-                .doc(cashSessionId);
             const conversionRef = clienteRef
                 .collection("conversionesFondos")
                 .doc(conversionId);
+            const disponibleOrigen =
+                redondearDineroVenta(
+                    state.funds
+                        .balances?.[origen] ||
+                    0
+                );
 
-            const result = await db.runTransaction(
-                async (transaction) => {
-                    const [
-                        freshClientSnap,
-                        configSnap,
-                        sessionSnap,
-                        conversionSnap,
-                    ] = await transaction.getAll(
-                        clienteRef,
-                        configRef,
-                        sessionRef,
-                        conversionRef
-                    );
-
-                    if (
-                        freshClientSnap.data()
-                            ?.arca
-                            ?.productionEnabled === true
-                    ) {
-                        throw new HttpsError(
-                            "failed-precondition",
-                            "La conversión de fondos no está disponible cuando la facturación fiscal está operativa.",
-                            {
-                                motivo:
-                                    "fund-conversion-fiscal-enabled",
-                            }
-                        );
+            if (
+                importe >
+                disponibleOrigen + 0.001
+            ) {
+                throw new HttpsError(
+                    "failed-precondition",
+                    origen === "efectivo"
+                        ? "El importe supera el efectivo disponible de la actividad."
+                        : "El importe supera las transferencias disponibles de la actividad.",
+                    {
+                        motivo:
+                            "fund-conversion-insufficient-activity-funds",
+                        metodo: origen,
+                        disponible:
+                            disponibleOrigen,
+                        activityId,
                     }
+                );
+            }
 
-                    const session =
-                        sessionSnap.exists
-                            ? sessionSnap.data() || {}
-                            : {};
-
-                    if (conversionSnap.exists) {
-                        const existing =
-                            conversionSnap.data() || {};
+            const result =
+                await db.runTransaction(
+                    async (transaction) => {
+                        const [
+                            freshClientSnap,
+                            configSnap,
+                            activitySnap,
+                            conversionSnap,
+                        ] = await transaction.getAll(
+                            clienteRef,
+                            configRef,
+                            activityRef,
+                            conversionRef
+                        );
 
                         if (
-                            existing.cashSessionId !== cashSessionId ||
-                            existing.origen !== origen ||
-                            existing.destino !== destino ||
-                            redondearDineroVenta(existing.importe) !== importe ||
-                            textoSeguro(existing.motivo, 180) !== motivo
+                            freshClientSnap.data()
+                                ?.arca
+                                ?.productionEnabled === true
                         ) {
                             throw new HttpsError(
-                                "already-exists",
-                                "El identificador de esta conversión ya fue utilizado."
+                                "failed-precondition",
+                                "La conversión de fondos no está disponible cuando la facturación fiscal está operativa.",
+                                {
+                                    motivo:
+                                        "fund-conversion-fiscal-enabled",
+                                }
                             );
                         }
 
-                        return {
-                            created: false,
-                            conversion: {
-                                id: conversionId,
-                                cashSessionId,
-                                origen,
-                                destino,
-                                importe,
-                                motivo,
-                                fecha:
-                                    existing.fecha || null,
-                            },
-                            session: {
-                                id: cashSessionId,
-                                fundConversionTotals:
-                                    session.fundConversionTotals ||
-                                    {
-                                        efectivo: 0,
-                                        transferencia: 0,
-                                    },
-                                fundConversionCount:
+                        if (conversionSnap.exists) {
+                            const existing =
+                                conversionSnap.data() || {};
+
+                            if (
+                                existing.activityId !== activityId ||
+                                existing.origen !== origen ||
+                                existing.destino !== destino ||
+                                redondearDineroVenta(existing.importe) !== importe ||
+                                textoSeguro(existing.motivo, 180) !== motivo
+                            ) {
+                                throw new HttpsError(
+                                    "already-exists",
+                                    "El identificador de esta conversión ya fue utilizado."
+                                );
+                            }
+
+                            return {
+                                created: false,
+                                conversion: {
+                                    id: conversionId,
+                                    activityId,
+                                    origen,
+                                    destino,
+                                    importe,
+                                    motivo,
+                                    fecha:
+                                        existing.fecha || null,
+                                },
+                                funds:
+                                    existing.fundsAfter ||
+                                    state.funds.balances,
+                            };
+                        }
+
+                        const activity =
+                            activitySnap.exists
+                                ? activitySnap.data() || {}
+                                : {};
+                        const activeActivityId =
+                            normalizarIdDocumentoSeguro(
+                                configSnap.data()
+                                    ?.activeActivityId,
+                                180
+                            );
+
+                        if (
+                            activeActivityId !==
+                            activityId
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La actividad activa cambió. Actualizá e intentá nuevamente.",
+                                {
+                                    motivo:
+                                        "activity-changed",
+                                }
+                            );
+                        }
+
+                        if (
+                            !activitySnap.exists ||
+                            (textoSeguro(
+                                activity.status,
+                                40
+                            ) || "open") !== "open"
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "La actividad ya no se encuentra disponible para convertir fondos.",
+                                {
+                                    motivo:
+                                        "activity-not-open",
+                                }
+                            );
+                        }
+
+                        const freshRevision =
+                            Math.max(
+                                0,
+                                Math.trunc(
+                                    Number(
+                                        activity
+                                            ?.fundConversionRevision ||
+                                        0
+                                    )
+                                ) || 0
+                            );
+
+                        if (
+                            freshRevision !==
+                            state.revision
+                        ) {
+                            throw new HttpsError(
+                                "aborted",
+                                "Los fondos cambiaron mientras confirmabas la conversión. Volvé a intentarlo.",
+                                {
+                                    motivo:
+                                        "fund-conversion-stale",
+                                }
+                            );
+                        }
+
+                        const delta = {
+                            efectivo: 0,
+                            transferencia: 0,
+                        };
+
+                        delta[origen] -= importe;
+                        delta[destino] += importe;
+
+                        const fundsBefore = {
+                            efectivo:
+                                redondearDineroVenta(
+                                    state.funds
+                                        .balances
+                                        .efectivo || 0
+                                ),
+                            transferencia:
+                                redondearDineroVenta(
+                                    state.funds
+                                        .balances
+                                        .transferencia || 0
+                                ),
+                        };
+                        const fundsAfter = {
+                            efectivo:
+                                redondearDineroVenta(
                                     Math.max(
                                         0,
-                                        Math.trunc(
-                                            Number(
-                                                session.fundConversionCount ||
-                                                0
-                                            )
-                                        )
-                                    ),
-                            },
+                                        fundsBefore.efectivo +
+                                        delta.efectivo
+                                    )
+                                ),
+                            transferencia:
+                                redondearDineroVenta(
+                                    Math.max(
+                                        0,
+                                        fundsBefore.transferencia +
+                                        delta.transferencia
+                                    )
+                                ),
                         };
-                    }
+                        const fecha =
+                            new Date().toISOString();
 
-                    const activeCashSessionId =
-                        textoSeguro(
-                            configSnap.data()
-                                ?.openCashSessionId,
-                            180
-                        );
-
-                    if (!activeCashSessionId) {
-                        throw new HttpsError(
-                            "failed-precondition",
-                            "Abrí una caja antes de convertir fondos.",
+                        transaction.update(
+                            activityRef,
                             {
-                                motivo:
-                                    "cash-not-open",
+                                fundConversionRevision:
+                                    freshRevision + 1,
+                                fundConversionUpdatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                                updatedAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
                             }
                         );
-                    }
 
-                    if (
-                        activeCashSessionId !==
-                        cashSessionId
-                    ) {
-                        throw new HttpsError(
-                            "failed-precondition",
-                            "La caja activa cambió. Actualizá e intentá nuevamente.",
+                        transaction.set(
+                            conversionRef,
                             {
-                                motivo:
-                                    "cash-session-mismatch",
-                            }
-                        );
-                    }
-
-                    if (
-                        !sessionSnap.exists ||
-                        session.status !== "open"
-                    ) {
-                        throw new HttpsError(
-                            "failed-precondition",
-                            "La caja ya no se encuentra abierta.",
-                            {
-                                motivo:
-                                    "cash-already-closed",
-                            }
-                        );
-                    }
-
-                    const previousTotals = {
-                        efectivo:
-                            redondearDineroVenta(
-                                session
-                                    ?.fundConversionTotals
-                                    ?.efectivo ||
-                                0
-                            ),
-                        transferencia:
-                            redondearDineroVenta(
-                                session
-                                    ?.fundConversionTotals
-                                    ?.transferencia ||
-                                0
-                            ),
-                    };
-
-                    const efectivoAnterior =
-                        redondearDineroVenta(
-                            Number(session.openAmount || 0) +
-                            totalMetodoSesion(
-                                session,
-                                "efectivo"
-                            )
-                        );
-                    const transferenciaTurnoAnterior =
-                        totalMetodoSesion(
-                            session,
-                            "transferencia"
-                        );
-
-                    if (
-                        origen === "efectivo" &&
-                        importe > efectivoAnterior + 0.001
-                    ) {
-                        throw new HttpsError(
-                            "failed-precondition",
-                            "El importe supera el efectivo esperado disponible en caja.",
-                            {
-                                motivo:
-                                    "fund-conversion-insufficient-cash",
-                                efectivoDisponible:
-                                    efectivoAnterior,
-                            }
-                        );
-                    }
-
-                    const deltaEfectivo =
-                        origen === "efectivo"
-                            ? -importe
-                            : importe;
-                    const deltaTransferencia =
-                        origen === "transferencia"
-                            ? -importe
-                            : importe;
-
-                    const nextTotals = {
-                        efectivo:
-                            redondearDineroVenta(
-                                previousTotals.efectivo +
-                                deltaEfectivo
-                            ),
-                        transferencia:
-                            redondearDineroVenta(
-                                previousTotals.transferencia +
-                                deltaTransferencia
-                            ),
-                    };
-
-                    const efectivoNuevo =
-                        redondearDineroVenta(
-                            efectivoAnterior +
-                            deltaEfectivo
-                        );
-                    const transferenciaTurnoNueva =
-                        redondearDineroVenta(
-                            transferenciaTurnoAnterior +
-                            deltaTransferencia
-                        );
-                    const fundConversionCount =
-                        Math.max(
-                            0,
-                            Math.trunc(
-                                Number(
-                                    session.fundConversionCount ||
-                                    0
-                                )
-                            )
-                        ) + 1;
-                    const fecha =
-                        new Date().toISOString();
-
-                    transaction.update(
-                        sessionRef,
-                        {
-                            fundConversionTotals:
-                                nextTotals,
-                            fundConversionCount,
-                            fundConversionUpdatedAt:
-                                admin.firestore.FieldValue.serverTimestamp(),
-                            updatedAt:
-                                admin.firestore.FieldValue.serverTimestamp(),
-                        }
-                    );
-
-                    transaction.set(
-                        conversionRef,
-                        {
-                            id: conversionId,
-                            cashSessionId,
-                            origen,
-                            destino,
-                            importe,
-                            motivo,
-                            fecha,
-                            operadorId:
-                                operador.id,
-                            operadorNombre:
-                                textoSeguro(
-                                    operador
-                                        ?.data
-                                        ?.nombre,
-                                    80
-                                ) || "Operador",
-                            operadorRol:
-                                operador.rol,
-                            deviceId,
-                            efectivoAnterior,
-                            efectivoNuevo,
-                            transferenciaTurnoAnterior,
-                            transferenciaTurnoNueva,
-                            createdAt:
-                                admin.firestore.FieldValue.serverTimestamp(),
-                        }
-                    );
-
-                    const auditEvent =
-                        crearEventoAuditoria({
-                            clienteRef,
-                            operador,
-                            accion:
-                                AUDIT_ACTIONS
-                                    .CONVERSION_FONDOS,
-                            sessionId:
-                                cashSessionId,
-                            deviceId,
-                            detalle: {
-                                conversionId,
+                                id: conversionId,
+                                scope: "activity",
+                                activityId,
+                                cashSessionId: null,
                                 origen,
                                 destino,
                                 importe,
                                 motivo,
-                                efectivoAnterior,
-                                efectivoNuevo,
-                                transferenciaTurnoAnterior,
-                                transferenciaTurnoNueva,
+                                fecha,
+                                operadorId:
+                                    operador.id,
+                                operadorNombre:
+                                    textoSeguro(
+                                        operador
+                                            ?.data
+                                            ?.nombre,
+                                        80
+                                    ) || "Operador",
+                                operadorRol:
+                                    operador.rol,
+                                deviceId,
+                                fundsBefore,
+                                fundsAfter,
+                                financialStartAt:
+                                    state.funds
+                                        .financialStartAt,
+                                createdAt:
+                                    admin.firestore.FieldValue.serverTimestamp(),
+                            }
+                        );
+
+                        const auditEvent =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador,
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .CONVERSION_FONDOS,
+                                sessionId: null,
+                                deviceId,
+                                detalle: {
+                                    conversionId,
+                                    scope:
+                                        "activity",
+                                    activityId,
+                                    origen,
+                                    destino,
+                                    importe,
+                                    motivo,
+                                    fundsBefore,
+                                    fundsAfter,
+                                },
+                            });
+
+                        transaction.set(
+                            auditEvent.ref,
+                            auditEvent.data
+                        );
+
+                        return {
+                            created: true,
+                            conversion: {
+                                id: conversionId,
+                                activityId,
+                                origen,
+                                destino,
+                                importe,
+                                motivo,
+                                fecha,
                             },
-                        });
-
-                    transaction.set(
-                        auditEvent.ref,
-                        auditEvent.data
-                    );
-
-                    return {
-                        created: true,
-                        conversion: {
-                            id: conversionId,
-                            cashSessionId,
-                            origen,
-                            destino,
-                            importe,
-                            motivo,
-                            fecha,
-                        },
-                        session: {
-                            id: cashSessionId,
-                            fundConversionTotals:
-                                nextTotals,
-                            fundConversionCount,
-                        },
-                    };
-                }
-            );
+                            funds: fundsAfter,
+                        };
+                    }
+                );
 
             return {
                 ok: true,

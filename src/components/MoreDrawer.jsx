@@ -44,6 +44,7 @@ export default function MoreDrawer({
   onNavigate,
   currentTab,
   openSession,
+  activeActivity = null,
   allowOperatorChangeWithOpenSession = false,
   pendingOfflineCount = 0,
   offlineAttentionCount = 0,
@@ -215,7 +216,7 @@ export default function MoreDrawer({
   }
 
   function openFundConversion() {
-    if (!esAdministrador || !fundConversionAllowed || !openSession) {
+    if (!esAdministrador || !fundConversionAllowed || !activeActivity) {
       return;
     }
 
@@ -436,9 +437,15 @@ export default function MoreDrawer({
                   <DrawerRow
                     icon={ExchangeIcon}
                     label="Conversión de fondos"
-                    badge={openSession ? "Efectivo ↔ Transferencia" : "Abrí caja"}
-                    badgeTone={openSession ? "amber" : "neutral"}
-                    disabled={!openSession}
+                    badge={
+                      activeActivity
+                        ? `Actividad #${String(
+                            activeActivity.sequence || 1
+                          ).padStart(3, "0")}`
+                        : "Cargando actividad"
+                    }
+                    badgeTone={activeActivity ? "amber" : "neutral"}
+                    disabled={!activeActivity}
                     onClick={openFundConversion}
                   />
                 )}
