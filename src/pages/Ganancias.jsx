@@ -490,6 +490,21 @@ function formatQuantity(value, tipoVenta, lines) {
     : `${formatted} u.`;
 }
 
+function formatPendingPurchaseQuantity(value) {
+  const quantity = Math.max(
+    0,
+    roundQuantity(value)
+  );
+
+  return quantity.toLocaleString(
+    "es-AR",
+    {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 3,
+    }
+  );
+}
+
 function makeProductKey(item) {
   const barcode = String(
     item?.barcode || ""
@@ -1983,6 +1998,88 @@ export default function Ganancias({ pos }) {
     shoppingList,
   ]);
 
+  const pendingRestock = useMemo(() => {
+    const items = shoppingList
+      .filter(
+        (item) =>
+          item?.estado !== "comprado"
+      )
+      .map((item) => {
+        const quantity = Math.max(
+          0,
+          roundQuantity(
+            toNumber(
+              item?.cantidad,
+              1
+            )
+          )
+        );
+
+        const estimatedAmount = roundMoney(
+          Math.max(
+            0,
+            toNumber(
+              item?.costoEstimado
+            )
+          )
+        );
+
+        return {
+          ...item,
+          quantity,
+          estimatedAmount,
+          hasEstimate:
+            estimatedAmount > 0,
+        };
+      });
+
+    const estimatedItems =
+      items.filter(
+        (item) => item.hasEstimate
+      );
+
+    const estimatedTotal = roundMoney(
+      estimatedItems.reduce(
+        (sum, item) =>
+          sum +
+          item.estimatedAmount,
+        0
+      )
+    );
+
+    const replacementAfterEstimate =
+      roundMoney(
+        activityFinancial
+          .replacementFund -
+        estimatedTotal
+      );
+
+    const coverage =
+      estimatedTotal > 0
+        ? (
+            activityFinancial
+              .replacementFund /
+            estimatedTotal
+          ) * 100
+        : null;
+
+    return {
+      items,
+      pendingCount: items.length,
+      estimatedCount:
+        estimatedItems.length,
+      missingEstimateCount:
+        items.length -
+        estimatedItems.length,
+      estimatedTotal,
+      replacementAfterEstimate,
+      coverage,
+    };
+  }, [
+    activityFinancial.replacementFund,
+    shoppingList,
+  ]);
+
   const financialPeriodLabel =
     financialPeriod === "activity"
       ? "Desde inicio actividad"
@@ -2732,6 +2829,141 @@ export default function Ganancias({ pos }) {
               danger
             />
           )}
+
+          <div className="rounded-[20px] border border-white/10 bg-white/[0.025] p-3.5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[9px] font-extrabold uppercase tracking-[0.12em] text-[#FFC61A]">
+                  Reposición pendiente
+                </p>
+                <p className="mt-1 text-[11px] leading-relaxed text-white/40">
+                  Detalle de la lista de compras todavía no confirmada. Es informativo y no descuenta fondos hasta registrar la compra.
+                </p>
+              </div>
+
+              <span className="shrink-0 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-[10px] font-extrabold text-white/55">
+                {pendingRestock.pendingCount} {pendingRestock.pendingCount === 1 ? "pendiente" : "pendientes"}
+              </span>
+            </div>
+
+            {pendingRestock.pendingCount === 0 ? (
+              <div className="mt-3 rounded-2xl border border-dashed border-white/10 px-3 py-4 text-center text-[11px] text-white/35">
+                No hay productos pendientes de reposición en la lista de compras.
+              </div>
+            ) : (
+              <>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <ActivityStat
+                    label="Monto estimado"
+                    value={
+                      pendingRestock.estimatedCount > 0
+                        ? money(
+                            pendingRestock.estimatedTotal
+                          )
+                        : "Sin estimar"
+                    }
+                  />
+                  <ActivityStat
+                    label="Cobertura estimada"
+                    value={
+                      pendingRestock.coverage === null
+                        ? "Sin estimar"
+                        : formatPercent(
+                            pendingRestock.coverage
+                          )
+                    }
+                    highlight={
+                      pendingRestock.coverage !== null &&
+                      pendingRestock.coverage >= 100
+                    }
+                  />
+                </div>
+
+                {pendingRestock.estimatedCount > 0 && (
+                  <div
+                    className={
+                      "mt-2 rounded-2xl border px-3 py-2.5 " +
+                      (pendingRestock.replacementAfterEstimate >= 0
+                        ? "border-emerald-400/15 bg-emerald-400/[0.06]"
+                        : "border-amber-300/15 bg-amber-300/[0.06]")
+                    }
+                  >
+                    <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-white/45">
+                      {pendingRestock.replacementAfterEstimate >= 0
+                        ? "Fondo restante si se compra todo lo estimado"
+                        : "Faltante estimado para cubrir la reposición"}
+                    </p>
+                    <strong
+                      className={
+                        "mt-1 block text-sm font-black " +
+                        (pendingRestock.replacementAfterEstimate >= 0
+                          ? "text-emerald-300"
+                          : "text-amber-200")
+                      }
+                    >
+                      {money(
+                        Math.abs(
+                          pendingRestock.replacementAfterEstimate
+                        )
+                      )}
+                    </strong>
+                  </div>
+                )}
+
+                {pendingRestock.missingEstimateCount > 0 && (
+                  <p className="mt-2 text-[10px] leading-relaxed text-amber-200/65">
+                    {pendingRestock.missingEstimateCount} {pendingRestock.missingEstimateCount === 1 ? "pendiente no tiene" : "pendientes no tienen"} monto estimado. El total y la cobertura consideran solo los que sí tienen estimación.
+                  </p>
+                )}
+
+                <div className="mt-3 space-y-2">
+                  {pendingRestock.items.map(
+                    (item) => (
+                      <div
+                        key={item.id}
+                        className="rounded-2xl border border-white/10 bg-[#171B23] px-3 py-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-black text-white/85">
+                              {item?.concepto || "Compra pendiente"}
+                            </p>
+                            <p className="mt-1 text-[10px] text-white/35">
+                              Cantidad: {formatPendingPurchaseQuantity(item.quantity)}
+                              {item?.proveedor
+                                ? ` · ${item.proveedor}`
+                                : ""}
+                            </p>
+                            {item?.conceptoCosto && (
+                              <p className="mt-1 text-[9px] font-bold uppercase tracking-[0.07em] text-white/25">
+                                {item.conceptoCosto}
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="shrink-0 text-right">
+                            <span className="inline-flex rounded-lg border border-white/10 bg-white/[0.035] px-2 py-1 text-[9px] font-extrabold text-white/45">
+                              x{formatPendingPurchaseQuantity(item.quantity)}
+                            </span>
+                            <strong className="mt-1.5 block text-sm font-black text-[#FFC61A]">
+                              {item.hasEstimate
+                                ? money(
+                                    item.estimatedAmount
+                                  )
+                                : "Sin estimar"}
+                            </strong>
+                            <span className="mt-0.5 block text-[8px] font-bold uppercase tracking-[0.07em] text-white/25">
+                              monto estimado
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+                </div>
+              </>
+            )}
+          </div>
 
           <div className="rounded-[20px] border border-white/10 bg-white/[0.025] p-3.5">
             <div className="flex items-center justify-between gap-3">
