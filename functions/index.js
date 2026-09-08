@@ -1747,6 +1747,12 @@ const AUDIT_ACTIONS = Object.freeze({
     OTRO_COSTO_ACTIVIDAD:
         "otro-costo-actividad",
 
+    EDICION_OTRO_COSTO_ACTIVIDAD:
+        "edicion-otro-costo-actividad",
+
+    ANULACION_OTRO_COSTO_ACTIVIDAD:
+        "anulacion-otro-costo-actividad",
+
     ALTA_CUENTA_POR_PAGAR:
         "alta-cuenta-por-pagar",
 
@@ -16628,6 +16634,11 @@ async function asegurarActividadActual(
                             data.startedAt ||
                             data.startedAtIso
                         ),
+                        financialStartAt:
+                            serializarFechaCompra(
+                                data.financialStartAt ||
+                                data.financialStartAtIso
+                            ),
                         openingReplacementFund:
                             redondearDineroCuentaPorCobrar(
                                 data.openingReplacementFund || 0
@@ -16645,6 +16656,8 @@ async function asegurarActividadActual(
                 status: "open",
                 startedAt,
                 startedAtIso,
+                financialStartAt: startedAt,
+                financialStartAtIso: startedAtIso,
                 openingReplacementFund: 0,
                 creadoPor: operadorAutorizado
                     ? {
@@ -16682,6 +16695,7 @@ async function asegurarActividadActual(
                 id: activityId,
                 status: "open",
                 startedAt: startedAtIso,
+                financialStartAt: startedAtIso,
                 openingReplacementFund: 0,
             };
         }
@@ -16806,6 +16820,8 @@ function serializarOtroCostoActividad(
             serializarFechaCompra(data.creadoEn),
         actualizadoEn:
             serializarFechaCompra(data.actualizadoEn),
+        anuladoEn:
+            serializarFechaCompra(data.anuladoEn),
     };
 }
 
@@ -17051,10 +17067,17 @@ exports.cargarCompras =
                     operadorAutorizado
                 );
 
+            const recentOtherCostsFrom =
+                admin.firestore.Timestamp.fromMillis(
+                    Date.now() -
+                    35 * 24 * 60 * 60 * 1000
+                );
+
             const [
                 shoppingSnapshot,
                 payableSnapshot,
                 otherCostsSnapshot,
+                recentOtherCostsSnapshot,
             ] =
                 await Promise.all([
                     clienteRef
@@ -17077,6 +17100,17 @@ exports.cargarCompras =
                             "activityId",
                             "==",
                             activeActivity.id
+                        )
+                        .get(),
+
+                    clienteRef
+                        .collection(
+                            "otrosCostos"
+                        )
+                        .where(
+                            "creadoEn",
+                            ">=",
+                            recentOtherCostsFrom
                         )
                         .get(),
                 ]);
@@ -17117,8 +17151,23 @@ exports.cargarCompras =
                             )
                     );
 
+            const otherCostDocs =
+                new Map();
+
+            for (const snapshot of [
+                otherCostsSnapshot,
+                recentOtherCostsSnapshot,
+            ]) {
+                for (const doc of snapshot.docs) {
+                    otherCostDocs.set(
+                        doc.id,
+                        doc
+                    );
+                }
+            }
+
             const otherCosts =
-                otherCostsSnapshot.docs
+                [...otherCostDocs.values()]
                     .map(
                         serializarOtroCostoActividad
                     )
@@ -18163,6 +18212,10 @@ exports.registrarOtroCostoActividad =
                                 sessionId:
                                     existing.sessionId ||
                                     null,
+                                createdAt:
+                                    serializarFechaCompra(
+                                        existing.creadoEn
+                                    ),
                             };
                         }
 
@@ -18180,6 +18233,7 @@ exports.registrarOtroCostoActividad =
                                 importe,
                                 metodoPago,
                                 sessionId,
+                                estado: "activo",
                                 operadorId:
                                     operadorAutorizado.id,
                                 operadorNombre:
@@ -18250,6 +18304,10 @@ exports.registrarOtroCostoActividad =
                         return {
                             alreadyExists: false,
                             sessionId,
+                            createdAt:
+                                fecha
+                                    .toDate()
+                                    .toISOString(),
                         };
                     }
                 );
@@ -18266,9 +18324,747 @@ exports.registrarOtroCostoActividad =
                     metodoPago,
                     sessionId:
                         result.sessionId,
+                    estado: "activo",
+                    creadoEn:
+                        result.createdAt || null,
+                    actualizadoEn:
+                        result.createdAt || null,
                 },
                 alreadyExists:
                     result.alreadyExists,
+            };
+        }
+    );
+
+
+async function calcularOtrosCostosSesionEnTransaccion(
+    transaction,
+    clienteRef,
+    sessionId,
+    {
+        costId = null,
+        replacement = null,
+        omit = false,
+    } = {}
+) {
+    const snapshot =
+        await transaction.get(
+            clienteRef
+                .collection("otrosCostos")
+                .where(
+                    "sessionId",
+                    "==",
+                    sessionId
+                )
+        );
+
+    const totals = {
+        efectivo: 0,
+        transferencia: 0,
+    };
+
+    let total = 0;
+    let count = 0;
+
+    for (const doc of snapshot.docs) {
+        let data = doc.data() || {};
+
+        if (
+            costId &&
+            doc.id === costId
+        ) {
+            if (omit) {
+                continue;
+            }
+
+            if (replacement) {
+                data = {
+                    ...data,
+                    ...replacement,
+                };
+            }
+        }
+
+        if (
+            textoSeguro(
+                data.estado,
+                40
+            ) === "anulado"
+        ) {
+            continue;
+        }
+
+        const importe =
+            redondearDineroCuentaPorCobrar(
+                data.importe
+            );
+
+        const metodoPago =
+            textoSeguro(
+                data.metodoPago,
+                40
+            );
+
+        if (
+            !Number.isFinite(importe) ||
+            importe <= 0 ||
+            ![
+                "efectivo",
+                "transferencia",
+            ].includes(metodoPago)
+        ) {
+            continue;
+        }
+
+        totals[metodoPago] =
+            redondearDineroCuentaPorCobrar(
+                totals[metodoPago] +
+                importe
+            );
+
+        total =
+            redondearDineroCuentaPorCobrar(
+                total + importe
+            );
+
+        count += 1;
+    }
+
+    return {
+        totals,
+        total,
+        count,
+    };
+}
+
+exports.editarOtroCostoActividad =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(clienteData);
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data?.operadorSesion,
+                    {
+                        deviceId,
+                        requireRole:
+                            "administrador",
+                    }
+                );
+
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+
+            const costId =
+                validarId(
+                    request.data?.costId,
+                    "costId"
+                );
+
+            const rawCost =
+                esObjetoPlano(
+                    request.data?.cost
+                )
+                    ? request.data.cost
+                    : {};
+
+            const concepto =
+                textoSeguro(
+                    rawCost.concepto,
+                    180
+                );
+
+            const categoria =
+                textoSeguro(
+                    rawCost.categoria,
+                    80
+                );
+
+            const importe =
+                redondearDineroCuentaPorCobrar(
+                    rawCost.importe
+                );
+
+            const metodoPago =
+                textoSeguro(
+                    rawCost.metodoPago,
+                    40
+                ) || "efectivo";
+
+            if (!concepto) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El concepto del costo es obligatorio."
+                );
+            }
+
+            if (
+                !Number.isFinite(importe) ||
+                importe <= 0 ||
+                importe > 999999999999
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "Ingresá un importe válido."
+                );
+            }
+
+            if (
+                ![
+                    "efectivo",
+                    "transferencia",
+                ].includes(metodoPago)
+            ) {
+                throw new HttpsError(
+                    "invalid-argument",
+                    "El medio de pago del costo no es válido."
+                );
+            }
+
+            const costRef =
+                clienteRef
+                    .collection("otrosCostos")
+                    .doc(costId);
+
+            const result =
+                await db.runTransaction(
+                    async (transaction) => {
+                        const costSnap =
+                            await transaction.get(
+                                costRef
+                            );
+
+                        if (!costSnap.exists) {
+                            throw new HttpsError(
+                                "not-found",
+                                "El costo ya no existe."
+                            );
+                        }
+
+                        const existing =
+                            costSnap.data() || {};
+
+                        if (
+                            textoSeguro(
+                                existing.estado,
+                                40
+                            ) === "anulado"
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "El costo ya fue anulado."
+                            );
+                        }
+
+                        if (
+                            textoSeguro(
+                                existing.activityId,
+                                180
+                            ) !== activeActivity.id
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Solo se pueden editar costos de la actividad actual."
+                            );
+                        }
+
+                        const sessionId =
+                            textoSeguro(
+                                existing.sessionId,
+                                180
+                            ) || null;
+
+                        let sessionRef = null;
+
+                        if (sessionId) {
+                            sessionRef =
+                                clienteRef
+                                    .collection("cajas")
+                                    .doc(sessionId);
+
+                            const sessionSnap =
+                                await transaction.get(
+                                    sessionRef
+                                );
+
+                            if (
+                                !sessionSnap.exists ||
+                                sessionSnap.data()?.status !== "open"
+                            ) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    "No se puede editar un costo asociado a una caja cerrada."
+                                );
+                            }
+                        }
+
+                        const previous = {
+                            concepto:
+                                textoSeguro(
+                                    existing.concepto,
+                                    180
+                                ),
+                            categoria:
+                                textoSeguro(
+                                    existing.categoria,
+                                    80
+                                ),
+                            importe:
+                                redondearDineroCuentaPorCobrar(
+                                    existing.importe
+                                ),
+                            metodoPago:
+                                textoSeguro(
+                                    existing.metodoPago,
+                                    40
+                                ) || "efectivo",
+                        };
+
+                        const unchanged =
+                            previous.concepto === concepto &&
+                            previous.categoria === categoria &&
+                            previous.importe === importe &&
+                            previous.metodoPago === metodoPago;
+
+                        if (unchanged) {
+                            return {
+                                unchanged: true,
+                                sessionId,
+                                updatedAt:
+                                    serializarFechaCompra(
+                                        existing.actualizadoEn ||
+                                        existing.creadoEn
+                                    ),
+                            };
+                        }
+
+                        let nextSessionTotals = null;
+
+                        if (sessionId) {
+                            nextSessionTotals =
+                                await calcularOtrosCostosSesionEnTransaccion(
+                                    transaction,
+                                    clienteRef,
+                                    sessionId,
+                                    {
+                                        costId,
+                                        replacement: {
+                                            importe,
+                                            metodoPago,
+                                            estado: "activo",
+                                        },
+                                    }
+                                );
+                        }
+
+                        const fecha =
+                            admin.firestore.Timestamp.now();
+
+                        transaction.update(
+                            costRef,
+                            {
+                                concepto,
+                                categoria,
+                                importe,
+                                metodoPago,
+                                estado: "activo",
+                                actualizadoEn: fecha,
+                                ultimaEdicionPor: {
+                                    operadorId:
+                                        operadorAutorizado.id,
+                                    operadorNombre:
+                                        textoSeguro(
+                                            operadorAutorizado?.data?.nombre,
+                                            80
+                                        ),
+                                    operadorRol:
+                                        validarRolOperador(
+                                            operadorAutorizado.rol
+                                        ),
+                                },
+                            }
+                        );
+
+                        if (
+                            sessionRef &&
+                            nextSessionTotals
+                        ) {
+                            transaction.update(
+                                sessionRef,
+                                {
+                                    "otherCostTotals.efectivo":
+                                        nextSessionTotals.totals.efectivo,
+                                    "otherCostTotals.transferencia":
+                                        nextSessionTotals.totals.transferencia,
+                                    otherCostsTotal:
+                                        nextSessionTotals.total,
+                                    otherCostsCount:
+                                        nextSessionTotals.count,
+                                    updatedAt:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }
+                            );
+                        }
+
+                        const evento =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador:
+                                    operadorAutorizado,
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .EDICION_OTRO_COSTO_ACTIVIDAD,
+                                sessionId,
+                                deviceId,
+                                detalle: {
+                                    costId,
+                                    activityId:
+                                        activeActivity.id,
+                                    anterior:
+                                        previous,
+                                    nuevo: {
+                                        concepto,
+                                        categoria,
+                                        importe,
+                                        metodoPago,
+                                    },
+                                },
+                            });
+
+                        transaction.set(
+                            evento.ref,
+                            evento.data
+                        );
+
+                        return {
+                            unchanged: false,
+                            sessionId,
+                            updatedAt:
+                                fecha
+                                    .toDate()
+                                    .toISOString(),
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+                unchanged:
+                    result.unchanged,
+                cost: {
+                    id: costId,
+                    activityId:
+                        activeActivity.id,
+                    concepto,
+                    categoria,
+                    importe,
+                    metodoPago,
+                    sessionId:
+                        result.sessionId,
+                    estado: "activo",
+                    actualizadoEn:
+                        result.updatedAt || null,
+                },
+            };
+        }
+    );
+
+exports.anularOtroCostoActividad =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } =
+                await resolverClienteAutenticado(
+                    request.auth
+                );
+
+            const clienteData =
+                clienteSnap.data();
+
+            validarLicencia(clienteData);
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId =
+                validarId(
+                    request.data?.deviceId,
+                    "deviceId"
+                );
+
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data?.operadorSesion,
+                    {
+                        deviceId,
+                        requireRole:
+                            "administrador",
+                    }
+                );
+
+            const activeActivity =
+                await asegurarActividadActual(
+                    clienteRef,
+                    operadorAutorizado
+                );
+
+            const costId =
+                validarId(
+                    request.data?.costId,
+                    "costId"
+                );
+
+            const motivo =
+                textoSeguro(
+                    request.data?.motivo,
+                    250
+                );
+
+            const costRef =
+                clienteRef
+                    .collection("otrosCostos")
+                    .doc(costId);
+
+            const result =
+                await db.runTransaction(
+                    async (transaction) => {
+                        const costSnap =
+                            await transaction.get(
+                                costRef
+                            );
+
+                        if (!costSnap.exists) {
+                            throw new HttpsError(
+                                "not-found",
+                                "El costo ya no existe."
+                            );
+                        }
+
+                        const existing =
+                            costSnap.data() || {};
+
+                        if (
+                            textoSeguro(
+                                existing.activityId,
+                                180
+                            ) !== activeActivity.id
+                        ) {
+                            throw new HttpsError(
+                                "failed-precondition",
+                                "Solo se pueden anular costos de la actividad actual."
+                            );
+                        }
+
+                        if (
+                            textoSeguro(
+                                existing.estado,
+                                40
+                            ) === "anulado"
+                        ) {
+                            return {
+                                alreadyAnulled: true,
+                                sessionId:
+                                    textoSeguro(
+                                        existing.sessionId,
+                                        180
+                                    ) || null,
+                                annulledAt:
+                                    serializarFechaCompra(
+                                        existing.anuladoEn
+                                    ),
+                            };
+                        }
+
+                        const sessionId =
+                            textoSeguro(
+                                existing.sessionId,
+                                180
+                            ) || null;
+
+                        let sessionRef = null;
+                        let nextSessionTotals = null;
+
+                        if (sessionId) {
+                            sessionRef =
+                                clienteRef
+                                    .collection("cajas")
+                                    .doc(sessionId);
+
+                            const sessionSnap =
+                                await transaction.get(
+                                    sessionRef
+                                );
+
+                            if (
+                                !sessionSnap.exists ||
+                                sessionSnap.data()?.status !== "open"
+                            ) {
+                                throw new HttpsError(
+                                    "failed-precondition",
+                                    "No se puede anular un costo asociado a una caja cerrada."
+                                );
+                            }
+
+                            nextSessionTotals =
+                                await calcularOtrosCostosSesionEnTransaccion(
+                                    transaction,
+                                    clienteRef,
+                                    sessionId,
+                                    {
+                                        costId,
+                                        omit: true,
+                                    }
+                                );
+                        }
+
+                        const fecha =
+                            admin.firestore.Timestamp.now();
+
+                        transaction.update(
+                            costRef,
+                            {
+                                estado: "anulado",
+                                anuladoEn: fecha,
+                                motivoAnulacion:
+                                    motivo,
+                                actualizadoEn: fecha,
+                                anuladoPor: {
+                                    operadorId:
+                                        operadorAutorizado.id,
+                                    operadorNombre:
+                                        textoSeguro(
+                                            operadorAutorizado?.data?.nombre,
+                                            80
+                                        ),
+                                    operadorRol:
+                                        validarRolOperador(
+                                            operadorAutorizado.rol
+                                        ),
+                                },
+                            }
+                        );
+
+                        if (
+                            sessionRef &&
+                            nextSessionTotals
+                        ) {
+                            transaction.update(
+                                sessionRef,
+                                {
+                                    "otherCostTotals.efectivo":
+                                        nextSessionTotals.totals.efectivo,
+                                    "otherCostTotals.transferencia":
+                                        nextSessionTotals.totals.transferencia,
+                                    otherCostsTotal:
+                                        nextSessionTotals.total,
+                                    otherCostsCount:
+                                        nextSessionTotals.count,
+                                    updatedAt:
+                                        admin.firestore.FieldValue.serverTimestamp(),
+                                }
+                            );
+                        }
+
+                        const evento =
+                            crearEventoAuditoria({
+                                clienteRef,
+                                operador:
+                                    operadorAutorizado,
+                                accion:
+                                    AUDIT_ACTIONS
+                                        .ANULACION_OTRO_COSTO_ACTIVIDAD,
+                                sessionId,
+                                deviceId,
+                                detalle: {
+                                    costId,
+                                    activityId:
+                                        activeActivity.id,
+                                    concepto:
+                                        textoSeguro(
+                                            existing.concepto,
+                                            180
+                                        ),
+                                    categoria:
+                                        textoSeguro(
+                                            existing.categoria,
+                                            80
+                                        ),
+                                    importe:
+                                        redondearDineroCuentaPorCobrar(
+                                            existing.importe
+                                        ),
+                                    metodoPago:
+                                        textoSeguro(
+                                            existing.metodoPago,
+                                            40
+                                        ),
+                                    motivo,
+                                },
+                            });
+
+                        transaction.set(
+                            evento.ref,
+                            evento.data
+                        );
+
+                        return {
+                            alreadyAnulled: false,
+                            sessionId,
+                            annulledAt:
+                                fecha
+                                    .toDate()
+                                    .toISOString(),
+                        };
+                    }
+                );
+
+            return {
+                ok: true,
+                alreadyAnulled:
+                    result.alreadyAnulled,
+                cost: {
+                    id: costId,
+                    activityId:
+                        activeActivity.id,
+                    sessionId:
+                        result.sessionId,
+                    estado: "anulado",
+                    anuladoEn:
+                        result.annulledAt || null,
+                    motivoAnulacion:
+                        motivo,
+                },
             };
         }
     );

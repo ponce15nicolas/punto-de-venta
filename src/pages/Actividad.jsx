@@ -120,6 +120,16 @@ const ACTION_META = {
     eyebrow: "Actividad",
     icon: WalletIcon,
   },
+  "edicion-otro-costo-actividad": {
+    title: "Costo actualizado",
+    eyebrow: "Actividad",
+    icon: EditIcon,
+  },
+  "anulacion-otro-costo-actividad": {
+    title: "Costo anulado",
+    eyebrow: "Actividad",
+    icon: TrashIcon,
+  },
   "alta-cuenta-por-pagar": {
     title: "Cuenta por pagar creada",
     eyebrow: "Cuentas por pagar",
@@ -239,9 +249,20 @@ export default function Actividad({ clienteId }) {
     useMemo(
       () =>
         events.filter((event) => {
+          const costAction =
+            [
+              "otro-costo-actividad",
+              "edicion-otro-costo-actividad",
+              "anulacion-otro-costo-actividad",
+            ].includes(event.accion);
+
           const actionOk =
             actionFilter === "all" ||
-            event.accion === actionFilter;
+            (actionFilter ===
+              "otro-costo-actividad"
+              ? costAction
+              : event.accion ===
+                actionFilter);
 
           const operatorOk =
             operatorFilter === "all" ||
@@ -1158,6 +1179,60 @@ function getEventDetails(event) {
           value: formatPaymentMethod(
             d.metodoPago
           ),
+        },
+      ]);
+
+    case "edicion-otro-costo-actividad":
+      return compactDetails([
+        {
+          label: "Concepto anterior",
+          value: d.anterior?.concepto,
+        },
+        {
+          label: "Importe anterior",
+          value: formatMoney(
+            d.anterior?.importe
+          ),
+        },
+        {
+          label: "Nuevo concepto",
+          value: d.nuevo?.concepto,
+        },
+        {
+          label: "Nuevo importe",
+          value: formatMoney(
+            d.nuevo?.importe
+          ),
+        },
+        {
+          label: "Nuevo medio",
+          value: formatPaymentMethod(
+            d.nuevo?.metodoPago
+          ),
+        },
+      ]);
+
+    case "anulacion-otro-costo-actividad":
+      return compactDetails([
+        {
+          label: "Concepto",
+          value: d.concepto,
+        },
+        {
+          label: "Importe anulado",
+          value: formatMoney(
+            d.importe
+          ),
+        },
+        {
+          label: "Medio de pago",
+          value: formatPaymentMethod(
+            d.metodoPago
+          ),
+        },
+        {
+          label: "Motivo",
+          value: d.motivo,
         },
       ]);
 

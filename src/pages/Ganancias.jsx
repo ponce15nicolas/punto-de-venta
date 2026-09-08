@@ -5,6 +5,7 @@
 // que una edición futura del costo cambie resultados históricos.
 
 import {
+  useEffect,
   useMemo,
   useState,
 } from "react";
@@ -27,6 +28,17 @@ const SORTS = [
   { id: "sales", label: "Mayor venta" },
   { id: "quantity", label: "Mayor cantidad" },
   { id: "name", label: "Nombre" },
+];
+
+const FINANCIAL_PERIODS = [
+  {
+    id: "30d",
+    label: "Últimos 30 días",
+  },
+  {
+    id: "activity",
+    label: "Desde inicio actividad",
+  },
 ];
 
 function toNumber(value, fallback = 0) {
@@ -305,6 +317,137 @@ function getPeriodStart(period) {
   start.setDate(start.getDate() - days);
 
   return start;
+}
+
+
+function getDateValue(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return Number.isNaN(
+      value.getTime()
+    )
+      ? null
+      : value;
+  }
+
+  if (
+    typeof value?.toDate ===
+    "function"
+  ) {
+    const date = value.toDate();
+
+    return Number.isNaN(
+      date.getTime()
+    )
+      ? null
+      : date;
+  }
+
+  const date = new Date(value);
+
+  return Number.isNaN(
+    date.getTime()
+  )
+    ? null
+    : date;
+}
+
+function getActivityFinancialStart(
+  activeActivity,
+  sales
+) {
+  const configured =
+    getDateValue(
+      activeActivity?.financialStartAt
+    );
+
+  if (configured) {
+    return configured;
+  }
+
+  let earliestSale = null;
+
+  for (const sale of sales) {
+    const date = getSaleDate(sale);
+
+    if (
+      date &&
+      (!earliestSale ||
+        date < earliestSale)
+    ) {
+      earliestSale = date;
+    }
+  }
+
+  if (earliestSale) {
+    return earliestSale;
+  }
+
+  return getDateValue(
+    activeActivity?.startedAt
+  );
+}
+
+function getFinancialPeriodStart(
+  financialPeriod,
+  activeActivity,
+  sales
+) {
+  if (
+    financialPeriod === "activity"
+  ) {
+    return getActivityFinancialStart(
+      activeActivity,
+      sales
+    );
+  }
+
+  return getPeriodStart("30d");
+}
+
+function formatFinancialDate(value) {
+  const date = getDateValue(value);
+
+  if (!date) {
+    return "Sin fecha";
+  }
+
+  return date.toLocaleDateString(
+    "es-AR",
+    {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    }
+  );
+}
+
+function formatCostDate(value) {
+  const date = getDateValue(value);
+
+  if (!date) {
+    return "Fecha no disponible";
+  }
+
+  return date.toLocaleString(
+    "es-AR",
+    {
+      day: "2-digit",
+      month: "2-digit",
+      year: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }
+  );
+}
+
+function paymentMethodLabel(value) {
+  return value === "transferencia"
+    ? "Transferencia"
+    : "Efectivo";
 }
 
 function formatPercent(value) {
@@ -1073,6 +1216,15 @@ export default function Ganancias({ pos }) {
   const [fundsOpen, setFundsOpen] =
     useState(false);
 
+  const [financialPeriod, setFinancialPeriod] =
+    useState("30d");
+
+  const [editingCost, setEditingCost] =
+    useState(null);
+
+  const [voidingCost, setVoidingCost] =
+    useState(null);
+
   const sales = Array.isArray(
     pos?.sales
   )
@@ -1104,6 +1256,27 @@ export default function Ganancias({ pos }) {
 
   const activeActivity =
     pos?.activeActivity || null;
+
+  const cashSessions =
+    Array.isArray(pos?.cashSessions)
+      ? pos.cashSessions
+      : [];
+
+  const cashSessionStatus =
+    useMemo(() => {
+      const map = new Map();
+
+      for (const session of cashSessions) {
+        if (session?.id) {
+          map.set(
+            String(session.id),
+            session?.status || null
+          );
+        }
+      }
+
+      return map;
+    }, [cashSessions]);
 
   const historicalData =
     useMemo(
@@ -1514,28 +1687,51 @@ export default function Ganancias({ pos }) {
     };
   }, [periodSales]);
 
-  const activityFinancial = useMemo(() => {
-    const startMs = activeActivity?.startedAt
-      ? new Date(activeActivity.startedAt).getTime()
-      : Number.NaN;
+  const financialStart =
+    useMemo(
+      () =>
+        getFinancialPeriodStart(
+          financialPeriod,
+          activeActivity,
+          sales
+        ),
+      [
+        activeActivity,
+        financialPeriod,
+        sales,
+      ]
+    );
 
-    const inActivity = (value) => {
+  const activityFinancial = useMemo(() => {
+    const startMs =
+      financialStart
+        ? financialStart.getTime()
+        : Number.NaN;
+
+    const inFinancialRange = (
+      value
+    ) => {
       if (!Number.isFinite(startMs)) {
         return true;
       }
 
-      const ms = value
-        ? new Date(value).getTime()
-        : Number.NaN;
+      const date =
+        getDateValue(value);
 
-      return Number.isFinite(ms) && ms >= startMs;
+      return Boolean(
+        date &&
+        date.getTime() >= startMs
+      );
     };
 
-    const activitySales = sales.filter((sale) =>
-      inActivity(
-        sale?.timestamp ||
-        sale?.createdAt
-      )
+    const activitySales = sales.filter(
+      (sale) => {
+        const date = getSaleDate(sale);
+
+        return date
+          ? inFinancialRange(date)
+          : false;
+      }
     );
 
     let revenue = 0;
@@ -1612,11 +1808,19 @@ export default function Ganancias({ pos }) {
         ["efectivo", "transferencia"].includes(
           item?.metodoPago
         ) &&
-        inActivity(item?.compradoEn)
+        inFinancialRange(
+          item?.compradoEn
+        )
       )
       .reduce(
         (sum, item) =>
-          sum + Math.max(0, toNumber(item?.importePagado ?? item?.costoReal)),
+          sum + Math.max(
+            0,
+            toNumber(
+              item?.importePagado ??
+              item?.costoReal
+            )
+          ),
         0
       );
 
@@ -1631,37 +1835,60 @@ export default function Ganancias({ pos }) {
           : []
       )
       .filter((payment) =>
-        inActivity(payment?.fecha)
+        inFinancialRange(
+          payment?.fecha
+        )
       )
       .reduce(
         (sum, payment) =>
-          sum + Math.max(0, toNumber(payment?.importe)),
+          sum + Math.max(
+            0,
+            toNumber(payment?.importe)
+          ),
         0
       );
 
     const paidPurchases = roundMoney(
-      directPurchases + payablePurchasePayments
+      directPurchases +
+      payablePurchasePayments
     );
 
-    const activityOtherCosts = otherCosts
-      .filter((costItem) =>
-        !activeActivity?.id ||
-        costItem?.activityId === activeActivity.id
+    const periodOtherCosts =
+      otherCosts.filter((costItem) =>
+        inFinancialRange(
+          costItem?.creadoEn ||
+          costItem?.actualizadoEn
+        )
+      );
+
+    const activeOtherCosts =
+      periodOtherCosts.filter(
+        (costItem) =>
+          costItem?.estado !==
+          "anulado"
       );
 
     const otherCostsTotal = roundMoney(
-      activityOtherCosts.reduce(
+      activeOtherCosts.reduce(
         (sum, costItem) =>
-          sum + Math.max(0, toNumber(costItem?.importe)),
+          sum + Math.max(
+            0,
+            toNumber(costItem?.importe)
+          ),
         0
       )
     );
 
     const openingFund = roundMoney(
-      Math.max(
-        0,
-        toNumber(activeActivity?.openingReplacementFund)
-      )
+      financialPeriod === "activity"
+        ? Math.max(
+            0,
+            toNumber(
+              activeActivity
+                ?.openingReplacementFund
+            )
+          )
+        : 0
     );
 
     const availableRecoveredCost = roundMoney(
@@ -1669,42 +1896,68 @@ export default function Ganancias({ pos }) {
     );
 
     const replacementBeforeExpenses = roundMoney(
-      openingFund + availableRecoveredCost - paidPurchases
+      openingFund +
+      availableRecoveredCost -
+      paidPurchases
     );
 
     const purchaseExcess = roundMoney(
-      Math.max(0, -replacementBeforeExpenses)
+      Math.max(
+        0,
+        -replacementBeforeExpenses
+      )
     );
 
     const replacementBase = roundMoney(
-      Math.max(0, replacementBeforeExpenses)
+      Math.max(
+        0,
+        replacementBeforeExpenses
+      )
     );
 
     const availableProfit = roundMoney(
-      Math.max(0, profit - otherCostsTotal)
+      Math.max(
+        0,
+        profit - otherCostsTotal
+      )
     );
 
     const expensesBeyondProfit = roundMoney(
-      Math.max(0, otherCostsTotal - profit)
+      Math.max(
+        0,
+        otherCostsTotal - profit
+      )
     );
 
     const unreplacedMerchandise = roundMoney(
-      Math.min(replacementBase, expensesBeyondProfit)
+      Math.min(
+        replacementBase,
+        expensesBeyondProfit
+      )
     );
 
     const replacementFund = roundMoney(
-      Math.max(0, replacementBase - expensesBeyondProfit)
+      Math.max(
+        0,
+        replacementBase -
+        expensesBeyondProfit
+      )
     );
 
     const externalDeficit = roundMoney(
-      Math.max(0, expensesBeyondProfit - replacementBase)
+      Math.max(
+        0,
+        expensesBeyondProfit -
+        replacementBase
+      )
     );
 
     return {
       revenue: roundMoney(revenue),
       cost: roundMoney(cost),
       profit: roundMoney(profit),
-      pendingCost: roundMoney(pendingCost),
+      pendingCost:
+        roundMoney(pendingCost),
       availableRecoveredCost,
       openingFund,
       paidPurchases,
@@ -1714,16 +1967,31 @@ export default function Ganancias({ pos }) {
       unreplacedMerchandise,
       replacementFund,
       externalDeficit,
-      otherCostsCount: activityOtherCosts.length,
+      otherCostsCount:
+        activeOtherCosts.length,
+      costItems:
+        periodOtherCosts,
     };
   }, [
     activeActivity,
     accountsPayable,
     accountsReceivable,
+    financialPeriod,
+    financialStart,
     otherCosts,
     sales,
     shoppingList,
   ]);
+
+  const financialPeriodLabel =
+    financialPeriod === "activity"
+      ? "Desde inicio actividad"
+      : "Últimos 30 días";
+
+  const financialRangeText =
+    financialStart
+      ? `${formatFinancialDate(financialStart)} → ${formatFinancialDate(new Date())}`
+      : "Todo el historial disponible";
 
   const products = useMemo(() => {
     const map = new Map();
@@ -2028,19 +2296,19 @@ export default function Ganancias({ pos }) {
       >
         <div className="min-w-0">
           <p className="text-[9px] font-extrabold uppercase tracking-[0.14em] text-[#FFC61A]">
-            Actividad actual
+            {financialPeriodLabel}
           </p>
           <h3 className="mt-1 text-base font-black text-white">
             Fondos y reposición
           </h3>
           <p className="mt-1 text-[11px] leading-relaxed text-white/40">
-            Capital recuperado, pendientes y resultado disponible.
+            {financialRangeText}
           </p>
         </div>
 
         <div className="shrink-0 text-right">
           <span className="block text-[9px] font-extrabold uppercase tracking-[0.1em] text-white/30">
-            Disponible
+            Fondo disponible
           </span>
           <strong className="mt-1 block text-sm font-black text-[#FFC61A]">
             {money(activityFinancial.replacementFund)}
@@ -2355,13 +2623,47 @@ export default function Ganancias({ pos }) {
       >
         <div className="space-y-3">
           <div className="rounded-[20px] border border-white/10 bg-white/[0.035] p-3.5">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[9px] font-extrabold uppercase tracking-[0.14em] text-[#FFC61A]">
-                  Actividad actual
+            <p className="text-[9px] font-extrabold uppercase tracking-[0.14em] text-[#FFC61A]">
+              Período financiero
+            </p>
+
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {FINANCIAL_PERIODS.map(
+                (item) => {
+                  const active =
+                    financialPeriod ===
+                    item.id;
+
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() =>
+                        setFinancialPeriod(
+                          item.id
+                        )
+                      }
+                      className={
+                        "rounded-xl border px-3 py-2.5 text-[10px] font-extrabold transition " +
+                        (active
+                          ? "border-[#FFC61A]/40 bg-[#FFC61A] text-black"
+                          : "border-white/10 bg-white/[0.035] text-white/45 hover:border-white/20 hover:text-white/70")
+                      }
+                    >
+                      {item.label}
+                    </button>
+                  );
+                }
+              )}
+            </div>
+
+            <div className="mt-3 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-black text-white/80">
+                  {financialPeriodLabel}
                 </p>
                 <p className="mt-1 text-[11px] leading-relaxed text-white/40">
-                  El costo vendido puede ser mayor al capital recuperado cuando existen ventas pendientes de cobro.
+                  {financialRangeText}
                 </p>
               </div>
 
@@ -2430,15 +2732,217 @@ export default function Ganancias({ pos }) {
               danger
             />
           )}
+
+          <div className="rounded-[20px] border border-white/10 bg-white/[0.025] p-3.5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[9px] font-extrabold uppercase tracking-[0.12em] text-white/35">
+                  Otros costos registrados
+                </p>
+                <p className="mt-1 text-[11px] text-white/40">
+                  {activityFinancial.costItems.length} {activityFinancial.costItems.length === 1 ? "registro" : "registros"} en el período.
+                </p>
+              </div>
+            </div>
+
+            {activityFinancial.costItems.length === 0 ? (
+              <div className="mt-3 rounded-2xl border border-dashed border-white/10 px-3 py-4 text-center text-[11px] text-white/35">
+                No hay otros costos registrados en este período.
+              </div>
+            ) : (
+              <div className="mt-3 space-y-2">
+                {activityFinancial.costItems.map(
+                  (costItem) => {
+                    const isAnnulled =
+                      costItem?.estado ===
+                      "anulado";
+                    const belongsToCurrentActivity =
+                      !activeActivity?.id ||
+                      costItem?.activityId ===
+                      activeActivity.id;
+                    const linkedSessionStatus =
+                      costItem?.sessionId
+                        ? cashSessionStatus.get(
+                            String(
+                              costItem.sessionId
+                            )
+                          )
+                        : null;
+                    const closedCash =
+                      linkedSessionStatus ===
+                      "closed";
+                    const canManage =
+                      esAdministrador &&
+                      belongsToCurrentActivity &&
+                      !isAnnulled &&
+                      !closedCash;
+
+                    return (
+                      <div
+                        key={costItem.id}
+                        className={
+                          "rounded-2xl border px-3 py-3 " +
+                          (isAnnulled
+                            ? "border-white/[0.06] bg-white/[0.02] opacity-60"
+                            : "border-white/10 bg-[#171B23]")
+                        }
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <p className={
+                                "truncate text-xs font-black " +
+                                (isAnnulled
+                                  ? "text-white/45 line-through"
+                                  : "text-white/85")
+                              }>
+                                {costItem?.concepto || "Costo"}
+                              </p>
+
+                              {isAnnulled && (
+                                <span className="rounded-full border border-red-400/20 bg-red-400/10 px-2 py-0.5 text-[8px] font-extrabold uppercase tracking-[0.08em] text-red-300">
+                                  Anulado
+                                </span>
+                              )}
+
+                              {!belongsToCurrentActivity && (
+                                <span className="rounded-full border border-white/10 bg-white/[0.035] px-2 py-0.5 text-[8px] font-extrabold uppercase tracking-[0.08em] text-white/35">
+                                  Actividad anterior
+                                </span>
+                              )}
+
+                              {closedCash && !isAnnulled && (
+                                <span className="rounded-full border border-white/10 bg-white/[0.035] px-2 py-0.5 text-[8px] font-extrabold uppercase tracking-[0.08em] text-white/35">
+                                  Caja cerrada
+                                </span>
+                              )}
+                            </div>
+
+                            <p className="mt-1 text-[10px] text-white/35">
+                              {paymentMethodLabel(costItem?.metodoPago)} · {formatCostDate(costItem?.creadoEn)}
+                            </p>
+
+                            {costItem?.categoria && (
+                              <p className="mt-1 text-[9px] font-bold uppercase tracking-[0.07em] text-white/25">
+                                {costItem.categoria}
+                              </p>
+                            )}
+                          </div>
+
+                          <strong className={
+                            "shrink-0 text-sm font-black " +
+                            (isAnnulled
+                              ? "text-white/30 line-through"
+                              : "text-white/85")
+                          }>
+                            {money(costItem?.importe)}
+                          </strong>
+                        </div>
+
+                        {canManage && (
+                          <div className="mt-3 flex gap-2 border-t border-white/[0.06] pt-2.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFundsOpen(false);
+                                setEditingCost(costItem);
+                              }}
+                              className="flex-1 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2 text-[10px] font-extrabold text-white/60 transition hover:border-white/20 hover:text-white"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFundsOpen(false);
+                                setVoidingCost(costItem);
+                              }}
+                              className="flex-1 rounded-xl border border-red-400/15 bg-red-400/[0.07] px-3 py-2 text-[10px] font-extrabold text-red-300 transition hover:bg-red-400/10"
+                            >
+                              Anular
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+                )}
+              </div>
+            )}
+
+            <p className="mt-3 text-[9px] leading-relaxed text-white/25">
+              Los costos de una caja cerrada quedan bloqueados para preservar la conciliación histórica.
+            </p>
+          </div>
         </div>
       </Modal>
 
       <OtherCostModal
         open={otherCostOpen}
-        onClose={() => setOtherCostOpen(false)}
+        onClose={() => {
+          setOtherCostOpen(false);
+          setFundsOpen(true);
+        }}
         onSave={async (payload) => {
-          const ok = await pos?.createOtherCost?.(payload);
-          if (ok) setOtherCostOpen(false);
+          const ok =
+            await pos?.createOtherCost?.(
+              payload
+            );
+
+          if (ok) {
+            setOtherCostOpen(false);
+            setFundsOpen(true);
+          }
+        }}
+      />
+
+      <OtherCostModal
+        open={Boolean(editingCost)}
+        cost={editingCost}
+        onClose={() => {
+          setEditingCost(null);
+          setFundsOpen(true);
+        }}
+        onSave={async (payload) => {
+          if (!editingCost?.id) {
+            return;
+          }
+
+          const ok =
+            await pos?.updateOtherCost?.(
+              editingCost.id,
+              payload
+            );
+
+          if (ok) {
+            setEditingCost(null);
+            setFundsOpen(true);
+          }
+        }}
+      />
+
+      <OtherCostVoidModal
+        open={Boolean(voidingCost)}
+        cost={voidingCost}
+        onClose={() => {
+          setVoidingCost(null);
+          setFundsOpen(true);
+        }}
+        onConfirm={async (payload) => {
+          if (!voidingCost?.id) {
+            return;
+          }
+
+          const ok =
+            await pos?.voidOtherCost?.(
+              voidingCost.id,
+              payload
+            );
+
+          if (ok) {
+            setVoidingCost(null);
+            setFundsOpen(true);
+          }
         }}
       />
 
@@ -2932,19 +3436,70 @@ function FinanceNotice({ title, text, danger = false }) {
   );
 }
 
-function OtherCostModal({ open, onClose, onSave }) {
-  const [concepto, setConcepto] = useState("");
-  const [importe, setImporte] = useState("");
-  const [metodoPago, setMetodoPago] = useState("efectivo");
-  const [saving, setSaving] = useState(false);
+function OtherCostModal({
+  open,
+  onClose,
+  onSave,
+  cost = null,
+}) {
+  const [concepto, setConcepto] =
+    useState("");
+  const [categoria, setCategoria] =
+    useState("");
+  const [importe, setImporte] =
+    useState("");
+  const [metodoPago, setMetodoPago] =
+    useState("efectivo");
+  const [saving, setSaving] =
+    useState(false);
+
+  const editing = Boolean(cost?.id);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    setConcepto(
+      String(cost?.concepto || "")
+    );
+    setCategoria(
+      String(cost?.categoria || "")
+    );
+    setImporte(
+      cost?.importe !== undefined &&
+      cost?.importe !== null
+        ? String(cost.importe)
+        : ""
+    );
+    setMetodoPago(
+      cost?.metodoPago ===
+        "transferencia"
+        ? "transferencia"
+        : "efectivo"
+    );
+    setSaving(false);
+  }, [open, cost]);
 
   async function submit() {
-    if (saving || !concepto.trim() || toNumber(importe) <= 0) return;
+    if (
+      saving ||
+      !concepto.trim() ||
+      toNumber(importe) <= 0
+    ) {
+      return;
+    }
+
     setSaving(true);
+
     try {
       await onSave?.({
-        concepto: concepto.trim(),
-        importe: toNumber(importe),
+        concepto:
+          concepto.trim(),
+        categoria:
+          categoria.trim(),
+        importe:
+          toNumber(importe),
         metodoPago,
       });
     } finally {
@@ -2953,48 +3508,225 @@ function OtherCostModal({ open, onClose, onSave }) {
   }
 
   return (
-    <Modal open={open} onClose={saving ? undefined : onClose} title="Otro costo de actividad">
+    <Modal
+      open={open}
+      onClose={
+        saving
+          ? undefined
+          : onClose
+      }
+      title={
+        editing
+          ? "Editar costo"
+          : "Otro costo de actividad"
+      }
+    >
       <div className="space-y-4">
         <label className="block">
-          <span className="mb-1.5 block text-xs font-bold text-white/55">Concepto</span>
+          <span className="mb-1.5 block text-xs font-bold text-white/55">
+            Concepto
+          </span>
           <input
             value={concepto}
-            onChange={(event) => setConcepto(event.target.value)}
+            onChange={(event) =>
+              setConcepto(
+                event.target.value
+              )
+            }
             maxLength={180}
             placeholder="Ej: Flete, combustible, alquiler..."
             className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-3.5 py-3 text-sm font-semibold text-white outline-none focus:border-[#FFC61A]"
           />
         </label>
+
         <label className="block">
-          <span className="mb-1.5 block text-xs font-bold text-white/55">Importe</span>
+          <span className="mb-1.5 block text-xs font-bold text-white/55">
+            Categoría
+            <span className="ml-1 font-medium text-white/25">
+              opcional
+            </span>
+          </span>
+          <input
+            value={categoria}
+            onChange={(event) =>
+              setCategoria(
+                event.target.value
+              )
+            }
+            maxLength={80}
+            placeholder="Ej: Logística"
+            className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-3.5 py-3 text-sm font-semibold text-white outline-none focus:border-[#FFC61A]"
+          />
+        </label>
+
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-bold text-white/55">
+            Importe
+          </span>
           <input
             type="number"
             min="0"
             step="0.01"
             value={importe}
-            onChange={(event) => setImporte(event.target.value)}
+            onChange={(event) =>
+              setImporte(
+                event.target.value
+              )
+            }
             className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-3.5 py-3 text-sm font-semibold text-white outline-none focus:border-[#FFC61A]"
           />
         </label>
+
         <label className="block">
-          <span className="mb-1.5 block text-xs font-bold text-white/55">Medio de pago</span>
+          <span className="mb-1.5 block text-xs font-bold text-white/55">
+            Medio de pago
+          </span>
           <select
             value={metodoPago}
-            onChange={(event) => setMetodoPago(event.target.value)}
+            onChange={(event) =>
+              setMetodoPago(
+                event.target.value
+              )
+            }
             className="w-full rounded-2xl border border-white/10 bg-[#171B23] px-3.5 py-3 text-sm font-bold text-white outline-none focus:border-[#FFC61A]"
           >
-            <option value="efectivo">Efectivo</option>
-            <option value="transferencia">Transferencia</option>
+            <option value="efectivo">
+              Efectivo
+            </option>
+            <option value="transferencia">
+              Transferencia
+            </option>
           </select>
         </label>
+
+        {editing && (
+          <div className="rounded-2xl border border-[#FFC61A]/15 bg-[#FFC61A]/[0.05] px-3.5 py-3 text-[10px] leading-relaxed text-white/45">
+            Si este costo pertenece a una caja abierta, el efectivo o transferencia esperados se recalcularán automáticamente.
+          </div>
+        )}
+
         <button
           type="button"
           onClick={submit}
-          disabled={saving || !concepto.trim() || toNumber(importe) <= 0}
+          disabled={
+            saving ||
+            !concepto.trim() ||
+            toNumber(importe) <= 0
+          }
           className="w-full rounded-2xl bg-[#FFC61A] px-4 py-3.5 text-sm font-extrabold text-black disabled:opacity-40"
         >
-          {saving ? "Registrando..." : "Registrar costo"}
+          {saving
+            ? editing
+              ? "Guardando..."
+              : "Registrando..."
+            : editing
+              ? "Guardar cambios"
+              : "Registrar costo"}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+function OtherCostVoidModal({
+  open,
+  cost,
+  onClose,
+  onConfirm,
+}) {
+  const [motivo, setMotivo] =
+    useState("");
+  const [saving, setSaving] =
+    useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setMotivo("");
+      setSaving(false);
+    }
+  }, [open, cost?.id]);
+
+  async function confirm() {
+    if (saving) {
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      await onConfirm?.({
+        motivo:
+          motivo.trim(),
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={
+        saving
+          ? undefined
+          : onClose
+      }
+      title="Anular costo"
+    >
+      <div className="space-y-4">
+        <div className="rounded-2xl border border-red-400/15 bg-red-400/[0.07] p-3.5">
+          <p className="text-xs font-black text-white/85">
+            {cost?.concepto || "Costo"}
+          </p>
+          <p className="mt-1 text-lg font-black text-red-300">
+            {money(cost?.importe)}
+          </p>
+          <p className="mt-2 text-[10px] leading-relaxed text-white/40">
+            El registro no se elimina: queda marcado como anulado y permanece en la auditoría.
+          </p>
+        </div>
+
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-bold text-white/55">
+            Motivo
+            <span className="ml-1 font-medium text-white/25">
+              opcional
+            </span>
+          </span>
+          <textarea
+            value={motivo}
+            onChange={(event) =>
+              setMotivo(
+                event.target.value
+              )
+            }
+            maxLength={250}
+            rows={3}
+            placeholder="Ej: Costo cargado por duplicado"
+            className="w-full resize-none rounded-2xl border border-white/10 bg-[#171B23] px-3.5 py-3 text-sm font-semibold text-white outline-none focus:border-red-400/40"
+          />
+        </label>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-sm font-extrabold text-white/60 disabled:opacity-40"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={confirm}
+            disabled={saving}
+            className="rounded-2xl border border-red-400/20 bg-red-400/15 px-4 py-3 text-sm font-extrabold text-red-200 disabled:opacity-40"
+          >
+            {saving
+              ? "Anulando..."
+              : "Anular costo"}
+          </button>
+        </div>
       </div>
     </Modal>
   );

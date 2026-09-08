@@ -43,6 +43,8 @@ import {
   createManualPayableCloud,
   registerPayablePaymentCloud,
   createOtherCostCloud,
+  updateOtherCostCloud,
+  voidOtherCostCloud,
   migrateHistoricalProfitsCloud,
   deleteCashSessionCloud,
   deleteProductCloud,
@@ -7991,76 +7993,25 @@ export function usePosData({
               }
             );
 
-          const createdCost =
+          if (
             result?.cost &&
-            typeof result.cost ===
-              "object"
-              ? {
-                  ...result.cost,
-                  creadoEn:
-                    result.cost.creadoEn ||
-                    new Date()
-                      .toISOString(),
-                }
-              : null;
-
-          const mergeCreatedCost = () => {
-            if (!createdCost?.id) {
-              return;
-            }
-
+            result.cost.id
+          ) {
             setOtherCosts(
-              (current) => {
-                const list =
-                  Array.isArray(current)
-                    ? current
-                    : [];
-
-                const index =
-                  list.findIndex(
-                    (item) =>
-                      String(
-                        item?.id ||
-                        ""
-                      ) ===
-                      String(
-                        createdCost.id
-                      )
-                  );
-
-                if (index < 0) {
-                  return [
-                    createdCost,
-                    ...list,
-                  ];
-                }
-
-                const next =
-                  [...list];
-
-                next[index] = {
-                  ...next[index],
-                  ...createdCost,
-                };
-
-                return next;
-              }
+              (current) => [
+                result.cost,
+                ...current.filter(
+                  (item) =>
+                    item?.id !==
+                    result.cost.id
+                ),
+              ]
             );
-          };
-
-          /*
-           * El backend ya confirmó el movimiento. Lo reflejamos
-           * de inmediato y luego reconciliamos con la lectura
-           * autoritativa, evitando que un refresh tardío deje el
-           * panel financiero visualmente desactualizado.
-           */
-          mergeCreatedCost();
+          }
 
           await refreshPurchasingData({
             silent: true,
           });
-
-          mergeCreatedCost();
 
           showToast(
             "Costo registrado"
@@ -8077,6 +8028,174 @@ export function usePosData({
             mapCloudError(
               error
             ),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        refreshPurchasingData,
+        showToast,
+      ]
+    );
+
+  const updateOtherCost =
+    useCallback(
+      async (
+        costId,
+        payload
+      ) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para editar el costo",
+            true
+          );
+
+          return false;
+        }
+
+        try {
+          const result =
+            await updateOtherCostCloud(
+              cleanClienteId,
+              costId,
+              payload,
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
+
+          if (
+            result?.cost &&
+            result.cost.id
+          ) {
+            setOtherCosts(
+              (current) =>
+                current.map(
+                  (item) =>
+                    item?.id ===
+                    result.cost.id
+                      ? {
+                          ...item,
+                          ...result.cost,
+                        }
+                      : item
+                )
+            );
+          }
+
+          await refreshPurchasingData({
+            silent: true,
+          });
+
+          showToast(
+            result?.unchanged
+              ? "El costo no tenía cambios"
+              : "Costo actualizado"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error editando otro costo:",
+            error
+          );
+
+          showToast(
+            mapCloudError(error),
+            true
+          );
+
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        refreshPurchasingData,
+        showToast,
+      ]
+    );
+
+  const voidOtherCost =
+    useCallback(
+      async (
+        costId,
+        payload = {}
+      ) => {
+        if (
+          !cloudActiveRef
+            .current
+        ) {
+          showToast(
+            "Necesitás conexión con la nube para anular el costo",
+            true
+          );
+
+          return false;
+        }
+
+        try {
+          const result =
+            await voidOtherCostCloud(
+              cleanClienteId,
+              costId,
+              payload,
+              {
+                operadorSesion,
+                deviceId:
+                  cleanDeviceId,
+              }
+            );
+
+          if (
+            result?.cost &&
+            result.cost.id
+          ) {
+            setOtherCosts(
+              (current) =>
+                current.map(
+                  (item) =>
+                    item?.id ===
+                    result.cost.id
+                      ? {
+                          ...item,
+                          ...result.cost,
+                        }
+                      : item
+                )
+            );
+          }
+
+          await refreshPurchasingData({
+            silent: true,
+          });
+
+          showToast(
+            result?.alreadyAnulled
+              ? "El costo ya estaba anulado"
+              : "Costo anulado"
+          );
+
+          return true;
+        } catch (error) {
+          console.error(
+            "Error anulando otro costo:",
+            error
+          );
+
+          showToast(
+            mapCloudError(error),
             true
           );
 
@@ -8452,6 +8571,8 @@ export function usePosData({
     createManualPayable,
     registerPayablePayment,
     createOtherCost,
+    updateOtherCost,
+    voidOtherCost,
     migrateHistoricalProfits,
 
     paymentBreakdown,

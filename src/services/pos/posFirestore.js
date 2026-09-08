@@ -148,6 +148,18 @@ const registrarOtroCostoActividadFunction =
     "registrarOtroCostoActividad"
   );
 
+const editarOtroCostoActividadFunction =
+  httpsCallable(
+    functions,
+    "editarOtroCostoActividad"
+  );
+
+const anularOtroCostoActividadFunction =
+  httpsCallable(
+    functions,
+    "anularOtroCostoActividad"
+  );
+
 const migrarGananciasHistoricasFunction =
   httpsCallable(
     functions,
@@ -3738,6 +3750,137 @@ export async function createOtherCostCloud(
         "create-other-cost-failed",
       message:
         "No se pudo registrar el costo",
+    }
+  );
+}
+
+
+export async function updateOtherCostCloud(
+  clienteId,
+  costId,
+  payload,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  const importe =
+    roundMoney(
+      toNumber(
+        payload?.importe,
+        NaN
+      )
+    );
+
+  if (
+    !Number.isFinite(importe) ||
+    importe <= 0
+  ) {
+    fail(
+      "invalid-amount",
+      "Ingresá un importe válido"
+    );
+  }
+
+  const metodoPago =
+    normalizePaymentMethod(
+      payload?.metodoPago
+    );
+
+  if (
+    ![
+      "efectivo",
+      "transferencia",
+    ].includes(metodoPago)
+  ) {
+    fail(
+      "invalid-payment-method",
+      "Elegí efectivo o transferencia"
+    );
+  }
+
+  return invokePurchasingCallable(
+    editarOtroCostoActividadFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      costId:
+        requireString(
+          costId,
+          "costId"
+        ),
+      cost: {
+        concepto:
+          requireString(
+            payload?.concepto,
+            "concepto"
+          ).slice(0, 180),
+        categoria:
+          String(
+            payload?.categoria ||
+            ""
+          )
+            .trim()
+            .slice(0, 80),
+        importe,
+        metodoPago,
+      },
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "update-other-cost-failed",
+      message:
+        "No se pudo editar el costo",
+    }
+  );
+}
+
+export async function voidOtherCostCloud(
+  clienteId,
+  costId,
+  payload = {},
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  return invokePurchasingCallable(
+    anularOtroCostoActividadFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      costId:
+        requireString(
+          costId,
+          "costId"
+        ),
+      motivo:
+        String(
+          payload?.motivo ||
+          ""
+        )
+          .trim()
+          .slice(0, 250),
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "void-other-cost-failed",
+      message:
+        "No se pudo anular el costo",
     }
   );
 }
