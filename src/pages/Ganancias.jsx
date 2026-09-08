@@ -259,6 +259,59 @@ function getSaleProfitSnapshot(sale) {
   };
 }
 
+
+function getSaleCollectedAmount(
+  sale,
+  revenue
+) {
+  const method = String(
+    sale?.payment?.method || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (method === "cuenta") {
+    return 0;
+  }
+
+  if (method === "mixto") {
+    const parts = Array.isArray(
+      sale?.payment?.parts
+    )
+      ? sale.payment.parts
+      : [];
+
+    return roundMoney(
+      parts.reduce(
+        (sum, part) => {
+          const partMethod = String(
+            part?.method || ""
+          )
+            .trim()
+            .toLowerCase();
+
+          if (partMethod === "cuenta") {
+            return sum;
+          }
+
+          return (
+            sum +
+            Math.max(
+              0,
+              toNumber(part?.amount)
+            )
+          );
+        },
+        0
+      )
+    );
+  }
+
+  return roundMoney(
+    Math.max(0, toNumber(revenue))
+  );
+}
+
 function getSaleDate(sale) {
   const value =
     sale?.timestamp ||
@@ -472,213 +525,6 @@ function paymentMethodLabel(value) {
   return value === "transferencia"
     ? "Transferencia"
     : "Efectivo";
-}
-
-function buildReceivablePendingState(
-  accountsReceivable
-) {
-  const accountById = new Map();
-  const pendingBySaleId = new Map();
-
-  for (const account of accountsReceivable) {
-    const accountId = String(
-      account?.id || ""
-    ).trim();
-    const saldoPendiente = Math.max(
-      0,
-      roundMoney(
-        toNumber(
-          account?.saldoPendiente
-        )
-      )
-    );
-    const importeOriginal = Math.max(
-      0,
-      roundMoney(
-        toNumber(
-          account?.importeOriginal
-        )
-      )
-    );
-    const fallbackRatio =
-      importeOriginal > 0
-        ? Math.min(
-            1,
-            saldoPendiente /
-              importeOriginal
-          )
-        : saldoPendiente > 0
-          ? 1
-          : 0;
-    const operations = Array.isArray(
-      account?.operaciones
-    )
-      ? account.operaciones
-          .map((operation, index) => ({
-            operation,
-            index,
-            amount: Math.max(
-              0,
-              roundMoney(
-                toNumber(
-                  operation?.importe
-                )
-              )
-            ),
-            date: getDateValue(
-              operation?.creadoEn ||
-              operation?.fechaOrigen
-            ),
-          }))
-          .filter(
-            (item) => item.amount > 0
-          )
-          .sort((a, b) => {
-            const aTime =
-              a.date?.getTime?.() ??
-              Number.MAX_SAFE_INTEGER;
-            const bTime =
-              b.date?.getTime?.() ??
-              Number.MAX_SAFE_INTEGER;
-
-            if (aTime !== bTime) {
-              return aTime - bTime;
-            }
-
-            return a.index - b.index;
-          })
-      : [];
-
-    if (operations.length > 0) {
-      const operationsTotal =
-        roundMoney(
-          operations.reduce(
-            (sum, item) =>
-              sum + item.amount,
-            0
-          )
-        );
-      let applied = Math.max(
-        0,
-        roundMoney(
-          operationsTotal -
-            saldoPendiente
-        )
-      );
-
-      for (const item of operations) {
-        const appliedHere = Math.min(
-          item.amount,
-          applied
-        );
-        const remaining = roundMoney(
-          Math.max(
-            0,
-            item.amount - appliedHere
-          )
-        );
-        applied = roundMoney(
-          Math.max(
-            0,
-            applied - appliedHere
-          )
-        );
-        const saleId = String(
-          item.operation?.ventaId ||
-          ""
-        ).trim();
-
-        if (saleId) {
-          pendingBySaleId.set(
-            saleId,
-            {
-              originalAmount:
-                item.amount,
-              pendingAmount:
-                remaining,
-            }
-          );
-        }
-      }
-    }
-
-    if (accountId) {
-      accountById.set(
-        accountId,
-        {
-          fallbackRatio,
-        }
-      );
-    }
-  }
-
-  return {
-    accountById,
-    pendingBySaleId,
-  };
-}
-
-function getSalePendingState(
-  sale,
-  revenue,
-  receivableState
-) {
-  const saleId = String(
-    sale?.id || ""
-  ).trim();
-  const direct = saleId
-    ? receivableState
-        .pendingBySaleId
-        .get(saleId)
-    : null;
-
-  if (direct) {
-    const original = Math.max(
-      0,
-      toNumber(
-        direct.originalAmount
-      )
-    );
-    const pending = Math.max(
-      0,
-      toNumber(
-        direct.pendingAmount
-      )
-    );
-
-    return {
-      pendingAmount:
-        roundMoney(pending),
-      ratio:
-        original > 0
-          ? Math.min(
-              1,
-              pending / original
-            )
-          : 0,
-    };
-  }
-
-  const accountId = String(
-    sale?.cuentaPorCobrarId ||
-    ""
-  ).trim();
-  const account = accountId
-    ? receivableState
-        .accountById
-        .get(accountId)
-    : null;
-  const ratio =
-    account?.fallbackRatio ?? 0;
-
-  return {
-    pendingAmount:
-      roundMoney(
-        Math.max(0, revenue) *
-          ratio
-      ),
-    ratio,
-  };
 }
 
 function formatPercent(value) {
@@ -2007,11 +1853,6 @@ export default function Ganancias({ pos }) {
       );
     };
 
-    const receivableState =
-      buildReceivablePendingState(
-        accountsReceivable
-      );
-
     const activitySales = sales.filter(
       (sale) =>
         belongsToActivity(
@@ -2019,91 +1860,61 @@ export default function Ganancias({ pos }) {
           getSaleDate(sale)
         )
     );
-    const activitySaleSet =
-      new Set(activitySales);
 
     let revenue = 0;
     let cost = 0;
     let profit = 0;
-    let pendingCostCurrent = 0;
-    let pendingCostPrior = 0;
+    let collectedSalesFunds = 0;
 
-    for (const sale of sales) {
+    for (const sale of activitySales) {
       const snapshot =
         getSaleProfitSnapshot(sale);
-      const isReceivable =
-        sale?.payment?.method ===
-          "cuenta" &&
-        Boolean(
-          sale?.cuentaPorCobrarId
+
+      revenue += snapshot.revenue;
+      collectedSalesFunds +=
+        getSaleCollectedAmount(
+          sale,
+          snapshot.revenue
         );
-      const pending =
-        isReceivable
-          ? getSalePendingState(
-              sale,
-              snapshot.revenue,
-              receivableState
-            )
-          : {
-              pendingAmount: 0,
-              ratio: 0,
-            };
-      const inCurrentRange =
-        activitySaleSet.has(sale);
 
-      if (inCurrentRange) {
-        revenue += snapshot.revenue;
-
-        if (!snapshot.known) {
-          continue;
-        }
-
-        cost += snapshot.cost;
-        profit += snapshot.profit;
-
-        if (isReceivable) {
-          pendingCostCurrent +=
-            snapshot.cost *
-            pending.ratio;
-        }
-
+      if (!snapshot.known) {
         continue;
       }
 
-      if (
-        financialPeriod ===
-          "activity" &&
-        snapshot.known &&
-        isReceivable
-      ) {
-        const saleDate =
-          getSaleDate(sale);
-        const saleActivityId =
-          String(
-            sale?.activityId || ""
-          ).trim();
-        const activeId = String(
-          activeActivity?.id || ""
-        ).trim();
-        const priorByActivity =
-          saleActivityId &&
-          activeId &&
-          saleActivityId !== activeId;
-        const priorByDate =
-          saleDate &&
-          Number.isFinite(startMs) &&
-          saleDate.getTime() < startMs;
-
-        if (
-          priorByActivity ||
-          priorByDate
-        ) {
-          pendingCostPrior +=
-            snapshot.cost *
-            pending.ratio;
-        }
-      }
+      cost += snapshot.cost;
+      profit += snapshot.profit;
     }
+
+    const receivableCollections =
+      accountsReceivable
+        .flatMap((account) =>
+          Array.isArray(account?.pagos)
+            ? account.pagos
+            : []
+        )
+        .filter((payment) =>
+          belongsToActivity(
+            payment?.activityId,
+            payment?.fecha
+          )
+        )
+        .reduce(
+          (sum, payment) =>
+            sum +
+            Math.max(
+              0,
+              toNumber(payment?.importe)
+            ),
+          0
+        );
+
+    collectedSalesFunds = roundMoney(
+      Math.max(
+        0,
+        collectedSalesFunds +
+        receivableCollections
+      )
+    );
 
     const directPurchases = shoppingList
       .filter((item) =>
@@ -2211,29 +2022,36 @@ export default function Ganancias({ pos }) {
             )
           )
         : 0;
-    const carriedRecoveredCost =
-      financialPeriod === "activity"
-        ? roundMoney(
-            Math.max(
-              0,
-              openingPendingRecovery -
-              pendingCostPrior
-            )
-          )
-        : 0;
-    const currentRecoveredCost =
+    const currentCapitalToRecover =
       roundMoney(
-        Math.max(
-          0,
-          cost - pendingCostCurrent
-        )
+        Math.max(0, cost)
       );
     const capitalToRecover =
       roundMoney(
         Math.max(
           0,
           openingPendingRecovery +
-          cost
+          currentCapitalToRecover
+        )
+      );
+    const carriedRecoveredCost =
+      financialPeriod === "activity"
+        ? roundMoney(
+            Math.min(
+              openingPendingRecovery,
+              collectedSalesFunds
+            )
+          )
+        : 0;
+    const currentRecoveredCost =
+      roundMoney(
+        Math.min(
+          currentCapitalToRecover,
+          Math.max(
+            0,
+            collectedSalesFunds -
+            carriedRecoveredCost
+          )
         )
       );
     const availableRecoveredCost =
@@ -2242,8 +2060,8 @@ export default function Ganancias({ pos }) {
           0,
           Math.min(
             capitalToRecover,
-            currentRecoveredCost +
-            carriedRecoveredCost
+            carriedRecoveredCost +
+            currentRecoveredCost
           )
         )
       );
@@ -2318,17 +2136,9 @@ export default function Ganancias({ pos }) {
       cost: roundMoney(cost),
       profit: roundMoney(profit),
       pendingRecovery,
-      // Detalle interno usado para determinar cuánto capital ya volvió.
-      pendingCostCurrent:
-        roundMoney(
-          Math.max(0, pendingCostCurrent)
-        ),
-      pendingCostPrior:
-        roundMoney(
-          Math.max(0, pendingCostPrior)
-        ),
       openingPendingRecovery,
       capitalToRecover,
+      collectedSalesFunds,
       currentRecoveredCost,
       carriedRecoveredCost,
       availableRecoveredCost,
@@ -3168,7 +2978,7 @@ export default function Ganancias({ pos }) {
           </div>
 
           <p className="text-[9px] leading-relaxed text-white/25">
-            Pendiente de recuperar representa capital de costo que todavía no volvió al fondo de reposición. Es un concepto separado del saldo nominal de Cuentas por cobrar.
+            Pendiente de recuperar representa capital de costo que todavía no volvió mediante ventas o cobros reales. Las Cuentas por cobrar se muestran y administran por separado.
           </p>
 
           {activityFinancial.purchaseExcess > 0 && (

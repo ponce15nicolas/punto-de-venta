@@ -337,6 +337,8 @@ export default function ActivityClosureModal({
     useState(false);
   const [showRestock, setShowRestock] =
     useState(false);
+  const [showReceivables, setShowReceivables] =
+    useState(true);
   const [closeRequestId, setCloseRequestId] =
     useState("");
   const [closedClosure, setClosedClosure] =
@@ -357,6 +359,7 @@ export default function ActivityClosureModal({
       setClosing(false);
       setConfirmed(false);
       setShowRestock(false);
+      setShowReceivables(true);
       setCloseRequestId("");
       setClosedClosure(null);
       setPdfDownloaded(false);
@@ -370,6 +373,7 @@ export default function ActivityClosureModal({
     setLoading(true);
     setConfirmed(false);
     setShowRestock(false);
+    setShowReceivables(true);
     setClosedClosure(null);
     setPdfDownloaded(false);
     setActualCashInput("");
@@ -412,6 +416,12 @@ export default function ActivityClosureModal({
       preview?.pendingRestock?.items
     )
       ? preview.pendingRestock.items
+      : [];
+  const pendingReceivableItems =
+    Array.isArray(
+      preview?.receivables?.items
+    )
+      ? preview.receivables.items
       : [];
   const activityNumber =
     formatActivityNumber(
@@ -500,7 +510,15 @@ export default function ActivityClosureModal({
         ),
       },
       {
-        label: "Cuentas por cobrar",
+        label: `Deudas por cobrar que continúan (${Math.max(
+          0,
+          Math.trunc(
+            toNumber(
+              preview?.receivables
+                ?.pendingCount
+            )
+          )
+        )})`,
         value: money(
           preview?.receivables
             ?.pendingAmount
@@ -941,9 +959,32 @@ export default function ActivityClosureModal({
           </div>
 
           <div className="rounded-[22px] border border-white/10 bg-white/[0.025] p-3.5">
-            <p className="text-[9px] font-extrabold uppercase tracking-[0.12em] text-white/35">
-              Saldos pendientes
-            </p>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[9px] font-extrabold uppercase tracking-[0.12em] text-white/35">
+                  Saldos pendientes
+                </p>
+                <p className="mt-1 text-[9px] leading-relaxed text-white/25">
+                  Estas deudas siguen abiertas y pasan a la próxima actividad sin volver a contabilizar la venta.
+                </p>
+              </div>
+
+              {pendingReceivableItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setShowReceivables(
+                      (current) => !current
+                    )
+                  }
+                  className="shrink-0 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2 text-[9px] font-extrabold text-white/50"
+                >
+                  {showReceivables
+                    ? "Ocultar deudas"
+                    : "Ver deudas"}
+                </button>
+              )}
+            </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
               <Stat
@@ -969,8 +1010,44 @@ export default function ActivityClosureModal({
               />
             </div>
 
+            {pendingReceivableItems.length === 0 ? (
+              <p className="mt-3 text-[9px] leading-relaxed text-white/25">
+                No hay deudas por cobrar abiertas para trasladar a la próxima actividad.
+              </p>
+            ) : (
+              showReceivables && (
+                <div className="mt-3 space-y-2">
+                  {pendingReceivableItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-white/10 bg-[#171B23] px-3 py-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-black text-white/80">
+                            {item.clienteNombre || "Cliente"}
+                          </p>
+                          <p className="mt-1 text-[10px] text-white/35">
+                            {item.concepto || "Deuda"}
+                            {item.vencimiento
+                              ? ` · Vence ${formatDate(item.vencimiento)}`
+                              : ""}
+                          </p>
+                        </div>
+                        <strong className="shrink-0 text-sm font-black text-[#FFC61A]">
+                          {money(
+                            item.saldoPendiente
+                          )}
+                        </strong>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
+
             <p className="mt-3 text-[9px] leading-relaxed text-white/25">
-              Cuentas por cobrar y por pagar son saldos nominales pendientes. El capital pendiente de recuperar se muestra arriba dentro de Capital y reposición.
+              Cuentas por cobrar y por pagar son saldos nominales. Pendiente de recuperar es capital de costo que aún no volvió mediante cobros reales y nunca se calcula restando directamente las deudas de clientes.
             </p>
           </div>
 

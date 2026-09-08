@@ -3947,7 +3947,7 @@ export function downloadActivityClosurePdf({
     }
   );
   note(
-    "Pendiente de recuperar representa capital de costo que todavía no volvió al fondo de reposición. Es un concepto separado del saldo nominal de Cuentas por cobrar."
+    "Pendiente de recuperar representa capital de costo que todavía no volvió mediante ventas o cobros reales. Es un concepto separado del saldo nominal de Cuentas por cobrar."
   );
 
   sectionTitle("Conciliación financiera");
@@ -4115,6 +4115,38 @@ export function downloadActivityClosurePdf({
       closure?.payables?.pendingPurchaseAmount
     )
   );
+
+  const receivableItems = Array.isArray(
+    closure?.receivables?.items
+  )
+    ? closure.receivables.items
+    : [];
+
+  if (receivableItems.length === 0) {
+    note(
+      "No quedaron deudas por cobrar abiertas para trasladar a la próxima actividad."
+    );
+  } else {
+    note(
+      `${receivableItems.length} ${receivableItems.length === 1 ? "deuda por cobrar continúa" : "deudas por cobrar continúan"} en la próxima actividad.`
+    );
+
+    for (const item of receivableItems) {
+      const client = String(
+        item?.clienteNombre || "Cliente"
+      ).trim() || "Cliente";
+      const concept = String(
+        item?.concepto || "Deuda"
+      ).trim() || "Deuda";
+
+      row(
+        `${client} · ${concept}`,
+        activityClosurePdfMoney(
+          item?.saldoPendiente
+        )
+      );
+    }
+  }
 
   sectionTitle("Reposición pendiente");
   const pendingRestock =
