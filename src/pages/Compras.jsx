@@ -61,6 +61,12 @@ export default function Compras({ pos }) {
   const [shoppingModal, setShoppingModal] =
     useState(false);
 
+  const [editingItem, setEditingItem] =
+    useState(null);
+
+  const [deletingItem, setDeletingItem] =
+    useState(null);
+
   const [completeItem, setCompleteItem] =
     useState(null);
 
@@ -200,6 +206,8 @@ export default function Compras({ pos }) {
             setShoppingModal(true)
           }
           onComplete={setCompleteItem}
+          onEdit={setEditingItem}
+          onDelete={setDeletingItem}
           onRefresh={() =>
             pos.refreshPurchasingData?.()
           }
@@ -232,6 +240,39 @@ export default function Compras({ pos }) {
           if (ok) {
             setShoppingModal(false);
           }
+        }}
+      />
+
+      <NewShoppingItemModal
+        open={Boolean(editingItem)}
+        item={editingItem}
+        onClose={() => setEditingItem(null)}
+        onSave={async (payload) => {
+          if (!editingItem?.id) return;
+
+          const ok =
+            await pos.updateShoppingItem?.(
+              editingItem.id,
+              payload
+            );
+
+          if (ok) setEditingItem(null);
+        }}
+      />
+
+      <DeleteShoppingItemModal
+        open={Boolean(deletingItem)}
+        item={deletingItem}
+        onClose={() => setDeletingItem(null)}
+        onConfirm={async () => {
+          if (!deletingItem?.id) return;
+
+          const ok =
+            await pos.deleteShoppingItem?.(
+              deletingItem.id
+            );
+
+          if (ok) setDeletingItem(null);
         }}
       />
 
@@ -307,6 +348,8 @@ function ShoppingListSection({
   completed,
   onNew,
   onComplete,
+  onEdit,
+  onDelete,
   onRefresh,
 }) {
   return (
@@ -376,15 +419,35 @@ function ShoppingListSection({
                 />
               </div>
 
-              <button
-                type="button"
-                onClick={() =>
-                  onComplete(item)
-                }
-                className="mt-3 inline-flex w-full items-center justify-center rounded-2xl bg-[#FFC61A] px-4 py-3 text-sm font-extrabold text-black transition hover:bg-[#FFD248] active:scale-[0.99]"
-              >
-                Marcar como comprada
-              </button>
+              <div className="mt-3 grid grid-cols-[1fr_auto_auto] gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onComplete(item)
+                  }
+                  className="inline-flex min-w-0 items-center justify-center rounded-2xl bg-[#FFC61A] px-3 py-3 text-sm font-extrabold text-black transition hover:bg-[#FFD248] active:scale-[0.99]"
+                >
+                  Marcar comprada
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onEdit(item)}
+                  aria-label={`Modificar ${item.concepto}`}
+                  title="Modificar"
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-[#F4F5F7] text-[#111318] transition hover:bg-[#E9EBEF] active:scale-[0.97]"
+                >
+                  <EditIcon className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDelete(item)}
+                  aria-label={`Eliminar ${item.concepto}`}
+                  title="Eliminar"
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-red-50 text-red-600 transition hover:bg-red-100 active:scale-[0.97]"
+                >
+                  <TrashIcon className="h-4 w-4" />
+                </button>
+              </div>
             </motion.article>
           ))}
         </div>
@@ -652,6 +715,7 @@ function ActionHeader({
 
 function NewShoppingItemModal({
   open,
+  item = null,
   onClose,
   onSave,
 }) {
@@ -670,15 +734,19 @@ function NewShoppingItemModal({
     if (!open) return;
 
     setForm({
-      concepto: "",
-      proveedor: "",
-      cantidad: "1",
-      costoEstimado: "",
-      conceptoCosto: "Mercadería",
-      notas: "",
+      concepto: item?.concepto || "",
+      proveedor: item?.proveedor || "",
+      cantidad: String(item?.cantidad || 1),
+      costoEstimado:
+        toNumber(item?.costoEstimado) > 0
+          ? String(item.costoEstimado)
+          : "",
+      conceptoCosto:
+        item?.conceptoCosto || "Mercadería",
+      notas: item?.notas || "",
     });
     setSaving(false);
-  }, [open]);
+  }, [open, item]);
 
   function set(field, value) {
     setForm((current) => ({
@@ -719,7 +787,11 @@ function NewShoppingItemModal({
     <Modal
       open={open}
       onClose={onClose}
-      title="Nueva compra pendiente"
+      title={
+        item
+          ? "Modificar compra pendiente"
+          : "Nueva compra pendiente"
+      }
     >
       <FormStack>
         <InputField
@@ -783,8 +855,72 @@ function NewShoppingItemModal({
         >
           {saving
             ? "Guardando..."
-            : "Agregar a la lista"}
+            : item
+              ? "Guardar cambios"
+              : "Agregar a la lista"}
         </PrimaryButton>
+      </FormStack>
+    </Modal>
+  );
+}
+
+function DeleteShoppingItemModal({
+  open,
+  item,
+  onClose,
+  onConfirm,
+}) {
+  const [deleting, setDeleting] =
+    useState(false);
+
+  useEffect(() => {
+    if (open) setDeleting(false);
+  }, [open, item?.id]);
+
+  async function confirm() {
+    if (deleting) return;
+
+    setDeleting(true);
+    try {
+      await onConfirm();
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Eliminar compra pendiente"
+    >
+      <FormStack>
+        <div className="rounded-[20px] border border-red-500/15 bg-red-500/10 p-4">
+          <p className="text-sm font-extrabold text-white/85">
+            ¿Eliminar “{item?.concepto || "esta compra"}”?
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-white/45">
+            Se quitará de la lista y la acción quedará registrada en auditoría.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={onClose}
+            className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-extrabold text-white/65 transition hover:bg-white/5 disabled:opacity-40"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={confirm}
+            className="rounded-2xl bg-red-600 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-red-500 disabled:opacity-40"
+          >
+            {deleting ? "Eliminando..." : "Eliminar"}
+          </button>
+        </div>
       </FormStack>
     </Modal>
   );
@@ -1590,6 +1726,44 @@ function RefreshIcon({ className = "" }) {
       <path d="M4 18v-5h5" />
       <path d="M6.5 8a7 7 0 0 1 11-1.5L20 9" />
       <path d="M17.5 16a7 7 0 0 1-11 1.5L4 15" />
+    </svg>
+  );
+}
+
+function EditIcon({ className = "" }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function TrashIcon({ className = "" }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M19 6l-1 14H6L5 6" />
+      <path d="M10 11v5M14 11v5" />
     </svg>
   );
 }

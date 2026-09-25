@@ -1741,6 +1741,12 @@ const AUDIT_ACTIONS = Object.freeze({
     ALTA_ITEM_COMPRA:
         "alta-item-compra",
 
+    EDICION_ITEM_COMPRA:
+        "edicion-item-compra",
+
+    ELIMINACION_ITEM_COMPRA:
+        "eliminacion-item-compra",
+
     COMPRA_COMPLETADA:
         "compra-completada",
 
@@ -20111,6 +20117,234 @@ exports.crearItemCompra =
                         result.sessionId,
                 },
             };
+        }
+    );
+
+exports.editarItemCompra =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } = await resolverClienteAutenticado(
+                request.auth
+            );
+            const clienteData = clienteSnap.data();
+
+            validarLicencia(clienteData);
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId = validarId(
+                request.data?.deviceId,
+                "deviceId"
+            );
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data?.operadorSesion,
+                    { deviceId }
+                );
+            const compraId = validarId(
+                request.data?.compraId,
+                "compraId"
+            );
+            const item = normalizarItemCompra(
+                request.data?.item
+            );
+            const compraRef = clienteRef
+                .collection("listaCompras")
+                .doc(compraId);
+
+            await db.runTransaction(
+                async (transaction) => {
+                    const compraSnap =
+                        await transaction.get(compraRef);
+
+                    if (!compraSnap.exists) {
+                        throw new HttpsError(
+                            "not-found",
+                            "La compra ya no existe."
+                        );
+                    }
+
+                    const anterior =
+                        compraSnap.data() || {};
+
+                    if (anterior.estado === "comprado") {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "Una compra completada no se puede editar."
+                        );
+                    }
+
+                    const sessionId =
+                        await obtenerSessionIdCajaAbiertaEnTransaccion(
+                            transaction,
+                            clienteRef
+                        );
+
+                    transaction.update(compraRef, {
+                        ...item,
+                        actualizadoEn:
+                            admin.firestore.FieldValue.serverTimestamp(),
+                    });
+
+                    const eventoAuditoria =
+                        crearEventoAuditoria({
+                            clienteRef,
+                            operador: operadorAutorizado,
+                            accion:
+                                AUDIT_ACTIONS
+                                    .EDICION_ITEM_COMPRA,
+                            sessionId,
+                            deviceId,
+                            detalle: {
+                                compraId,
+                                conceptoAnterior:
+                                    textoSeguro(
+                                        anterior.concepto,
+                                        180
+                                    ),
+                                conceptoNuevo: item.concepto,
+                                proveedor: item.proveedor,
+                                cantidadAnterior:
+                                    Number(
+                                        anterior.cantidad || 0
+                                    ),
+                                cantidadNueva: item.cantidad,
+                                costoEstimadoAnterior:
+                                    Number(
+                                        anterior.costoEstimado || 0
+                                    ),
+                                costoEstimadoNuevo:
+                                    item.costoEstimado,
+                            },
+                        });
+
+                    transaction.set(
+                        eventoAuditoria.ref,
+                        eventoAuditoria.data
+                    );
+                }
+            );
+
+            return {
+                ok: true,
+                item: {
+                    id: compraId,
+                    ...item,
+                    estado: "pendiente",
+                },
+            };
+        }
+    );
+
+exports.eliminarItemCompra =
+    onCall(
+        CALLABLE_OPTIONS,
+        async (request) => {
+            const {
+                ref: clienteRef,
+                snap: clienteSnap,
+            } = await resolverClienteAutenticado(
+                request.auth
+            );
+            const clienteData = clienteSnap.data();
+
+            validarLicencia(clienteData);
+            validarSesionNoRevocada(
+                request.auth,
+                clienteData
+            );
+
+            const deviceId = validarId(
+                request.data?.deviceId,
+                "deviceId"
+            );
+            const operadorAutorizado =
+                await validarSesionOperadorInterna(
+                    clienteRef,
+                    request.data?.operadorSesion,
+                    { deviceId }
+                );
+            const compraId = validarId(
+                request.data?.compraId,
+                "compraId"
+            );
+            const compraRef = clienteRef
+                .collection("listaCompras")
+                .doc(compraId);
+
+            const result = await db.runTransaction(
+                async (transaction) => {
+                    const compraSnap =
+                        await transaction.get(compraRef);
+
+                    if (!compraSnap.exists) {
+                        return { alreadyDeleted: true };
+                    }
+
+                    const compra = compraSnap.data() || {};
+
+                    if (compra.estado === "comprado") {
+                        throw new HttpsError(
+                            "failed-precondition",
+                            "Una compra completada no se puede eliminar porque puede estar vinculada con stock o cuentas por pagar."
+                        );
+                    }
+
+                    const sessionId =
+                        await obtenerSessionIdCajaAbiertaEnTransaccion(
+                            transaction,
+                            clienteRef
+                        );
+
+                    transaction.delete(compraRef);
+
+                    const eventoAuditoria =
+                        crearEventoAuditoria({
+                            clienteRef,
+                            operador: operadorAutorizado,
+                            accion:
+                                AUDIT_ACTIONS
+                                    .ELIMINACION_ITEM_COMPRA,
+                            sessionId,
+                            deviceId,
+                            detalle: {
+                                compraId,
+                                concepto:
+                                    textoSeguro(
+                                        compra.concepto,
+                                        180
+                                    ),
+                                proveedor:
+                                    textoSeguro(
+                                        compra.proveedor,
+                                        120
+                                    ),
+                                cantidad:
+                                    Number(compra.cantidad || 0),
+                                costoEstimado:
+                                    Number(
+                                        compra.costoEstimado || 0
+                                    ),
+                            },
+                        });
+
+                    transaction.set(
+                        eventoAuditoria.ref,
+                        eventoAuditoria.data
+                    );
+
+                    return { alreadyDeleted: false };
+                }
+            );
+
+            return { ok: true, ...result };
         }
     );
 

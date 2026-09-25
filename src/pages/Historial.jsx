@@ -106,6 +106,14 @@ const AUDIT_ACTION_META = {
     title: "Ítem agregado a compras",
     category: "Compras",
   },
+  "edicion-item-compra": {
+    title: "Compra pendiente modificada",
+    category: "Compras",
+  },
+  "eliminacion-item-compra": {
+    title: "Compra pendiente eliminada",
+    category: "Compras",
+  },
   "compra-completada": {
     title: "Compra registrada",
     category: "Compras",
@@ -1173,6 +1181,46 @@ function getAuditDetailRows(event) {
               ),
             ]]
           : []),
+      ];
+
+    case "edicion-item-compra":
+      return [
+        [
+          "Concepto anterior",
+          detail.conceptoAnterior || "Compra",
+        ],
+        [
+          "Concepto nuevo",
+          detail.conceptoNuevo || "Compra",
+        ],
+        [
+          "Cantidad",
+          `${detail.cantidadAnterior ?? 0} → ${detail.cantidadNueva ?? 0}`,
+        ],
+        [
+          "Costo estimado",
+          `${money(detail.costoEstimadoAnterior)} → ${money(detail.costoEstimadoNuevo)}`,
+        ],
+      ];
+
+    case "eliminacion-item-compra":
+      return [
+        [
+          "Concepto",
+          detail.concepto || "Compra",
+        ],
+        [
+          "Proveedor",
+          detail.proveedor || "Sin proveedor",
+        ],
+        [
+          "Cantidad",
+          String(detail.cantidad ?? 0),
+        ],
+        [
+          "Costo estimado",
+          money(detail.costoEstimado),
+        ],
       ];
 
     case "compra-completada":

@@ -26,6 +26,8 @@ const ACTIONS = [
   { id: "cobro-cuenta-por-cobrar", label: "Cobros" },
   { id: "cuenta-por-cobrar-saldada", label: "Saldadas" },
   { id: "alta-item-compra", label: "Lista compras" },
+  { id: "edicion-item-compra", label: "Compras edit." },
+  { id: "eliminacion-item-compra", label: "Compras elim." },
   { id: "compra-completada", label: "Compradas" },
   { id: "otro-costo-actividad", label: "Otros costos" },
   { id: "cierre-actividad", label: "Cierre actividad" },
@@ -110,6 +112,16 @@ const ACTION_META = {
     title: "Ítem agregado a compras",
     eyebrow: "Compras",
     icon: PurchaseIcon,
+  },
+  "edicion-item-compra": {
+    title: "Compra pendiente modificada",
+    eyebrow: "Compras",
+    icon: EditIcon,
+  },
+  "eliminacion-item-compra": {
+    title: "Compra pendiente eliminada",
+    eyebrow: "Compras",
+    icon: TrashIcon,
   },
   "compra-completada": {
     title: "Compra registrada",

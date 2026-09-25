@@ -124,6 +124,18 @@ const crearItemCompraFunction =
     "crearItemCompra"
   );
 
+const editarItemCompraFunction =
+  httpsCallable(
+    functions,
+    "editarItemCompra"
+  );
+
+const eliminarItemCompraFunction =
+  httpsCallable(
+    functions,
+    "eliminarItemCompra"
+  );
+
 const marcarItemCompraCompradoFunction =
   httpsCallable(
     functions,
@@ -3410,6 +3422,110 @@ export async function createShoppingItemCloud(
         "create-shopping-item-failed",
       message:
         "No se pudo agregar a la lista de compras",
+    }
+  );
+}
+
+export async function updateShoppingItemCloud(
+  clienteId,
+  compraId,
+  item,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+  const cleanCompraId =
+    requireString(
+      compraId,
+      "compraId"
+    );
+  const concepto =
+    requireString(
+      item?.concepto,
+      "concepto"
+    ).slice(0, 180);
+  const cantidad = roundQuantity(
+    Math.max(
+      0.001,
+      toNumber(item?.cantidad, 1)
+    )
+  );
+
+  return invokePurchasingCallable(
+    editarItemCompraFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      compraId: cleanCompraId,
+      item: {
+        concepto,
+        proveedor: String(
+          item?.proveedor || ""
+        ).trim().slice(0, 120),
+        cantidad,
+        costoEstimado: roundMoney(
+          Math.max(
+            0,
+            toNumber(
+              item?.costoEstimado,
+              0
+            )
+          )
+        ),
+        conceptoCosto: String(
+          item?.conceptoCosto || ""
+        ).trim().slice(0, 180),
+        notas: String(
+          item?.notas || ""
+        ).trim().slice(0, 1000),
+      },
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "update-shopping-item-failed",
+      message:
+        "No se pudo modificar la compra",
+    }
+  );
+}
+
+export async function deleteShoppingItemCloud(
+  clienteId,
+  compraId,
+  options = {}
+) {
+  const context =
+    normalizePurchasingContext(
+      clienteId,
+      options
+    );
+
+  return invokePurchasingCallable(
+    eliminarItemCompraFunction,
+    {
+      clienteId:
+        context.cleanClienteId,
+      compraId: requireString(
+        compraId,
+        "compraId"
+      ),
+      operadorSesion:
+        context.operadorSesion,
+      deviceId:
+        context.cleanDeviceId,
+    },
+    {
+      code:
+        "delete-shopping-item-failed",
+      message:
+        "No se pudo eliminar la compra",
     }
   );
 }

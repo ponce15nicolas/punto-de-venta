@@ -39,6 +39,8 @@ import {
   upsertPromotionCloud,
   deletePromotionCloud,
   createShoppingItemCloud,
+  updateShoppingItemCloud,
+  deleteShoppingItemCloud,
   completeShoppingItemCloud,
   createManualPayableCloud,
   registerPayablePaymentCloud,
@@ -7709,6 +7711,93 @@ export function usePosData({
       ]
     );
 
+  const updateShoppingItem =
+    useCallback(
+      async (compraId, payload) => {
+        if (!cloudActiveRef.current) {
+          showToast(
+            "Necesitás conexión con la nube para modificar compras",
+            true
+          );
+          return false;
+        }
+
+        try {
+          await updateShoppingItemCloud(
+            cleanClienteId,
+            compraId,
+            payload,
+            {
+              operadorSesion,
+              deviceId: cleanDeviceId,
+            }
+          );
+          await refreshPurchasingData({
+            silent: true,
+          });
+          showToast("Compra modificada");
+          return true;
+        } catch (error) {
+          console.error(
+            "Error modificando compra:",
+            error
+          );
+          showToast(mapCloudError(error), true);
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        refreshPurchasingData,
+        showToast,
+      ]
+    );
+
+  const deleteShoppingItem =
+    useCallback(
+      async (compraId) => {
+        if (!cloudActiveRef.current) {
+          showToast(
+            "Necesitás conexión con la nube para eliminar compras",
+            true
+          );
+          return false;
+        }
+
+        try {
+          await deleteShoppingItemCloud(
+            cleanClienteId,
+            compraId,
+            {
+              operadorSesion,
+              deviceId: cleanDeviceId,
+            }
+          );
+          await refreshPurchasingData({
+            silent: true,
+          });
+          showToast("Compra eliminada");
+          return true;
+        } catch (error) {
+          console.error(
+            "Error eliminando compra:",
+            error
+          );
+          showToast(mapCloudError(error), true);
+          return false;
+        }
+      },
+      [
+        cleanClienteId,
+        cleanDeviceId,
+        operadorSesion,
+        refreshPurchasingData,
+        showToast,
+      ]
+    );
+
   const completeShoppingItem =
     useCallback(
       async (
@@ -8759,6 +8848,8 @@ export function usePosData({
 
     refreshPurchasingData,
     createShoppingItem,
+    updateShoppingItem,
+    deleteShoppingItem,
     completeShoppingItem,
     createManualPayable,
     registerPayablePayment,
