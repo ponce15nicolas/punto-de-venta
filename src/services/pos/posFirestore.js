@@ -6084,8 +6084,7 @@ export async function closeCashSessionCloud(
   if (
     !Number.isFinite(
       countedAmount
-    ) ||
-    countedAmount < 0
+    )
   ) {
     fail(
       "invalid-counted-amount",

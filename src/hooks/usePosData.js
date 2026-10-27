@@ -7016,8 +7016,7 @@ export function usePosData({
         if (
           !Number.isFinite(
             countedAmount
-          ) ||
-          countedAmount < 0
+          )
         ) {
           showToast(
             "Ingresá un efectivo contado válido",
