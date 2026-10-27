@@ -873,8 +873,7 @@ export default function Caja({
   const puedeCerrar =
     Number.isFinite(
       countedNum
-    ) &&
-    countedNum >= 0;
+    );
 
   /* =========================================================
      CERRAR MODAL
@@ -2017,7 +2016,6 @@ export default function Caja({
                 id="counted-cash"
                 type="number"
                 step="0.01"
-                min="0"
                 inputMode="decimal"
                 autoComplete="off"
                 autoFocus

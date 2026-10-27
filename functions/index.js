@@ -29022,8 +29022,7 @@ exports.cerrarCaja =
             if (
                 !Number.isFinite(
                     countedRaw
-                ) ||
-                countedRaw < 0
+                )
             ) {
                 throw new HttpsError(
                     "invalid-argument",
